@@ -1,4 +1,4 @@
-export const WORKGRAPH_SCHEMA_VERSION = 1 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 1 as const;
 
 export type WorkflowPhase = "running" | "blocked" | "completed" | "cancelled";
 export type NodeStatus = "pending" | "active" | "blocked" | "completed" | "stale";
@@ -42,7 +42,7 @@ export interface WorkflowPolicy {
   requireEvidence: boolean;
 }
 
-export interface WorkGraphDefinition {
+export interface HypagraphDefinition {
   title: string;
   goal: string;
   nodes: NodeDefinition[];
@@ -59,12 +59,12 @@ export interface NodeRuntime {
   blockedReason?: string;
 }
 
-export interface WorkGraphState {
-  schemaVersion: typeof WORKGRAPH_SCHEMA_VERSION;
+export interface HypagraphState {
+  schemaVersion: typeof HYPAGRAPH_SCHEMA_VERSION;
   workflowId: string;
   revision: number;
   phase: WorkflowPhase;
-  definition: WorkGraphDefinition;
+  definition: HypagraphDefinition;
   runtime: {
     nodes: Record<string, NodeRuntime>;
   };
@@ -82,14 +82,14 @@ export interface Diagnostic {
 
 export interface DomainEvent {
   type:
-    | "workgraph.workflow.defined"
-    | "workgraph.workflow.revised"
-    | "workgraph.node.started"
-    | "workgraph.node.completed"
-    | "workgraph.node.blocked"
-    | "workgraph.node.unblocked"
-    | "workgraph.node.stale"
-    | "workgraph.workflow.completed";
+    | "hypagraph.workflow.defined"
+    | "hypagraph.workflow.revised"
+    | "hypagraph.node.started"
+    | "hypagraph.node.completed"
+    | "hypagraph.node.blocked"
+    | "hypagraph.node.unblocked"
+    | "hypagraph.node.stale"
+    | "hypagraph.workflow.completed";
   nodeId?: string;
   data?: Record<string, unknown>;
 }
@@ -105,12 +105,12 @@ export interface TransitionCommand {
 
 export interface ReviseCommand {
   type: "revise";
-  definition: WorkGraphDefinition;
+  definition: HypagraphDefinition;
   at: string;
 }
 
-export type WorkGraphCommand = TransitionCommand | ReviseCommand;
+export type HypagraphCommand = TransitionCommand | ReviseCommand;
 
 export type ReducerResult =
-  | { ok: true; state: WorkGraphState; events: DomainEvent[] }
+  | { ok: true; state: HypagraphState; events: DomainEvent[] }
   | { ok: false; diagnostics: Diagnostic[] };
