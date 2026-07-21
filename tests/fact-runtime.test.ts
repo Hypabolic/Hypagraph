@@ -23,11 +23,7 @@ const definition = (): HypagraphDefinition => ({
   policy: { mode: "guided", requireEvidence: true },
 });
 
-const command = (type: Parameters<typeof handleCommand>[1]["type"], suffix: string) => ({
-  type,
-  commandId: `command-${suffix}`,
-  at,
-} as const);
+const base = (suffix: string) => ({ commandId: `command-${suffix}`, at });
 
 const apply = (state: HypagraphState, value: Parameters<typeof handleCommand>[1]) => {
   const result = handleCommand(state, value);
@@ -41,11 +37,12 @@ describe("fact runtime", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const events: DomainEvent[] = [...created.events];
 
-    const started = apply(created.state, { ...command("start-node", "start"), nodeId: "test", attemptId: "attempt-1" });
+    const started = apply(created.state, { ...base("start"), type: "start-node", nodeId: "test", attemptId: "attempt-1" });
     events.push(...started.events);
 
     const published = apply(started.state, {
-      ...command("publish-facts", "publish"),
+      ...base("publish"),
+      type: "publish-facts",
       nodeId: "test",
       attemptId: "attempt-1",
       facts: [
@@ -67,10 +64,11 @@ describe("fact runtime", () => {
   it("rejects undeclared and invalid facts without events", () => {
     const created = createWorkflow(definition(), at, "workflow-facts");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
-    const started = apply(created.state, { ...command("start-node", "start"), nodeId: "test", attemptId: "attempt-1" });
+    const started = apply(created.state, { ...base("start"), type: "start-node", nodeId: "test", attemptId: "attempt-1" });
 
     const undeclared = handleCommand(started.state, {
-      ...command("publish-facts", "unknown"),
+      ...base("unknown"),
+      type: "publish-facts",
       nodeId: "test",
       attemptId: "attempt-1",
       facts: [{ name: "tests.total", type: "integer", value: 5 }],
@@ -79,7 +77,8 @@ describe("fact runtime", () => {
     if (!undeclared.ok) expect(undeclared.diagnostics[0]?.code).toBe("fact_not_declared");
 
     const wrongType = handleCommand(started.state, {
-      ...command("publish-facts", "type"),
+      ...base("type"),
+      type: "publish-facts",
       nodeId: "test",
       attemptId: "attempt-1",
       facts: [{ name: "tests.failed", type: "integer", value: 1.5 }],
@@ -91,21 +90,24 @@ describe("fact runtime", () => {
   it("requires current-attempt facts before verification can pass", () => {
     const created = createWorkflow(definition(), at, "workflow-facts");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
-    const started = apply(created.state, { ...command("start-node", "start"), nodeId: "test", attemptId: "attempt-1" });
+    const started = apply(created.state, { ...base("start"), type: "start-node", nodeId: "test", attemptId: "attempt-1" });
     const submitted = apply(started.state, {
-      ...command("submit-result", "submit"),
+      ...base("submit"),
+      type: "submit-result",
       nodeId: "test",
       attemptId: "attempt-1",
       evidence: [{ ref: "command:npm-test", kind: "command" }],
     });
     const verifying = apply(submitted.state, {
-      ...command("begin-verification", "verify"),
+      ...base("verify"),
+      type: "begin-verification",
       nodeId: "test",
       attemptId: "attempt-1",
     });
 
     const rejected = handleCommand(verifying.state, {
-      ...command("complete-verification", "pass"),
+      ...base("pass"),
+      type: "complete-verification",
       nodeId: "test",
       attemptId: "attempt-1",
       passed: true,
