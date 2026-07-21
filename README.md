@@ -21,6 +21,12 @@ The initial vertical slice includes:
 
 Loop execution, gate expression evaluation, check runners, full in-Pi graph visualisation, and delegated node execution are planned next. Loop declarations are already structurally validated but are not yet iterated.
 
+## Roadmap
+
+Hypagraph is evolving from a graph-aware planning extension into a deterministic execution kernel for coding agents. The graph describes work; an event-driven finite-state runtime controls how that work executes.
+
+See the [detailed execution plan and roadmap](docs/execution-roadmap.md) for the ordered milestones, architecture, acceptance criteria, implementation backlog, and v1.0 exit conditions.
+
 ## Try locally
 
 ```bash
@@ -49,6 +55,7 @@ The primary Pi command is `/hypagraph`. `/workgraph` remains as a compatibility 
 
 ## Design documents
 
+- [Execution plan and roadmap](docs/execution-roadmap.md)
 - [Product and technical specification](docs/product-spec.md)
 - [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)
 - [`pi-workflows` comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
