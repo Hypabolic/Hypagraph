@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HypagraphDefinition } from "../src/domain/model.js";
-import { createWorkflow, reduceHypagraph } from "../src/domain/reducer.js";
-import { restoreLatestSnapshot } from "../src/persistence/session-rebuild.js";
+import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
+import { restoreLatestSession, restoreLatestSnapshot } from "../src/persistence/session-rebuild.js";
 
 const definition: HypagraphDefinition = {
   title: "Persist state",
@@ -12,33 +12,35 @@ const definition: HypagraphDefinition = {
 };
 
 describe("session restoration", () => {
-  it("restores the newest Hypagraph snapshot from the supplied branch", () => {
-    const created = createWorkflow(definition, "2026-07-19T00:00:00.000Z", "workflow-1");
+  it("replays the newest event stream from the supplied branch", () => {
+    const created = createWorkflow(definition, "2026-07-21T00:00:00.000Z", "workflow-1");
     if (!created.ok) throw new Error("The fixture did not start.");
-    const started = reduceHypagraph(created.state, {
-      type: "transition",
+    const started = handleCommand(created.state, {
+      type: "start-node",
       nodeId: "one",
-      action: "start",
-      at: "2026-07-19T00:01:00.000Z",
+      attemptId: "attempt-1",
+      commandId: "command-1",
+      at: "2026-07-21T00:01:00.000Z",
     });
     if (!started.ok) throw new Error("The fixture did not change state.");
-
+    const events = [...created.events, ...started.events];
+    const stored = { events, snapshot: started.state };
     const entries = [
-      { type: "message", message: { role: "toolResult", toolName: "hypagraph_define", details: { hypagraph: created.state } } },
+      { type: "message", message: { role: "toolResult", toolName: "hypagraph_define", details: { hypagraph: { events: created.events, snapshot: created.state } } } },
       { type: "message", message: { role: "toolResult", toolName: "unrelated", details: { hypagraph: { fake: true } } } },
-      { type: "message", message: { role: "toolResult", toolName: "hypagraph_transition", details: { hypagraph: started.state } } },
+      { type: "message", message: { role: "toolResult", toolName: "hypagraph_transition", details: { hypagraph: stored } } },
     ];
-
-    const restored = restoreLatestSnapshot(entries);
-    expect(restored?.runtime.nodes.one?.status).toBe("active");
-    expect(restored).not.toBe(started.state);
+    const restored = restoreLatestSession(entries);
+    expect(restored?.snapshot.runtime.nodes.one?.status).toBe("running");
+    expect(restored?.events).toEqual(events);
+    expect(restored?.snapshot).not.toBe(started.state);
   });
 
-  it("rejects a snapshot with an unsupported schema version", () => {
-    const created = createWorkflow(definition, "2026-07-19T00:00:00.000Z", "workflow-1");
+  it("rejects a snapshot that does not match its events", () => {
+    const created = createWorkflow(definition, "2026-07-21T00:00:00.000Z", "workflow-1");
     if (!created.ok) throw new Error("The fixture did not start.");
-    const unsupported = { ...created.state, schemaVersion: 999 };
-    const entries = [{ type: "message", message: { role: "toolResult", toolName: "hypagraph_read", details: { hypagraph: unsupported } } }];
-    expect(restoreLatestSnapshot(entries)).toBeUndefined();
+    const changed = { ...created.state, snapshotHash: "invalid" };
+    const entries = [{ type: "message", message: { role: "toolResult", toolName: "hypagraph_read", details: { hypagraph: { events: created.events, snapshot: changed } } } }];
+    expect(() => restoreLatestSnapshot(entries)).toThrow("does not match");
   });
 });
