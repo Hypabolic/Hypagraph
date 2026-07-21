@@ -1,19 +1,19 @@
 ---
 name: hypagraph
-description: Define and execute multi-step coding work as an enforced directed graph with explicit dependencies, evidence, and bounded loop declarations.
+description: Define and execute multi-step coding work as a directed graph with explicit dependencies, evidence, and bounded loop declarations.
 ---
 
 # Hypagraph
 
-Use Hypagraph when a coding request has multiple dependent steps, risky sequencing, parallel-ready work, or an implement/check/repair cycle.
+Use Hypagraph when a coding request has dependent steps, risky sequence requirements, multiple ready nodes, or an implement-test-repair cycle.
 
-1. Inspect enough of the repository to define truthful nodes and dependencies.
-2. Call `workgraph_define` with stable lowercase IDs, explicit `requires`, acceptance criteria, and narrow writable scopes.
-3. Call `workgraph_transition` with `action: "start"` before working on exactly one ready node.
-4. Work only within the active node's contract and scope.
-5. Call `workgraph_transition` with `action: "complete"` and concrete evidence references, or `action: "block"` with a specific reason.
-6. Use `workgraph_revise` when discoveries invalidate the plan. Preserve completed work where its contract is unchanged.
+1. Examine enough of the repository to define correct nodes and dependencies.
+2. Call `hypagraph_define`. Use stable lowercase IDs. Add explicit dependencies, acceptance criteria, and narrow writable scopes.
+3. Call `hypagraph_transition` with `action: "start"` before you work on one ready node.
+4. Work only in the contract and scope of the active node.
+5. Call `hypagraph_transition` with `action: "complete"` and concrete evidence. If work cannot continue, use `action: "block"` and give a specific reason.
+6. Call `hypagraph_revise` when new information makes the plan incorrect. Preserve completed work when its contract did not change.
 
-Never encode an accidental cycle. A deliberate cycle must be declared as a loop whose node set exactly matches its strongly connected component, has identified feedback edges, a Boolean `successWhen` predicate, and a hard `maxIterations` limit.
+Do not add an accidental cycle. A deliberate cycle must be a declared loop. The loop nodes must be the same as one strongly connected component. The loop must identify feedback edges. It must have a Boolean `successWhen` predicate and a hard `maxIterations` limit.
 
-The first implementation validates loop structure but does not yet execute loop iterations or evaluate `successWhen`. Do not imply that those controls are active until the extension reports them as implemented.
+M0 validates loop structure. M0 does not execute loop iterations and does not evaluate `successWhen`. Do not state that these controls are active.
