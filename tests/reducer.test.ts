@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DomainEvent, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
+import type { DomainEvent, HypagraphCommand, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { createWorkflow, handleCommand, replayEvents } from "../src/domain/reducer.js";
 import { readyNodeIds } from "../src/domain/readiness.js";
 
@@ -21,13 +21,13 @@ const created = () => {
   return result;
 };
 
-const run = (state: HypagraphState, command: Parameters<typeof handleCommand>[1]) => {
+const run = (state: HypagraphState, command: HypagraphCommand) => {
   const result = handleCommand(state, command);
   if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
   return result;
 };
 
-const base = (type: Parameters<typeof handleCommand>[1]["type"], suffix: string) => ({ type, commandId: `command-${suffix}`, at } as const);
+const base = <T extends HypagraphCommand["type"]>(type: T, suffix: string) => ({ type, commandId: `command-${suffix}`, at } as const);
 
 describe("event-driven runtime", () => {
   it("creates readiness events and rebuilds the same state by replay", () => {
