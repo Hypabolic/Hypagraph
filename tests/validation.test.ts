@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { HypagraphDefinition } from "../src/domain/model.js";
-import { createWorkflow, reduceHypagraph } from "../src/domain/reducer.js";
+import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
 import { buildOutgoing, stronglyConnectedComponents } from "../src/domain/scc.js";
 import { validateDefinition } from "../src/domain/validate.js";
 
@@ -35,14 +35,14 @@ describe("static graph validation", () => {
       patience: 2,
     }];
     expect(validateDefinition(definition)).toEqual([]);
-
-    const created = createWorkflow(definition, "2026-07-19T00:00:00.000Z", "loop-workflow");
+    const created = createWorkflow(definition, "2026-07-21T00:00:00.000Z", "loop-workflow");
     if (!created.ok) throw new Error("The loop fixture did not start.");
-    const transition = reduceHypagraph(created.state, {
-      type: "transition",
+    const transition = handleCommand(created.state, {
+      type: "start-node",
       nodeId: "implement",
-      action: "start",
-      at: "2026-07-19T00:01:00.000Z",
+      attemptId: "attempt-1",
+      commandId: "command-1",
+      at: "2026-07-21T00:01:00.000Z",
     });
     expect(transition.ok).toBe(false);
     if (!transition.ok) expect(transition.diagnostics[0]?.code).toBe("loop_execution_pending");
