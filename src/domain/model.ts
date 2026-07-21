@@ -1,7 +1,20 @@
-export const HYPAGRAPH_SCHEMA_VERSION = 1 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 2 as const;
+export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
-export type WorkflowPhase = "running" | "blocked" | "completed" | "cancelled";
-export type NodeStatus = "pending" | "active" | "blocked" | "completed" | "stale";
+export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+export type NodeStatus =
+  | "pending"
+  | "ready"
+  | "starting"
+  | "running"
+  | "awaiting_evidence"
+  | "verifying"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "cancelled"
+  | "stale";
+export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
 
 export interface EvidenceReference {
@@ -16,15 +29,10 @@ export interface NodeDefinition {
   description?: string;
   requires: string[];
   acceptance: string[];
-  scope?: {
-    paths: string[];
-  };
+  scope?: { paths: string[] };
 }
 
-export interface FeedbackEdge {
-  from: string;
-  to: string;
-}
+export interface FeedbackEdge { from: string; to: string }
 
 export interface LoopDefinition {
   id: string;
@@ -50,12 +58,23 @@ export interface HypagraphDefinition {
   policy: WorkflowPolicy;
 }
 
+export interface AttemptRuntime {
+  attemptId: string;
+  number: number;
+  status: AttemptStatus;
+  startedAt: string;
+  submittedAt?: string;
+  completedAt?: string;
+  evidence: EvidenceReference[];
+  failureReason?: string;
+}
+
 export interface NodeRuntime {
   status: NodeStatus;
-  attempt: number;
+  attemptCount: number;
+  currentAttemptId?: string;
+  attempts: Record<string, AttemptRuntime>;
   evidence: EvidenceReference[];
-  startedAt?: string;
-  completedAt?: string;
   blockedReason?: string;
 }
 
@@ -63,11 +82,10 @@ export interface HypagraphState {
   schemaVersion: typeof HYPAGRAPH_SCHEMA_VERSION;
   workflowId: string;
   revision: number;
+  sequence: number;
   phase: WorkflowPhase;
   definition: HypagraphDefinition;
-  runtime: {
-    nodes: Record<string, NodeRuntime>;
-  };
+  runtime: { nodes: Record<string, NodeRuntime> };
   createdAt: string;
   updatedAt: string;
   snapshotHash: string;
@@ -80,37 +98,62 @@ export interface Diagnostic {
   suggestion?: string;
 }
 
-export interface DomainEvent {
-  type:
-    | "hypagraph.workflow.defined"
-    | "hypagraph.workflow.revised"
-    | "hypagraph.node.started"
-    | "hypagraph.node.completed"
-    | "hypagraph.node.blocked"
-    | "hypagraph.node.unblocked"
-    | "hypagraph.node.stale"
-    | "hypagraph.workflow.completed";
+export type EventType =
+  | "hypagraph.workflow.defined"
+  | "hypagraph.workflow.revised"
+  | "hypagraph.workflow.paused"
+  | "hypagraph.workflow.resumed"
+  | "hypagraph.workflow.completed"
+  | "hypagraph.workflow.failed"
+  | "hypagraph.node.ready"
+  | "hypagraph.node.invalidated"
+  | "hypagraph.node.blocked"
+  | "hypagraph.node.unblocked"
+  | "hypagraph.attempt.started"
+  | "hypagraph.attempt.result-submitted"
+  | "hypagraph.verification.started"
+  | "hypagraph.verification.passed"
+  | "hypagraph.verification.failed"
+  | "hypagraph.attempt.cancelled";
+
+export interface DomainEvent<T = Record<string, unknown>> {
+  eventId: string;
+  workflowId: string;
+  revision: number;
+  sequence: number;
+  type: EventType;
+  version: typeof HYPAGRAPH_EVENT_VERSION;
+  timestamp: string;
+  causationId: string;
+  correlationId: string;
   nodeId?: string;
-  data?: Record<string, unknown>;
+  attemptId?: string;
+  data: T;
 }
 
-export interface TransitionCommand {
-  type: "transition";
-  nodeId: string;
-  action: "start" | "complete" | "block" | "unblock";
-  evidence?: EvidenceReference[];
-  reason?: string;
+interface CommandBase {
+  commandId: string;
+  correlationId?: string;
   at: string;
 }
 
-export interface ReviseCommand {
-  type: "revise";
-  definition: HypagraphDefinition;
-  at: string;
-}
-
-export type HypagraphCommand = TransitionCommand | ReviseCommand;
+export type HypagraphCommand =
+  | (CommandBase & { type: "revise"; definition: HypagraphDefinition })
+  | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
+  | (CommandBase & { type: "begin-verification"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "complete-verification"; nodeId: string; attemptId: string; passed: boolean; reason?: string })
+  | (CommandBase & { type: "block-node"; nodeId: string; reason: string })
+  | (CommandBase & { type: "unblock-node"; nodeId: string })
+  | (CommandBase & { type: "cancel-attempt"; nodeId: string; attemptId: string; reason?: string })
+  | (CommandBase & { type: "pause-workflow" })
+  | (CommandBase & { type: "resume-workflow" });
 
 export type ReducerResult =
   | { ok: true; state: HypagraphState; events: DomainEvent[] }
   | { ok: false; diagnostics: Diagnostic[] };
+
+export interface PersistedHypagraph {
+  events: DomainEvent[];
+  snapshot: HypagraphState;
+}
