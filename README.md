@@ -2,33 +2,38 @@
 
 Hypagraph is a graph-native workflow and execution-control extension for coding agents. The first integration is for the Pi coding agent.
 
-Hypagraph lets an agent define coding work as a directed graph. It then controls execution with dependencies, node contracts, evidence, bounded loop declarations, branch-aware session state, and pluggable node executors.
+Hypagraph lets an agent define coding work as a directed graph. A deterministic runtime then controls execution with commands, events, attempts, dependencies, node contracts, evidence, bounded loop declarations, and branch-aware session state.
 
-## M0 baseline
+## Current implementation
 
-M0 provides a stable graph foundation.
+M0 provides the stable graph foundation. M1 adds the event-driven execution runtime.
 
-The baseline includes:
+The current implementation includes:
 
 - an installable Pi package and a bundled Hypagraph skill;
 - the `hypagraph_define`, `hypagraph_read`, `hypagraph_transition`, and `hypagraph_revise` tools;
 - one public Pi command, `/hypagraph`;
-- a pure state reducer;
-- one-active-node enforcement;
-- dependency-based readiness;
-- evidence-gated completion;
+- versioned commands and events;
+- an append-only event stream as the source of truth;
+- pure event projection and deterministic replay;
+- schema version 2 snapshots with deterministic hashes;
+- migration from valid schema version 1 snapshots;
+- explicit node and attempt lifecycles;
+- immutable attempt IDs;
+- stale-attempt rejection;
+- separate result-submission and verification states;
+- pause and resume commands in the domain runtime;
+- dependency-based readiness events;
+- one-active-attempt enforcement;
+- evidence-gated result submission;
 - Tarjan strongly connected component detection;
 - exact loop-region validation;
-- bounded loop declarations with explicit feedback edges;
 - downstream invalidation after graph revisions;
-- branch-aware restoration from tool-result snapshots;
-- a versioned persisted state schema;
-- deterministic state hashes;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- tests for reducer determinism, input immutability, schema rejection, and persistence restoration.
+- replay, determinism, persistence, migration, and lifecycle tests.
 
-Loop execution, gate expression evaluation, check runners, full graph visualization in Pi, and delegated node execution are not part of M0.
+Typed facts, gate evaluation, deterministic check runners, executable loops, full graph visualization in Pi, and delegated node execution are planned next.
 
 ## Language rules
 
@@ -58,13 +63,14 @@ pi install git:github.com/Hypabolic/Hypagraph
 | --- | --- |
 | `/hypagraph` | Show the active workflow state. |
 | `hypagraph_define` | Validate and create a workflow. |
-| `hypagraph_read` | Read the canonical state and the ready nodes. |
+| `hypagraph_read` | Read the projected state and ready nodes. |
 | `hypagraph_transition` | Start, complete, block, or unblock a node. |
-| `hypagraph_revise` | Replace the graph and preserve valid completed work. |
+| `hypagraph_revise` | Replace the graph and invalidate changed work. |
 
 ## Design documents
 
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
+- [Event-driven runtime](docs/event-runtime.md)
 - [Graph visualization and delegated execution architecture](docs/delegation-and-visualisation.md)
 - [Pi workflow comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
