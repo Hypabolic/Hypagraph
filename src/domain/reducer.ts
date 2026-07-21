@@ -9,6 +9,8 @@ import type {
   ReducerResult,
 } from "./model.js";
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
+import type { PublishedFact } from "./facts.js";
+import { validatePublishedFact } from "./facts.js";
 import { applyEvent, replayEvents } from "./projection.js";
 import { dependenciesAreSatisfied } from "./readiness.js";
 import { buildOutgoing } from "./scc.js";
@@ -111,6 +113,18 @@ const invalidatedNodes = (previous: HypagraphDefinition, next: HypagraphDefiniti
   return changed;
 };
 
+const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptId: string): string[] => {
+  const definition = state.definition.nodes.find((item) => item.id === nodeId);
+  if (!definition) return [];
+  return (definition.produces ?? [])
+    .filter((contract) => contract.required)
+    .filter((contract) => {
+      const fact = state.runtime.facts[contract.name];
+      return !fact || fact.producerNodeId !== nodeId || fact.attemptId !== attemptId || fact.revision !== state.revision;
+    })
+    .map((contract) => contract.name);
+};
+
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
   if (state.phase === "completed" || state.phase === "failed" || state.phase === "cancelled") {
     return reject("terminal_workflow", `The workflow is ${state.phase}.`);
@@ -151,6 +165,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
 
   const node = state.runtime.nodes[command.nodeId];
   if (!node) return reject("unknown_node", `Unknown node '${command.nodeId}'.`, "nodeId");
+  const definitionNode = state.definition.nodes.find((item) => item.id === command.nodeId)!;
 
   switch (command.type) {
     case "start-node": {
@@ -166,6 +181,48 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         nodeId: command.nodeId,
         attemptId: command.attemptId,
       });
+      break;
+    }
+    case "publish-facts": {
+      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) {
+        return reject("stale_fact_attempt", "The facts do not match the current attempt.");
+      }
+      if (!["running", "awaiting_evidence", "verifying"].includes(node.status)) {
+        return reject("fact_publication_not_allowed", `Node '${command.nodeId}' cannot publish facts from '${node.status}'.`);
+      }
+      if (command.facts.length === 0) return reject("facts_required", "Publish at least one fact.");
+      if (new Set(command.facts.map((fact) => fact.name)).size !== command.facts.length) {
+        return reject("duplicate_fact_input", "A publication command must not contain the same fact more than one time.");
+      }
+
+      const validated: PublishedFact[] = [];
+      for (const input of command.facts) {
+        const fact: PublishedFact = {
+          name: input.name,
+          type: input.type,
+          value: structuredClone(input.value),
+          producerNodeId: command.nodeId,
+          attemptId: command.attemptId,
+          revision: state.revision,
+          evidence: structuredClone(input.evidence ?? []),
+        };
+        const result = validatePublishedFact(fact, {
+          contracts: definitionNode.produces ?? [],
+          currentRevision: state.revision,
+          currentAttemptId: command.attemptId,
+        });
+        if (!result.ok) return reject(result.code, result.message, `facts.${input.name}`);
+        validated.push(result.fact);
+      }
+
+      for (const fact of validated) {
+        next = append(next, events, command, {
+          type: "hypagraph.fact.published",
+          nodeId: command.nodeId,
+          attemptId: command.attemptId,
+          data: { fact: structuredClone(fact) },
+        });
+      }
       break;
     }
     case "submit-result": {
@@ -197,6 +254,10 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     case "complete-verification": {
       if (node.status !== "verifying" || node.currentAttemptId !== command.attemptId) {
         return reject("attempt_not_verifying", "The current attempt is not in verification.");
+      }
+      if (command.passed) {
+        const missing = requiredFactsArePresent(state, command.nodeId, command.attemptId);
+        if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
       }
       next = append(next, events, command, {
         type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed",
