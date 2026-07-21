@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { WorkGraphDefinition, WorkGraphState } from "./domain/model.js";
-import { createWorkflow, reduceWorkGraph } from "./domain/reducer.js";
+import type { HypagraphDefinition, HypagraphState } from "./domain/model.js";
+import { createWorkflow, reduceHypagraph } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { restoreLatestSnapshot } from "./persistence/session-rebuild.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 
 const nodeSchema = Type.Object({
-  id: Type.String({ description: "Stable lowercase node id" }),
+  id: Type.String({ description: "Stable lowercase node ID" }),
   title: Type.String(),
   description: Type.Optional(Type.String()),
   requires: Type.Optional(Type.Array(Type.String())),
@@ -42,14 +42,14 @@ const definitionSchema = Type.Object({
 });
 
 const evidenceSchema = Type.Object({
-  ref: Type.String({ description: "Concrete tool-call, command, file, approval, or event reference" }),
+  ref: Type.String({ description: "Tool call, command, file, approval, or event reference" }),
   kind: Type.Optional(StringEnum(["tool", "command", "file", "approval", "note"] as const)),
   summary: Type.Optional(Type.String()),
 });
 
-export type WorkgraphDefineInput = Static<typeof definitionSchema>;
+export type HypagraphDefineInput = Static<typeof definitionSchema>;
 
-function normalizeDefinition(input: WorkgraphDefineInput): WorkGraphDefinition {
+function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefinition {
   return {
     title: input.title.trim(),
     goal: input.goal.trim(),
@@ -78,9 +78,9 @@ function normalizeDefinition(input: WorkgraphDefineInput): WorkGraphDefinition {
   };
 }
 
-const textResult = (text: string, state: WorkGraphState) => ({
+const textResult = (text: string, state: HypagraphState) => ({
   content: [{ type: "text" as const, text }],
-  details: { workgraph: state },
+  details: { hypagraph: state },
 });
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
@@ -112,7 +112,7 @@ const scopeAllows = (cwd: string, candidatePath: string, patterns: readonly stri
   return patterns.some((pattern) => patternToRegExp(pattern).test(local));
 };
 
-function updateUi(state: WorkGraphState | undefined, ctx: ExtensionContext): void {
+function updateUi(state: HypagraphState | undefined, ctx: ExtensionContext): void {
   if (!state) {
     ctx.ui.setStatus("hypagraph", undefined);
     ctx.ui.setWidget("hypagraph", undefined);
@@ -124,7 +124,7 @@ function updateUi(state: WorkGraphState | undefined, ctx: ExtensionContext): voi
 }
 
 export default function hypagraphExtension(pi: ExtensionAPI): void {
-  let state: WorkGraphState | undefined;
+  let state: HypagraphState | undefined;
 
   const restore = (ctx: ExtensionContext): void => {
     state = restoreLatestSnapshot(ctx.sessionManager.getBranch());
@@ -139,7 +139,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     const ready = readyNodeIds(state);
     const active = state.definition.nodes.find((node) => state!.runtime.nodes[node.id]?.status === "active");
     return {
-      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse workgraph_transition before starting work and after completing or blocking it. Work on only the active node. Do not claim completion without concrete evidence references. Ready nodes are [${ready.join(", ")}].${active ? ` The only active node is '${active.id}'.` : " Start one ready node before mutating the repository."}`,
+      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse hypagraph_transition before you start work and after you complete or block work. Work only on the active node. Give concrete evidence references before you claim completion. Ready nodes are [${ready.join(", ")}].${active ? ` The only active node is '${active.id}'.` : " Start one ready node before you change the repository."}`,
     };
   });
 
@@ -147,51 +147,51 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (!state || state.definition.policy.mode !== "strict") return;
     if (event.toolName !== "write" && event.toolName !== "edit") return;
     const active = state.definition.nodes.find((node) => state!.runtime.nodes[node.id]?.status === "active");
-    if (!active) return { block: true, reason: "Hypagraph strict mode: start a ready node before mutating files." };
+    if (!active) return { block: true, reason: "Hypagraph strict mode: Start a ready node before you change files." };
     const input = event.input as { path?: unknown };
-    if (typeof input.path !== "string") return { block: true, reason: "Hypagraph strict mode: file mutation has no inspectable path." };
+    if (typeof input.path !== "string") return { block: true, reason: "Hypagraph strict mode: The file operation has no path." };
     const paths = active.scope?.paths ?? [];
-    if (paths.length === 0) return { block: true, reason: `Hypagraph strict mode: active node '${active.id}' declares no writable scope.` };
+    if (paths.length === 0) return { block: true, reason: `Hypagraph strict mode: Active node '${active.id}' has no writable scope.` };
     if (!scopeAllows(ctx.cwd, input.path, paths)) {
-      return { block: true, reason: `Hypagraph strict mode: '${input.path}' is outside node '${active.id}' scope [${paths.join(", ")}].` };
+      return { block: true, reason: `Hypagraph strict mode: '${input.path}' is outside the scope of node '${active.id}' [${paths.join(", ")}].` };
     }
   });
 
   pi.registerTool({
-    name: "workgraph_define",
+    name: "hypagraph_define",
     label: "Define Hypagraph",
-    description: "Define and validate a directed coding workflow. Cycles are rejected unless they exactly match a bounded loop declaration.",
+    description: "Define and validate a directed coding workflow. Hypagraph rejects a cycle unless it is an exact bounded loop.",
     promptSnippet: "Define a validated directed workflow before multi-step coding work",
-    promptGuidelines: ["Use workgraph_define for multi-step coding work that benefits from explicit dependencies and completion evidence."],
+    promptGuidelines: ["Use hypagraph_define for multi-step coding work that needs explicit dependencies and completion evidence."],
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID());
       if (!result.ok) return throwDiagnostics(result.diagnostics);
       state = result.state;
       updateUi(state, ctx);
-      return textResult(`${renderWorkflow(state)}\n\nDefinition accepted.`, state);
+      return textResult(`${renderWorkflow(state)}\n\nHypagraph accepted the definition.`, state);
     },
   });
 
   pi.registerTool({
-    name: "workgraph_read",
+    name: "hypagraph_read",
     label: "Read Hypagraph",
-    description: "Read the canonical workflow, active node, ready frontier, and statuses.",
-    promptSnippet: "Read current Hypagraph state and ready nodes",
+    description: "Read the workflow, active node, ready nodes, and node states.",
+    promptSnippet: "Read the current Hypagraph state and ready nodes",
     parameters: Type.Object({ view: Type.Optional(StringEnum(["summary", "full"] as const)) }),
     async execute(_toolCallId, params) {
-      if (!state) throw new Error("No active Hypagraph. Call workgraph_define first.");
+      if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
       const text = params.view === "full" ? renderWorkflow(state) : JSON.stringify(workflowSummary(state), null, 2);
       return textResult(text, state);
     },
   });
 
   pi.registerTool({
-    name: "workgraph_transition",
+    name: "hypagraph_transition",
     label: "Transition Hypagraph Node",
-    description: "Start, complete, block, or unblock one node. Dependency, single-active-node, and evidence rules are enforced.",
-    promptSnippet: "Transition a Hypagraph node through an enforced state machine",
-    promptGuidelines: ["Call workgraph_transition(action=start) before working on a node and workgraph_transition(action=complete) with concrete evidence afterward."],
+    description: "Start, complete, block, or unblock one node. Hypagraph enforces dependencies, one active node, and evidence rules.",
+    promptSnippet: "Move a Hypagraph node through its state machine",
+    promptGuidelines: ["Call hypagraph_transition with action=start before you work on a node. Call it with action=complete and concrete evidence after the work."],
     parameters: Type.Object({
       nodeId: Type.String(),
       action: StringEnum(["start", "complete", "block", "unblock"] as const),
@@ -199,8 +199,8 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       reason: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!state) throw new Error("No active Hypagraph. Call workgraph_define first.");
-      const result = reduceWorkGraph(state, {
+      if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
+      const result = reduceHypagraph(state, {
         type: "transition",
         nodeId: params.nodeId,
         action: params.action,
@@ -216,14 +216,14 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "workgraph_revise",
+    name: "hypagraph_revise",
     label: "Revise Hypagraph",
-    description: "Replace the graph definition while preserving unchanged completed work and invalidating changed nodes plus downstream dependents.",
-    promptSnippet: "Revise a Hypagraph with downstream invalidation",
+    description: "Replace the graph definition. Preserve completed work that did not change. Mark changed nodes and their dependents as stale.",
+    promptSnippet: "Revise a Hypagraph and invalidate downstream work",
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!state) throw new Error("No active Hypagraph. Call workgraph_define first.");
-      const result = reduceWorkGraph(state, {
+      if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
+      const result = reduceHypagraph(state, {
         type: "revise",
         definition: normalizeDefinition(params),
         at: new Date().toISOString(),
@@ -231,7 +231,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       if (!result.ok) return throwDiagnostics(result.diagnostics);
       state = result.state;
       updateUi(state, ctx);
-      return textResult(`${renderWorkflow(state)}\n\nRevision accepted.`, state);
+      return textResult(`${renderWorkflow(state)}\n\nHypagraph accepted the revision.`, state);
     },
   });
 
@@ -239,18 +239,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     description: "Show the active Hypagraph status",
     handler: async (_args, ctx) => {
       if (!state) {
-        ctx.ui.notify("No active Hypagraph.", "info");
-        return;
-      }
-      ctx.ui.notify(renderWorkflow(state), "info");
-    },
-  });
-
-  pi.registerCommand("workgraph", {
-    description: "Compatibility alias for /hypagraph",
-    handler: async (_args, ctx) => {
-      if (!state) {
-        ctx.ui.notify("No active Hypagraph.", "info");
+        ctx.ui.notify("There is no active Hypagraph.", "info");
         return;
       }
       ctx.ui.notify(renderWorkflow(state), "info");
