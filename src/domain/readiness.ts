@@ -6,20 +6,22 @@ export function feedbackEdgeKeys(state: HypagraphState): Set<string> {
   );
 }
 
-export function isNodeReady(state: HypagraphState, nodeId: string): boolean {
+export function dependenciesAreSatisfied(state: HypagraphState, nodeId: string): boolean {
   const node = state.definition.nodes.find((candidate) => candidate.id === nodeId);
-  const runtime = state.runtime.nodes[nodeId];
-  if (!node || !runtime || (runtime.status !== "pending" && runtime.status !== "stale")) return false;
-
+  if (!node) return false;
   const feedback = feedbackEdgeKeys(state);
   return node.requires.every((required) => {
     if (feedback.has(`${required}\u0000${node.id}`)) return true;
-    return state.runtime.nodes[required]?.status === "completed";
+    return state.runtime.nodes[required]?.status === "succeeded";
   });
+}
+
+export function isNodeReady(state: HypagraphState, nodeId: string): boolean {
+  return state.runtime.nodes[nodeId]?.status === "ready";
 }
 
 export function readyNodeIds(state: HypagraphState): string[] {
   return state.definition.nodes
-    .filter((node) => isNodeReady(state, node.id))
+    .filter((node) => state.runtime.nodes[node.id]?.status === "ready")
     .map((node) => node.id);
 }
