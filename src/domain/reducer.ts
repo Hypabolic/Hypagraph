@@ -3,14 +3,14 @@ import { sha256 } from "./hash.js";
 import type {
   Diagnostic,
   DomainEvent,
+  HypagraphCommand,
+  HypagraphDefinition,
+  HypagraphState,
   NodeDefinition,
   NodeRuntime,
   ReducerResult,
-  WorkGraphCommand,
-  WorkGraphDefinition,
-  WorkGraphState,
 } from "./model.js";
-import { WORKGRAPH_SCHEMA_VERSION } from "./model.js";
+import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 import { isNodeReady, readyNodeIds } from "./readiness.js";
 import { buildOutgoing } from "./scc.js";
 import { validateDefinition } from "./validate.js";
@@ -22,12 +22,12 @@ const diagnostic = (code: string, message: string, location?: string): ReducerRe
 
 const definitionFingerprint = (node: NodeDefinition): string => sha256(node);
 
-const withSnapshotHash = (state: Omit<WorkGraphState, "snapshotHash">): WorkGraphState => ({
+const withSnapshotHash = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
   ...state,
   snapshotHash: sha256(state),
 });
 
-const phaseFor = (state: WorkGraphState): WorkGraphState["phase"] => {
+const phaseFor = (state: HypagraphState): HypagraphState["phase"] => {
   const runtimes = Object.values(state.runtime.nodes);
   if (runtimes.length > 0 && runtimes.every((runtime) => runtime.status === "completed")) return "completed";
   if (runtimes.some((runtime) => runtime.status === "active")) return "running";
@@ -36,9 +36,9 @@ const phaseFor = (state: WorkGraphState): WorkGraphState["phase"] => {
   return "running";
 };
 
-const finalize = (state: WorkGraphState): WorkGraphState => {
+const finalize = (state: HypagraphState): HypagraphState => {
   const phase = phaseFor(state);
-  const withoutHash: Omit<WorkGraphState, "snapshotHash"> = {
+  const withoutHash: Omit<HypagraphState, "snapshotHash"> = {
     schemaVersion: state.schemaVersion,
     workflowId: state.workflowId,
     revision: state.revision,
@@ -52,7 +52,7 @@ const finalize = (state: WorkGraphState): WorkGraphState => {
 };
 
 export function createWorkflow(
-  definition: WorkGraphDefinition,
+  definition: HypagraphDefinition,
   at: string,
   workflowId: string = randomUUID(),
 ): ReducerResult {
@@ -65,7 +65,7 @@ export function createWorkflow(
   }
 
   const state = finalize(withSnapshotHash({
-    schemaVersion: WORKGRAPH_SCHEMA_VERSION,
+    schemaVersion: HYPAGRAPH_SCHEMA_VERSION,
     workflowId,
     revision: 1,
     phase: "running",
@@ -74,12 +74,12 @@ export function createWorkflow(
     createdAt: at,
     updatedAt: at,
   }));
-  return { ok: true, state, events: [{ type: "workgraph.workflow.defined" }] };
+  return { ok: true, state, events: [{ type: "hypagraph.workflow.defined" }] };
 }
 
 const invalidatedNodes = (
-  previous: WorkGraphDefinition,
-  next: WorkGraphDefinition,
+  previous: HypagraphDefinition,
+  next: HypagraphDefinition,
 ): Set<string> => {
   const previousById = new Map(previous.nodes.map((node) => [node.id, node]));
   const changed = new Set<string>();
@@ -102,13 +102,13 @@ const invalidatedNodes = (
   return changed;
 };
 
-function revise(state: WorkGraphState, definition: WorkGraphDefinition, at: string): ReducerResult {
+function revise(state: HypagraphState, definition: HypagraphDefinition, at: string): ReducerResult {
   const diagnostics = validateDefinition(definition);
   if (diagnostics.length > 0) return { ok: false, diagnostics };
 
   const invalidated = invalidatedNodes(state.definition, definition);
   const nodes: Record<string, NodeRuntime> = {};
-  const events: DomainEvent[] = [{ type: "workgraph.workflow.revised" }];
+  const events: DomainEvent[] = [{ type: "hypagraph.workflow.revised" }];
 
   for (const node of definition.nodes) {
     const previous = state.runtime.nodes[node.id];
@@ -122,7 +122,7 @@ function revise(state: WorkGraphState, definition: WorkGraphDefinition, at: stri
     }
     const status = previous.status === "completed" ? "stale" : "pending";
     nodes[node.id] = { status, attempt: previous.attempt, evidence: [] };
-    if (status === "stale") events.push({ type: "workgraph.node.stale", nodeId: node.id });
+    if (status === "stale") events.push({ type: "hypagraph.node.stale", nodeId: node.id });
   }
 
   const revised = finalize({
@@ -137,8 +137,8 @@ function revise(state: WorkGraphState, definition: WorkGraphDefinition, at: stri
 }
 
 function transition(
-  state: WorkGraphState,
-  command: Extract<WorkGraphCommand, { type: "transition" }>,
+  state: HypagraphState,
+  command: Extract<HypagraphCommand, { type: "transition" }>,
 ): ReducerResult {
   const node = state.definition.nodes.find((candidate) => candidate.id === command.nodeId);
   const current = state.runtime.nodes[command.nodeId];
@@ -169,7 +169,7 @@ function transition(
       runtime.attempt += 1;
       runtime.startedAt = command.at;
       delete runtime.blockedReason;
-      events.push({ type: "workgraph.node.started", nodeId: command.nodeId, data: { attempt: runtime.attempt } });
+      events.push({ type: "hypagraph.node.started", nodeId: command.nodeId, data: { attempt: runtime.attempt } });
       break;
     }
     case "complete": {
@@ -181,7 +181,7 @@ function transition(
       runtime.status = "completed";
       runtime.evidence = structuredClone(evidence);
       runtime.completedAt = command.at;
-      events.push({ type: "workgraph.node.completed", nodeId: command.nodeId, data: { evidenceCount: evidence.length } });
+      events.push({ type: "hypagraph.node.completed", nodeId: command.nodeId, data: { evidenceCount: evidence.length } });
       break;
     }
     case "block": {
@@ -191,14 +191,14 @@ function transition(
       if (!command.reason?.trim()) return diagnostic("block_reason_required", "Blocking a node requires a reason.", "reason");
       runtime.status = "blocked";
       runtime.blockedReason = command.reason.trim();
-      events.push({ type: "workgraph.node.blocked", nodeId: command.nodeId, data: { reason: runtime.blockedReason } });
+      events.push({ type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: runtime.blockedReason } });
       break;
     }
     case "unblock": {
       if (current.status !== "blocked") return diagnostic("node_not_blocked", `Node '${command.nodeId}' is not blocked.`);
       runtime.status = "pending";
       delete runtime.blockedReason;
-      events.push({ type: "workgraph.node.unblocked", nodeId: command.nodeId });
+      events.push({ type: "hypagraph.node.unblocked", nodeId: command.nodeId });
       break;
     }
   }
@@ -206,17 +206,17 @@ function transition(
   next.updatedAt = command.at;
   const finalized = finalize(next);
   if (finalized.phase === "completed") {
-    events.push({ type: "workgraph.workflow.completed" });
+    events.push({ type: "hypagraph.workflow.completed" });
   }
   return { ok: true, state: finalized, events };
 }
 
-export function reduceWorkGraph(state: WorkGraphState, command: WorkGraphCommand): ReducerResult {
+export function reduceHypagraph(state: HypagraphState, command: HypagraphCommand): ReducerResult {
   if (command.type === "revise") return revise(state, command.definition, command.at);
   return transition(state, command);
 }
 
-export function assertValid(result: ReducerResult): WorkGraphState {
+export function assertValid(result: ReducerResult): HypagraphState {
   if (result.ok) return result.state;
   throw new Error(result.diagnostics.map((item: Diagnostic) => `${item.code}: ${item.message}`).join("\n"));
 }
