@@ -1,4 +1,4 @@
-import type { Diagnostic, WorkGraphState } from "../domain/model.js";
+import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 
 export function formatDiagnostics(diagnostics: readonly Diagnostic[]): string {
@@ -7,7 +7,7 @@ export function formatDiagnostics(diagnostics: readonly Diagnostic[]): string {
     .join("\n");
 }
 
-export function workflowSummary(state: WorkGraphState): Record<string, unknown> {
+export function workflowSummary(state: HypagraphState): Record<string, unknown> {
   const counts: Record<string, number> = {};
   for (const runtime of Object.values(state.runtime.nodes)) counts[runtime.status] = (counts[runtime.status] ?? 0) + 1;
   return {
@@ -29,10 +29,10 @@ export function workflowSummary(state: WorkGraphState): Record<string, unknown> 
   };
 }
 
-export function renderWorkflow(state: WorkGraphState): string {
+export function renderWorkflow(state: HypagraphState): string {
   const summary = workflowSummary(state);
   const lines = [
-    `${state.definition.title} — ${state.phase} (revision ${state.revision})`,
+    `${state.definition.title} - ${state.phase} (revision ${state.revision})`,
     `Goal: ${state.definition.goal}`,
     `Active: ${String(summary.active ?? "none")}`,
     `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,
@@ -40,12 +40,12 @@ export function renderWorkflow(state: WorkGraphState): string {
   ];
   for (const node of state.definition.nodes) {
     const runtime = state.runtime.nodes[node.id]!;
-    lines.push(`- ${node.id}: ${runtime.status} — ${node.title}`);
+    lines.push(`- ${node.id}: ${runtime.status} - ${node.title}`);
   }
   return lines.join("\n");
 }
 
-export function renderWidget(state: WorkGraphState): string[] {
+export function renderWidget(state: HypagraphState): string[] {
   const active = state.definition.nodes.find((node) => state.runtime.nodes[node.id]?.status === "active");
   const ready = readyNodeIds(state);
   return [
