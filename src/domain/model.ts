@@ -1,3 +1,5 @@
+import type { FactContract, FactRecord, FactType, FactValue } from "./facts.js";
+
 export const HYPAGRAPH_SCHEMA_VERSION = 2 as const;
 export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
@@ -29,6 +31,7 @@ export interface NodeDefinition {
   description?: string;
   requires: string[];
   acceptance: string[];
+  produces?: FactContract[];
   scope?: { paths: string[] };
 }
 
@@ -85,7 +88,10 @@ export interface HypagraphState {
   sequence: number;
   phase: WorkflowPhase;
   definition: HypagraphDefinition;
-  runtime: { nodes: Record<string, NodeRuntime> };
+  runtime: {
+    nodes: Record<string, NodeRuntime>;
+    facts: Record<string, FactRecord>;
+  };
   createdAt: string;
   updatedAt: string;
   snapshotHash: string;
@@ -111,6 +117,7 @@ export type EventType =
   | "hypagraph.node.unblocked"
   | "hypagraph.attempt.started"
   | "hypagraph.attempt.result-submitted"
+  | "hypagraph.fact.published"
   | "hypagraph.verification.started"
   | "hypagraph.verification.passed"
   | "hypagraph.verification.failed"
@@ -137,9 +144,17 @@ interface CommandBase {
   at: string;
 }
 
+export interface FactInput {
+  name: string;
+  type: FactType;
+  value: FactValue;
+  evidence?: EvidenceReference[];
+}
+
 export type HypagraphCommand =
   | (CommandBase & { type: "revise"; definition: HypagraphDefinition })
   | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
   | (CommandBase & { type: "begin-verification"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "complete-verification"; nodeId: string; attemptId: string; passed: boolean; reason?: string })
