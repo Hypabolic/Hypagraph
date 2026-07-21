@@ -7,12 +7,7 @@ const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState 
   snapshotHash: sha256(state),
 });
 
-const emptyNode = (): NodeRuntime => ({
-  status: "pending",
-  attemptCount: 0,
-  attempts: {},
-  evidence: [],
-});
+const emptyNode = (): NodeRuntime => ({ status: "pending", attemptCount: 0, attempts: {}, evidence: [] });
 
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
@@ -21,6 +16,11 @@ const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState =
   else if (nodes.some((node) => node.status === "blocked") && !nodes.some((node) => ["ready", "running", "verifying", "awaiting_evidence"].includes(node.status))) phase = "blocked";
   else if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") phase = "running";
   return hashState({ ...state, phase });
+};
+
+const withoutHash = (state: HypagraphState): Omit<HypagraphState, "snapshotHash"> => {
+  const { snapshotHash: _snapshotHash, ...rest } = state;
+  return rest;
 };
 
 export function applyEvent(state: HypagraphState | undefined, event: DomainEvent): HypagraphState {
@@ -47,7 +47,6 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
   next.sequence = event.sequence;
   next.revision = event.revision;
   next.updatedAt = event.timestamp;
-
   const node = event.nodeId ? next.runtime.nodes[event.nodeId] : undefined;
   const attempt = node && event.attemptId ? node.attempts[event.attemptId] : undefined;
 
@@ -56,9 +55,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.definition = event.data.definition as HypagraphState["definition"];
       const retained = next.runtime.nodes;
       next.runtime.nodes = {};
-      for (const definitionNode of next.definition.nodes) {
-        next.runtime.nodes[definitionNode.id] = retained[definitionNode.id] ?? emptyNode();
-      }
+      for (const definitionNode of next.definition.nodes) next.runtime.nodes[definitionNode.id] = retained[definitionNode.id] ?? emptyNode();
       break;
     }
     case "hypagraph.workflow.paused": next.phase = "paused"; break;
@@ -69,7 +66,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.node.invalidated":
       if (node) {
         node.status = "stale";
-        node.currentAttemptId = undefined;
+        delete node.currentAttemptId;
         node.evidence = [];
       }
       break;
@@ -82,18 +79,12 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.node.unblocked":
       if (node) {
         node.status = "pending";
-        node.blockedReason = undefined;
+        delete node.blockedReason;
       }
       break;
     case "hypagraph.attempt.started":
       if (node && event.attemptId) {
-        const value: AttemptRuntime = {
-          attemptId: event.attemptId,
-          number: node.attemptCount + 1,
-          status: "running",
-          startedAt: event.timestamp,
-          evidence: [],
-        };
+        const value: AttemptRuntime = { attemptId: event.attemptId, number: node.attemptCount + 1, status: "running", startedAt: event.timestamp, evidence: [] };
         node.attemptCount += 1;
         node.currentAttemptId = event.attemptId;
         node.attempts[event.attemptId] = value;
@@ -135,12 +126,12 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       if (node && attempt) {
         attempt.status = "cancelled";
         attempt.completedAt = event.timestamp;
-        attempt.failureReason = typeof event.data.reason === "string" ? event.data.reason : undefined;
+        if (typeof event.data.reason === "string") attempt.failureReason = event.data.reason;
         node.status = "cancelled";
       }
       break;
   }
-  return finalise({ ...next, snapshotHash: undefined } as unknown as Omit<HypagraphState, "snapshotHash">);
+  return finalise(withoutHash(next));
 }
 
 export function replayEvents(events: readonly DomainEvent[]): HypagraphState {
