@@ -1,4 +1,5 @@
 import { sha256 } from "./hash.js";
+import type { FactRecord } from "./facts.js";
 import type { AttemptRuntime, DomainEvent, HypagraphState, NodeRuntime } from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 
@@ -34,7 +35,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       sequence: event.sequence,
       phase: "running",
       definition,
-      runtime: { nodes },
+      runtime: { nodes, facts: {} },
       createdAt: event.timestamp,
       updatedAt: event.timestamp,
     });
@@ -68,6 +69,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.status = "stale";
         delete node.currentAttemptId;
         node.evidence = [];
+        for (const [name, fact] of Object.entries(next.runtime.facts)) {
+          if (fact.producerNodeId === event.nodeId) delete next.runtime.facts[name];
+        }
       }
       break;
     case "hypagraph.node.blocked":
@@ -89,6 +93,16 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.currentAttemptId = event.attemptId;
         node.attempts[event.attemptId] = value;
         node.status = "running";
+      }
+      break;
+    case "hypagraph.fact.published":
+      if (event.nodeId && event.attemptId) {
+        const fact = event.data.fact as Omit<FactRecord, "eventId" | "sequence">;
+        next.runtime.facts[fact.name] = {
+          ...structuredClone(fact),
+          eventId: event.eventId,
+          sequence: event.sequence,
+        };
       }
       break;
     case "hypagraph.attempt.result-submitted":
