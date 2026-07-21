@@ -1,4 +1,4 @@
-import type { WorkGraphState } from "../domain/model.js";
+import { HYPAGRAPH_SCHEMA_VERSION, type HypagraphState } from "../domain/model.js";
 
 interface ToolResultEntry {
   type: "message";
@@ -6,7 +6,7 @@ interface ToolResultEntry {
     role: "toolResult";
     toolName: string;
     details?: {
-      workgraph?: unknown;
+      hypagraph?: unknown;
     };
   };
 }
@@ -17,10 +17,10 @@ const isToolResultEntry = (entry: unknown): entry is ToolResultEntry => {
   return candidate.type === "message" && candidate.message?.role === "toolResult";
 };
 
-export function isWorkGraphState(value: unknown): value is WorkGraphState {
+export function isHypagraphState(value: unknown): value is HypagraphState {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<WorkGraphState>;
-  return candidate.schemaVersion === 1
+  const candidate = value as Partial<HypagraphState>;
+  return candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION
     && typeof candidate.workflowId === "string"
     && typeof candidate.revision === "number"
     && typeof candidate.snapshotHash === "string"
@@ -28,14 +28,14 @@ export function isWorkGraphState(value: unknown): value is WorkGraphState {
     && !!candidate.runtime;
 }
 
-/** Rebuilds the latest state from the active session branch, never from abandoned siblings. */
-export function restoreLatestSnapshot(entries: readonly unknown[]): WorkGraphState | undefined {
-  let latest: WorkGraphState | undefined;
+/** Get the newest state from the active session branch. Do not use abandoned sibling branches. */
+export function restoreLatestSnapshot(entries: readonly unknown[]): HypagraphState | undefined {
+  let latest: HypagraphState | undefined;
   for (const entry of entries) {
     if (!isToolResultEntry(entry)) continue;
-    if (!entry.message.toolName.startsWith("workgraph_")) continue;
-    const snapshot = entry.message.details?.workgraph;
-    if (isWorkGraphState(snapshot)) latest = structuredClone(snapshot);
+    if (!entry.message.toolName.startsWith("hypagraph_")) continue;
+    const snapshot = entry.message.details?.hypagraph;
+    if (isHypagraphState(snapshot)) latest = structuredClone(snapshot);
   }
   return latest;
 }
