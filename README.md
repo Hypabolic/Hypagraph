@@ -1,42 +1,52 @@
 # Hypagraph
 
-A graph-native workflow and execution-control extension for coding agents, initially integrated with the [Pi coding agent](https://pi.dev).
+Hypagraph is a graph-native workflow and execution-control extension for coding agents. The first integration is for the Pi coding agent.
 
-Hypagraph lets an agent define coding work as a directed graph, then guides and enforces execution using dependencies, node contracts, evidence, bounded loop declarations, branch-aware session state, and pluggable node executors.
+Hypagraph lets an agent define coding work as a directed graph. It then controls execution with dependencies, node contracts, evidence, bounded loop declarations, branch-aware session state, and pluggable node executors.
 
-## Current implementation
+## M0 baseline
 
-The initial vertical slice includes:
+M0 provides a stable graph foundation.
 
-- installable Pi package and bundled Hypagraph skill;
-- `workgraph_define`, `workgraph_read`, `workgraph_transition`, and `workgraph_revise` tools;
-- a pure, tested state reducer with one-active-node enforcement;
-- dependency-derived readiness and evidence-gated completion;
-- Tarjan SCC detection and exact loop-region validation;
-- bounded-loop declarations with explicit feedback edges;
+The baseline includes:
+
+- an installable Pi package and a bundled Hypagraph skill;
+- the `hypagraph_define`, `hypagraph_read`, `hypagraph_transition`, and `hypagraph_revise` tools;
+- one public Pi command, `/hypagraph`;
+- a pure state reducer;
+- one-active-node enforcement;
+- dependency-based readiness;
+- evidence-gated completion;
+- Tarjan strongly connected component detection;
+- exact loop-region validation;
+- bounded loop declarations with explicit feedback edges;
 - downstream invalidation after graph revisions;
 - branch-aware restoration from tool-result snapshots;
-- compact Pi status/widget context;
-- guided mode plus strict write/edit scope enforcement.
+- a versioned persisted state schema;
+- deterministic state hashes;
+- strict file-scope enforcement;
+- property tests for generated directed acyclic graphs;
+- tests for reducer determinism, input immutability, schema rejection, and persistence restoration.
 
-Loop execution, gate expression evaluation, check runners, full in-Pi graph visualisation, and delegated node execution are planned next. Loop declarations are already structurally validated but are not yet iterated.
+Loop execution, gate expression evaluation, check runners, full graph visualization in Pi, and delegated node execution are not part of M0.
 
-## Roadmap
+## Language rules
 
-Hypagraph is evolving from a graph-aware planning extension into a deterministic execution kernel for coding agents. The graph describes work; an event-driven finite-state runtime controls how that work executes.
+All repository text must use the ASD-STE100 Simplified Technical English writing method.
 
-See the [detailed execution plan and roadmap](docs/execution-roadmap.md) for the ordered milestones, architecture, acceptance criteria, implementation backlog, and v1.0 exit conditions.
+This rule applies to documentation, plans, comments, test descriptions, error messages, user interface text, and tool guidance.
 
-## Try locally
+See [AGENTS.md](AGENTS.md) for the mandatory rules.
+
+## Run Hypagraph locally
 
 ```bash
 npm install
-npm test
-npm run typecheck
-pi -e ./extensions/workgraph.ts
+npm run check
+pi -e ./extensions/hypagraph.ts
 ```
 
-Install from Git:
+Install the package from GitHub:
 
 ```bash
 pi install git:github.com/Hypabolic/Hypagraph
@@ -44,18 +54,17 @@ pi install git:github.com/Hypabolic/Hypagraph
 
 ## Commands and tools
 
-The primary Pi command is `/hypagraph`. `/workgraph` remains as a compatibility alias.
-
-| Tool | Purpose |
+| Name | Purpose |
 | --- | --- |
-| `workgraph_define` | Validate and create a workflow |
-| `workgraph_read` | Read canonical state and the ready frontier |
-| `workgraph_transition` | Start, complete, block, or unblock a node |
-| `workgraph_revise` | Replace the graph while preserving valid completed work |
+| `/hypagraph` | Show the active workflow state. |
+| `hypagraph_define` | Validate and create a workflow. |
+| `hypagraph_read` | Read the canonical state and the ready nodes. |
+| `hypagraph_transition` | Start, complete, block, or unblock a node. |
+| `hypagraph_revise` | Replace the graph and preserve valid completed work. |
 
 ## Design documents
 
-- [Execution plan and roadmap](docs/execution-roadmap.md)
 - [Product and technical specification](docs/product-spec.md)
-- [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)
-- [`pi-workflows` comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
+- [Execution plan and roadmap](docs/execution-roadmap.md)
+- [Graph visualization and delegated execution architecture](docs/delegation-and-visualisation.md)
+- [Pi workflow comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
