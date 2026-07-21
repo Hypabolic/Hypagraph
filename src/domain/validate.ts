@@ -2,6 +2,7 @@ import type { Diagnostic, HypagraphDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const FACT_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 
 const sameSet = (left: readonly string[], right: readonly string[]): boolean => {
   if (left.length !== right.length) return false;
@@ -12,6 +13,7 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
 export function validateDefinition(definition: HypagraphDefinition): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const ids = new Set<string>();
+  const factOwners = new Map<string, string>();
 
   if (!definition.title.trim()) diagnostics.push({ code: "empty_title", message: "The workflow title must not be empty.", location: "title" });
   if (!definition.goal.trim()) diagnostics.push({ code: "empty_goal", message: "The workflow goal must not be empty.", location: "goal" });
@@ -24,6 +26,17 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     ids.add(node.id);
     if (!node.title.trim()) diagnostics.push({ code: "empty_node_title", message: `Node '${node.id}' must have a title.`, location: `${location}.title` });
     if (new Set(node.requires).size !== node.requires.length) diagnostics.push({ code: "duplicate_dependency", message: `Node '${node.id}' has the same dependency more than one time.`, location: `${location}.requires` });
+
+    const localFacts = new Set<string>();
+    (node.produces ?? []).forEach((fact, factIndex) => {
+      const factLocation = `${location}.produces[${factIndex}]`;
+      if (!FACT_PATTERN.test(fact.name)) diagnostics.push({ code: "invalid_fact_name", message: `Fact '${fact.name}' must use a dotted lower-case name.`, location: `${factLocation}.name` });
+      if (localFacts.has(fact.name)) diagnostics.push({ code: "duplicate_fact_contract", message: `Node '${node.id}' declares fact '${fact.name}' more than one time.`, location: `${factLocation}.name` });
+      localFacts.add(fact.name);
+      const owner = factOwners.get(fact.name);
+      if (owner && owner !== node.id) diagnostics.push({ code: "conflicting_fact_producer", message: `Facts '${fact.name}' has producers '${owner}' and '${node.id}'.`, location: `${factLocation}.name` });
+      factOwners.set(fact.name, node.id);
+    });
   });
 
   definition.nodes.forEach((node, index) => {
