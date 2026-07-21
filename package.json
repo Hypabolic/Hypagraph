@@ -17,7 +17,8 @@
     "src",
     "skills",
     "docs",
-    "README.md"
+    "README.md",
+    "AGENTS.md"
   ],
   "scripts": {
     "test": "vitest run",
@@ -27,7 +28,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/workgraph.ts"
+      "./extensions/hypagraph.ts"
     ],
     "skills": [
       "./skills"
