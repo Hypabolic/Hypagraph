@@ -1,13 +1,13 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import type { WorkGraphDefinition } from "../src/domain/model.js";
-import { createWorkflow, reduceWorkGraph } from "../src/domain/reducer.js";
+import type { HypagraphDefinition } from "../src/domain/model.js";
+import { createWorkflow, reduceHypagraph } from "../src/domain/reducer.js";
 import { buildOutgoing, stronglyConnectedComponents } from "../src/domain/scc.js";
 import { validateDefinition } from "../src/domain/validate.js";
 
-const cycleDefinition = (): WorkGraphDefinition => ({
+const cycleDefinition = (): HypagraphDefinition => ({
   title: "Repair loop",
-  goal: "Converge on passing tests",
+  goal: "Make all tests pass",
   nodes: [
     { id: "implement", title: "Implement", requires: ["test"], acceptance: [] },
     { id: "test", title: "Test", requires: ["implement"], acceptance: [] },
@@ -17,12 +17,12 @@ const cycleDefinition = (): WorkGraphDefinition => ({
 });
 
 describe("static graph validation", () => {
-  it("rejects undeclared cycles", () => {
+  it("rejects a cycle that has no loop declaration", () => {
     const diagnostics = validateDefinition(cycleDefinition());
     expect(diagnostics.some((item) => item.code === "undeclared_cycle")).toBe(true);
   });
 
-  it("accepts a bounded loop that exactly matches its SCC", () => {
+  it("accepts a bounded loop that is the same as its cyclic component", () => {
     const definition = cycleDefinition();
     definition.loops = [{
       id: "repair",
@@ -37,8 +37,8 @@ describe("static graph validation", () => {
     expect(validateDefinition(definition)).toEqual([]);
 
     const created = createWorkflow(definition, "2026-07-19T00:00:00.000Z", "loop-workflow");
-    if (!created.ok) throw new Error("failed to create loop fixture");
-    const transition = reduceWorkGraph(created.state, {
+    if (!created.ok) throw new Error("The loop fixture did not start.");
+    const transition = reduceHypagraph(created.state, {
       type: "transition",
       nodeId: "implement",
       action: "start",
@@ -48,7 +48,7 @@ describe("static graph validation", () => {
     if (!transition.ok) expect(transition.diagnostics[0]?.code).toBe("loop_execution_pending");
   });
 
-  it("rejects loop declarations that do not exactly match an SCC", () => {
+  it("rejects a loop that is not the same as one cyclic component", () => {
     const definition = cycleDefinition();
     definition.nodes.push({ id: "report", title: "Report", requires: ["test"], acceptance: [] });
     definition.loops = [{
@@ -63,7 +63,7 @@ describe("static graph validation", () => {
     expect(validateDefinition(definition).some((item) => item.code === "loop_scc_mismatch")).toBe(true);
   });
 
-  it("finds only singleton SCCs in generated index-ordered DAGs", () => {
+  it("finds only one-node components in generated directed acyclic graphs", () => {
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 15 }),
       fc.array(fc.tuple(fc.nat({ max: 14 }), fc.nat({ max: 14 })), { maxLength: 80 }),
