@@ -97,6 +97,7 @@ export interface RouteSelection {
   outcomeId: "true" | "false";
   targetNodeIds: string[];
   factsUsed: string[];
+  semanticsVersion: number;
   eventId: string;
   sequence: number;
 }
