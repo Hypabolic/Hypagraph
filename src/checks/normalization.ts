@@ -30,11 +30,15 @@ const sourceValue = (source: CheckFactSource, result: CheckResult): FactValue | 
   }
 };
 
-const factType = (value: FactValue): FactInput["type"] => {
-  if (typeof value === "boolean") return "boolean";
-  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
-  if (Array.isArray(value)) return "string-list";
-  return "string";
+const sourceType = (source: CheckFactSource): FactInput["type"] => {
+  switch (source) {
+    case "passed":
+    case "timedOut":
+    case "cancelled": return "boolean";
+    case "status": return "string";
+    case "exitCode": return "integer";
+    case "durationMs": return "number";
+  }
 };
 
 export function normalizeCheckResult(request: CheckExecutionRequest, result: CheckResult): CheckNormalizationResult {
@@ -57,7 +61,7 @@ export function normalizeCheckResult(request: CheckExecutionRequest, result: Che
     }
     facts.push({
       name: mapping.fact,
-      type: factType(value),
+      type: sourceType(mapping.source),
       value,
       evidence: structuredClone(result.evidence),
     });
