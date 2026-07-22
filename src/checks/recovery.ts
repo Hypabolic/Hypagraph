@@ -47,6 +47,9 @@ const missingRequiredFacts = (state: HypagraphState, nodeId: string, attemptId: 
 };
 
 const storedResultFailureReason = (result: CheckResult, missingFacts: readonly string[]): string | undefined => {
+  if (result.status === "interrupted") {
+    return result.error?.trim() || "The check was interrupted.";
+  }
   if (missingFacts.length > 0) return `The check did not publish required facts: ${missingFacts.join(", ")}.`;
   if (result.status === "passed") return undefined;
   if (result.error?.trim()) return result.error.trim();
@@ -55,7 +58,6 @@ const storedResultFailureReason = (result: CheckResult, missingFacts: readonly s
     : `The check failed with exit code ${result.exitCode}.`;
   if (result.status === "timed_out") return "The check timed out.";
   if (result.status === "cancelled") return "The check was cancelled.";
-  if (result.status === "interrupted") return "The check was interrupted.";
   return "The check executor returned an error.";
 };
 
