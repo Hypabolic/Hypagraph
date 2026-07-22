@@ -1,15 +1,25 @@
 # M3 completion phase plan
 
-- Status: planned
+- Status: active
 - Milestone: M3
 - Release marker: v0.4
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
 
-This phase makes the completed command-check runtime usable through the Pi product.
+This phase makes the command-check runtime usable through Pi and adds the first graph-native product surface.
 
-Slices 1 to 5 provide the domain model, execution boundary, command runner, result normalization, and automatic lifecycle. These functions are not yet available through the public Pi definition and tool surface.
+Slices 1 to 5 provide the domain model, execution boundary, command runner, result normalization, and automatic lifecycle.
+
+The completion phase adds:
+
+- public Pi check definitions;
+- a Pi check execution tool;
+- a dedicated live graph pane;
+- durable lifecycle commits;
+- interrupted-run recovery;
+- retry and environment policy;
+- product dogfood and the v0.4 release.
 
 Do not start M4 loop execution before this phase is complete.
 
@@ -21,19 +31,24 @@ At the end of this phase, a user can:
 2. Run the check from Pi.
 3. See progress while the check runs.
 4. Cancel the check through the Pi cancellation signal.
-5. Restore the session without running the check again.
-6. See the result, facts, evidence, and output references.
-7. Use the published facts in a deterministic gate.
-8. Retry an interrupted or failed check with a new attempt ID.
+5. Keep a dedicated graph pane open.
+6. See nodes, dependency edges, routes, loops, and runtime state.
+7. Inspect a node without changing canonical state.
+8. Restore the session without running a check again.
+9. See the result, facts, evidence, and output references.
+10. Use published facts in a deterministic gate.
+11. Retry an interrupted or failed check with a new attempt ID.
 
 ## 3. Scope decision
 
-The v0.4 release must close the command-check vertical slice before it adds more parser types.
+The v0.4 release must close the command-check vertical slice and provide a live graph surface before it adds more parser types.
 
 The following work is release-critical:
 
 - Pi definition support;
 - Pi execution support;
+- live graph projection and terminal rendering;
+- a dedicated responsive Pi graph pane;
 - durable state commits;
 - cancellation and interrupted-run handling;
 - user interface output;
@@ -49,7 +64,7 @@ The following adapters move to an M3.1 extension phase unless they reveal a miss
 - file assertions;
 - Git assertions.
 
-This split prevents parser work from delaying the first usable check product.
+This split prevents parser work from delaying the first usable product.
 
 ## 4. Mandatory architecture rules
 
@@ -62,9 +77,18 @@ The reducer must not:
 - read a report;
 - use the clock;
 - create an ID;
+- import Pi or TUI code;
 - write to Pi session state.
 
-### 4.2 Commit the start before execution
+### 4.2 Keep the graph view read-only
+
+The graph pane consumes a pure projection of canonical state and events.
+
+Selection, viewport position, density, and collapsed-loop state are view preferences. They are not domain events.
+
+A view action must not start an executor or change workflow state.
+
+### 4.3 Commit the start before execution
 
 The host must store the `hypagraph.check.started` event before it starts the executor.
 
@@ -88,7 +112,7 @@ commit verification result
 
 A process must not start when the start event cannot be stored.
 
-### 4.3 Do not rerun during restore
+### 4.4 Do not rerun during restore
 
 Session restore must only rebuild state from stored events.
 
@@ -96,13 +120,13 @@ If restore finds a running check without a live executor handle, the host must m
 
 A retry must use a new attempt ID.
 
-### 4.4 Use one canonical writer
+### 4.5 Use one canonical writer
 
 Only one host coordinator can append events for one workflow sequence.
 
 A store write must include the expected sequence number. A sequence conflict must stop the lifecycle.
 
-### 4.5 Preserve late-result rejection
+### 4.6 Preserve late-result rejection
 
 A cancelled, interrupted, stale, or replaced attempt must reject a late executor result.
 
@@ -136,8 +160,8 @@ The tool must:
 2. Create a new attempt ID.
 3. Call the automatic lifecycle coordinator.
 4. Pass the Pi `AbortSignal` to the executor.
-5. send bounded progress updates;
-6. return the final workflow projection.
+5. Send bounded progress updates.
+6. Return the final workflow projection.
 
 Do not route a check through the task `start-node` command.
 
@@ -170,7 +194,87 @@ Show:
 
 A user can define and run one command check from Pi.
 
-## 6. Slice 7 - Durable lifecycle store and recovery
+## 6. Slice 7 - Live graph projection and Pi pane
+
+### Goal
+
+Show the workflow as a live directed graph inside Pi.
+
+The detailed design is in `docs/pi-graph-visualisation-plan.md`.
+
+### Product surface
+
+Use an extension-owned custom TUI overlay.
+
+- Wide terminals use a right-side graph pane.
+- Narrow terminals use a full-screen custom component.
+- The compact widget remains when the pane is closed.
+- Print and JSON modes return a text or structured projection instead of opening a TUI.
+
+### Add
+
+Add a pure `GraphViewModel` projection with:
+
+- task, gate, and check nodes;
+- dependency edges;
+- selected and skipped gate routes;
+- declared loop groups;
+- feedback edges;
+- ready and active state;
+- current attempt summaries;
+- fact and evidence counts.
+
+Add a deterministic layered terminal layout:
+
+1. Collapse declared strongly connected loop regions.
+2. Layout the condensation graph.
+3. Assign ranks with stable node-ID tie decisions.
+4. Reduce crossings.
+5. Expand loop regions.
+6. Route feedback edges in separate lanes.
+7. Preserve unchanged positions across small revisions.
+
+Add a terminal renderer with:
+
+- node boxes;
+- orthogonal edges;
+- arrow heads;
+- loop boundaries;
+- status markers;
+- Unicode and ASCII modes;
+- viewport clipping;
+- terminal-control sanitization.
+
+Add the Pi pane component with:
+
+- open, close, and toggle commands;
+- node selection;
+- viewport navigation;
+- loop collapse and expansion;
+- read-only node details;
+- redraw after accepted event batches;
+- focus release while the pane stays visible.
+
+### Tests
+
+- Project task, gate, and check nodes.
+- Classify dependency, route, and feedback edges.
+- Render a linear graph.
+- Render a branch and join.
+- Render a declared loop.
+- Preserve line-width limits.
+- Keep stable positions after a small revision.
+- Use side-pane mode on a wide terminal.
+- Use full-screen mode on a narrow terminal.
+- Redraw after state events.
+- Sanitize untrusted labels.
+- Do not change canonical state from a view action.
+
+### Done when
+
+A live Pi session can keep the graph pane open while canonical node and edge states update.
+
+## 7. Slice 8 - Durable lifecycle store and recovery
 
 ### Goal
 
@@ -217,13 +321,13 @@ Add interrupted-run recovery:
 - Restore does not call the executor.
 - Restore closes an orphaned running attempt.
 - A sequence conflict stops the coordinator.
-- Replaying the stored events gives the stored snapshot.
+- Replaying stored events gives the stored snapshot.
 
 ### Done when
 
 A host crash cannot silently lose a started check or rerun it during restore.
 
-## 7. Slice 8 - Cancellation, retry, and execution policy
+## 8. Slice 9 - Cancellation, retry, and execution policy
 
 ### Goal
 
@@ -278,7 +382,7 @@ Complete the command environment policy. Inherit only declared environment varia
 
 Every check execution has explicit time, output, cancellation, environment, and retry bounds.
 
-## 8. Slice 9 - End-to-end closure and v0.4 release
+## 9. Slice 10 - End-to-end closure and v0.4 release
 
 ### Goal
 
@@ -300,6 +404,7 @@ The run must prove:
 
 - Pi definition;
 - command execution;
+- live graph rendering;
 - start persistence;
 - output artifacts;
 - fact publication;
@@ -318,6 +423,7 @@ Update:
 - `docs/execution-roadmap.md`;
 - `docs/m3-vertical-slice-plan.md`;
 - Pi tool guidance;
+- graph-pane usage;
 - example workflow definitions;
 - event and storage documentation.
 
@@ -334,9 +440,9 @@ Update:
 
 ### Done when
 
-A Pi user can run a deterministic command check that publishes facts and selects a gate route. Restore and replay do not run the command again.
+A Pi user can run a deterministic command check that publishes facts and selects a gate route while the live graph pane shows the workflow. Restore and replay do not run the command again.
 
-## 9. M3.1 adapter extension phase
+## 10. M3.1 adapter extension phase
 
 Start this phase only after v0.4.
 
@@ -352,12 +458,14 @@ Each adapter must use the same execution, artifact, normalization, publication, 
 
 Do not add adapter-specific state transitions.
 
-## 10. Exit criteria
+## 11. Exit criteria
 
 M3 is complete when:
 
 - [ ] Pi can define a command check.
 - [ ] Pi can run a command check.
+- [ ] Pi can show a dedicated live graph pane.
+- [ ] The pane shows nodes, edges, routes, and loops.
 - [ ] The start event is durable before execution.
 - [ ] Restore never reruns a check.
 - [ ] An interrupted run closes explicitly.
