@@ -11,7 +11,7 @@ M0 provides the stable graph foundation. M1 adds the event-driven execution runt
 The current implementation includes:
 
 - an installable Pi package and a bundled Hypagraph skill;
-- the `hypagraph_define`, `hypagraph_read`, `hypagraph_run_check`, `hypagraph_transition`, and `hypagraph_revise` tools;
+- the `hypagraph_define`, `hypagraph_read`, `hypagraph_run_check`, `hypagraph_cancel_check`, `hypagraph_transition`, and `hypagraph_revise` tools;
 - the `/hypagraph` command and graph-pane subcommands;
 - public Pi definitions for task, gate, and command-check nodes;
 - a live transport-independent graph projection;
@@ -26,6 +26,15 @@ The current implementation includes:
 - terminal-control sanitisation and ASCII rendering fallback;
 - a bounded local command-check executor with no shell by default;
 - timeout and cancellation support;
+- a session-scoped active check execution registry;
+- explicit check cancellation through Pi tools and commands;
+- late-result rejection after cancellation;
+- explicit retry policy with allowed statuses, maximum attempts, and bounded backoff;
+- a new immutable attempt ID for each retry;
+- prior-attempt fact removal when a retry starts;
+- environment-variable name allowlists;
+- a small safe default command environment;
+- no environment values in definitions, events, results, or logs;
 - bounded stdout and stderr capture;
 - file-backed check artifact references;
 - automatic check result normalization and lifecycle completion;
@@ -61,9 +70,9 @@ The current implementation includes:
 - downstream invalidation after graph revisions;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, lifecycle, recovery, fact, routing, check, artifact, graph, and Pi adapter tests.
+- replay, determinism, persistence, migration, lifecycle, recovery, cancellation, retry, environment, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-The next M3 work adds cancellation control, retry policy, environment policy, dogfood validation, and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
+The next M3 work is end-to-end dogfood validation and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
 
 ## Language rules
 
@@ -96,9 +105,12 @@ pi install git:github.com/Hypabolic/Hypagraph
 | `/hypagraph graph toggle` | Open or close the live graph pane. |
 | `/hypagraph graph focus` | Give keyboard focus to the open graph pane. |
 | `/hypagraph graph close` | Close the graph pane. |
+| `/hypagraph check active` | Show the active check execution. |
+| `/hypagraph check cancel [node-id]` | Request cancellation of an active check. |
 | `hypagraph_define` | Validate, create, and durably store a workflow. |
 | `hypagraph_read` | Read the projected state. Use the `graph` view for the structured graph projection. |
-| `hypagraph_run_check` | Durably start and run one ready deterministic command check. |
+| `hypagraph_run_check` | Durably run one ready or retryable deterministic command check. |
+| `hypagraph_cancel_check` | Request cancellation of an active command check. |
 | `hypagraph_transition` | Durably apply a task or gate lifecycle transition. |
 | `hypagraph_revise` | Durably replace the graph and invalidate changed work. |
 
@@ -128,6 +140,14 @@ store verification result
 
 If the start cannot be stored, Hypagraph does not run the command. Restore does not rerun a command. It records an interrupted result for a check that has no stored result, or it finishes verification when a raw result is already stored.
 
+## Check execution policy
+
+Cancellation is terminal for the current attempt. Hypagraph passes the Pi abort signal to the executor. A cancellation tool can also abort the registered execution. If an executor ignores cancellation and returns a later success result, Hypagraph records a cancelled result and does not publish success facts.
+
+Retries are explicit. Hypagraph does not retry automatically. A retry must use a new attempt ID. The prior result and artifacts remain in attempt history. Facts from the prior attempt are removed when the retry starts. The definition can restrict retry statuses, the total attempt count, and the retry backoff.
+
+A command check stores environment-variable names only. It does not store environment values. The executor inherits a small safe launch environment by default. A definition can replace that default with an explicit list of names.
+
 ## Design documents
 
 - [Product and technical specification](docs/product-spec.md)
@@ -135,6 +155,7 @@ If the start cannot be stored, Hypagraph does not run the command. Restore does 
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
+- [Check cancellation, retry, and environment policy](docs/check-execution-policy.md)
 - [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
 - [Event-driven runtime](docs/event-runtime.md)
 - [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)
