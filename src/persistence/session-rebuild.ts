@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   HYPAGRAPH_EVENT_VERSION,
   HYPAGRAPH_SCHEMA_VERSION,
@@ -7,6 +6,8 @@ import {
   type HypagraphState,
   type PersistedHypagraph,
 } from "../domain/model.js";
+import { sha256 } from "../domain/hash.js";
+import { dependenciesAreSatisfied } from "../domain/readiness.js";
 import { replayEvents } from "../domain/projection.js";
 
 interface ToolResultEntry {
@@ -52,7 +53,7 @@ const event = (
   nodeId?: string,
   attemptId?: string,
 ): DomainEvent => ({
-  eventId: randomUUID(),
+  eventId: sha256({ workflowId, revision, sequence, type, nodeId: nodeId ?? null, attemptId: attemptId ?? null, migration: 1 }),
   workflowId,
   revision,
   sequence,
@@ -81,31 +82,43 @@ const migrateVersionOne = (value: unknown): PersistedHypagraph | undefined => {
   if (!source.definition || !source.runtime?.nodes || typeof source.createdAt !== "string") return undefined;
 
   const definition = source.definition as HypagraphDefinition;
+  const updatedAt = typeof source.updatedAt === "string" ? source.updatedAt : source.createdAt;
   const events: DomainEvent[] = [event(source.workflowId, source.revision, 1, source.createdAt, "hypagraph.workflow.defined", { definition })];
   let sequence = 1;
+
   for (const node of definition.nodes) {
     const old = source.runtime.nodes[node.id];
     if (!old) continue;
-    if (old.status === "pending" || old.status === "stale") {
-      events.push(event(source.workflowId, source.revision, ++sequence, source.updatedAt as string ?? source.createdAt, "hypagraph.node.ready", {}, node.id));
-      continue;
-    }
     if (old.status === "blocked") {
-      events.push(event(source.workflowId, source.revision, ++sequence, source.updatedAt as string ?? source.createdAt, "hypagraph.node.blocked", { reason: old.blockedReason ?? "Migrated blocked node." }, node.id));
+      events.push(event(source.workflowId, source.revision, ++sequence, updatedAt, "hypagraph.node.blocked", { reason: old.blockedReason ?? "Migrated blocked node." }, node.id));
       continue;
     }
     if (old.status === "active" || old.status === "completed") {
-      const attemptId = randomUUID();
+      const attemptId = `migration-${sha256({ workflowId: source.workflowId, nodeId: node.id }).slice(0, 24)}`;
       events.push(event(source.workflowId, source.revision, ++sequence, old.startedAt ?? source.createdAt, "hypagraph.attempt.started", {}, node.id, attemptId));
       if (old.status === "completed") {
-        const timestamp = old.completedAt ?? source.updatedAt as string ?? source.createdAt;
+        const timestamp = old.completedAt ?? updatedAt;
         events.push(event(source.workflowId, source.revision, ++sequence, timestamp, "hypagraph.attempt.result-submitted", { evidence: old.evidence ?? [] }, node.id, attemptId));
         events.push(event(source.workflowId, source.revision, ++sequence, timestamp, "hypagraph.verification.started", {}, node.id, attemptId));
         events.push(event(source.workflowId, source.revision, ++sequence, timestamp, "hypagraph.verification.passed", {}, node.id, attemptId));
       }
     }
   }
-  const snapshot = replayEvents(events);
+
+  let snapshot = replayEvents(events);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of definition.nodes) {
+      const runtime = snapshot.runtime.nodes[node.id];
+      if (!runtime || runtime.status !== "pending" || !dependenciesAreSatisfied(snapshot, node.id)) continue;
+      events.push(event(source.workflowId, source.revision, ++sequence, updatedAt, "hypagraph.node.ready", {}, node.id));
+      snapshot = replayEvents(events);
+      changed = true;
+    }
+  }
+
+  snapshot = replayEvents(events);
   return { events, snapshot };
 };
 
