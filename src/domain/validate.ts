@@ -5,6 +5,10 @@ import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from ".
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FACT_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
+const ENVIRONMENT_VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_CHECK_ATTEMPTS = 20;
+const MAX_RETRY_BACKOFF_MS = 86_400_000;
+const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 
 type ConditionValueType = FactType | "unknown";
 
@@ -109,6 +113,32 @@ const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => 
   if (check.expectedExitCodes) {
     if (check.expectedExitCodes.length === 0 || check.expectedExitCodes.some((value) => !Number.isInteger(value))) diagnostics.push({ code: "invalid_expected_exit_codes", message: `Check node '${node.id}' requires integer expected exit codes.`, location: `${location}.check.expectedExitCodes` });
     if (new Set(check.expectedExitCodes).size !== check.expectedExitCodes.length) diagnostics.push({ code: "duplicate_expected_exit_code", message: `Check node '${node.id}' repeats an expected exit code.`, location: `${location}.check.expectedExitCodes` });
+  }
+  if (check.environmentVariables) {
+    const names = new Set<string>();
+    check.environmentVariables.forEach((name, index) => {
+      const itemLocation = `${location}.check.environmentVariables[${index}]`;
+      if (!ENVIRONMENT_VARIABLE_PATTERN.test(name)) diagnostics.push({ code: "invalid_environment_variable", message: `Environment variable '${name}' is not valid.`, location: itemLocation });
+      const key = name.toUpperCase();
+      if (names.has(key)) diagnostics.push({ code: "duplicate_environment_variable", message: `Check node '${node.id}' repeats environment variable '${name}'.`, location: itemLocation });
+      names.add(key);
+    });
+  }
+  if (check.retry) {
+    if (!Number.isInteger(check.retry.maxAttempts) || check.retry.maxAttempts < 2 || check.retry.maxAttempts > MAX_CHECK_ATTEMPTS) {
+      diagnostics.push({ code: "invalid_check_attempt_limit", message: `Check node '${node.id}' retry attempts must be between 2 and ${MAX_CHECK_ATTEMPTS}.`, location: `${location}.check.retry.maxAttempts` });
+    }
+    if (check.retry.retryOn.length === 0) diagnostics.push({ code: "retry_status_required", message: `Check node '${node.id}' must identify at least one retry status.`, location: `${location}.check.retry.retryOn` });
+    const statuses = new Set<string>();
+    check.retry.retryOn.forEach((status, index) => {
+      const itemLocation = `${location}.check.retry.retryOn[${index}]`;
+      if (!RETRY_STATUSES.has(status)) diagnostics.push({ code: "invalid_retry_status", message: `Retry status '${status}' is not supported.`, location: itemLocation });
+      if (statuses.has(status)) diagnostics.push({ code: "duplicate_retry_status", message: `Check node '${node.id}' repeats retry status '${status}'.`, location: itemLocation });
+      statuses.add(status);
+    });
+    if (check.retry.backoffMs !== undefined && (!Number.isInteger(check.retry.backoffMs) || check.retry.backoffMs < 0 || check.retry.backoffMs > MAX_RETRY_BACKOFF_MS)) {
+      diagnostics.push({ code: "invalid_retry_backoff", message: `Check node '${node.id}' retry backoff must be between 0 and ${MAX_RETRY_BACKOFF_MS} milliseconds.`, location: `${location}.check.retry.backoffMs` });
+    }
   }
   const mappings = new Set<string>();
   const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
