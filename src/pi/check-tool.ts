@@ -7,6 +7,7 @@ import type {
 import {
   runAutomaticCheckLifecycle,
   type AutomaticCheckLifecycleResult,
+  type CheckLifecycleTransition,
 } from "../checks/lifecycle.js";
 
 export interface PiCheckRunInput {
@@ -16,6 +17,7 @@ export interface PiCheckRunInput {
   attemptId: string;
   requestedAt: string;
   signal: AbortSignal | undefined;
+  onTransition?: (transition: CheckLifecycleTransition) => void;
 }
 
 export interface ReadyCommandCheck {
@@ -48,6 +50,7 @@ export async function runPiCommandCheck(input: PiCheckRunInput): Promise<Automat
     attemptId: input.attemptId,
     requestedAt: input.requestedAt,
     signal: input.signal ?? new AbortController().signal,
+    ...(input.onTransition === undefined ? {} : { onTransition: input.onTransition }),
   });
 }
 
