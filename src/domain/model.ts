@@ -69,6 +69,19 @@ export interface CheckResult {
   error?: string;
 }
 
+export interface CheckExecutionRequest {
+  workflowId: string;
+  revision: number;
+  nodeId: string;
+  attemptId: string;
+  requestedAt: string;
+  definition: CheckDefinition;
+}
+
+export interface CheckExecutor {
+  execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult>;
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
@@ -117,6 +130,7 @@ export interface AttemptRuntime {
   completedAt?: string;
   evidence: EvidenceReference[];
   failureReason?: string;
+  checkResult?: CheckResult;
 }
 
 export interface NodeRuntime {
@@ -176,6 +190,8 @@ export type EventType =
   | "hypagraph.node.unblocked"
   | "hypagraph.attempt.started"
   | "hypagraph.attempt.result-submitted"
+  | "hypagraph.check.started"
+  | "hypagraph.check.result-recorded"
   | "hypagraph.fact.published"
   | "hypagraph.route.selected"
   | "hypagraph.verification.started"
@@ -214,6 +230,8 @@ export interface FactInput {
 export type HypagraphCommand =
   | (CommandBase & { type: "revise"; definition: HypagraphDefinition })
   | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "start-check"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
