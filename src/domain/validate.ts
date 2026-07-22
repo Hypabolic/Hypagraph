@@ -1,6 +1,6 @@
 import { measureCondition, type Condition, type ValueExpression } from "./conditions.js";
 import type { FactType, FactValue } from "./facts.js";
-import type { Diagnostic, HypagraphDefinition } from "./model.js";
+import type { CheckFactSource, Diagnostic, HypagraphDefinition, NodeDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -26,10 +26,7 @@ const valueType = (value: ValueExpression, factTypes: ReadonlyMap<string, FactTy
 );
 
 const numericType = (type: ConditionValueType): boolean => type === "integer" || type === "number";
-
-const equalTypes = (left: ConditionValueType, right: ConditionValueType): boolean => (
-  left === "unknown" || right === "unknown" || left === right || (numericType(left) && numericType(right))
-);
+const equalTypes = (left: ConditionValueType, right: ConditionValueType): boolean => left === "unknown" || right === "unknown" || left === right || (numericType(left) && numericType(right));
 
 const operatorAccepts = (operator: Extract<Condition, { kind: "compare" }>["operator"], left: ConditionValueType, right: ConditionValueType): boolean => {
   if (left === "unknown" || right === "unknown") return true;
@@ -45,30 +42,22 @@ const operatorAccepts = (operator: Extract<Condition, { kind: "compare" }>["oper
   }
 };
 
-const validateCondition = (
-  condition: Condition,
-  factTypes: ReadonlyMap<string, FactType>,
-  availableFacts: ReadonlySet<string>,
-  location: string,
-): Diagnostic[] => {
+const validateCondition = (condition: Condition, factTypes: ReadonlyMap<string, FactType>, availableFacts: ReadonlySet<string>, location: string): Diagnostic[] => {
   const complexity = measureCondition(condition);
   if (!complexity.ok) return [{ code: complexity.code, message: complexity.message, location }];
-
   const diagnostics: Diagnostic[] = [];
   const visit = (value: Condition, currentLocation: string): void => {
     switch (value.kind) {
-      case "exists": {
+      case "exists":
         if (!factTypes.has(value.fact)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${value.fact}'.`, location: currentLocation });
         else if (!availableFacts.has(value.fact)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${value.fact}' is not produced by an upstream node.`, location: currentLocation });
         break;
-      }
       case "not": visit(value.condition, `${currentLocation}.condition`); break;
       case "all":
-      case "any": {
+      case "any":
         if (value.conditions.length === 0) diagnostics.push({ code: "empty_condition_group", message: `Condition group '${value.kind}' must contain at least one condition.`, location: currentLocation });
         value.conditions.forEach((item, index) => visit(item, `${currentLocation}.conditions[${index}]`));
         break;
-      }
       case "compare": {
         for (const expression of [value.left, value.right]) {
           if (expression.kind !== "fact") continue;
@@ -99,12 +88,46 @@ const upstreamNodeIds = (definition: HypagraphDefinition, nodeId: string): Set<s
   return result;
 };
 
+const sourceType = (source: CheckFactSource): FactType => {
+  switch (source) {
+    case "passed":
+    case "timedOut":
+    case "cancelled": return "boolean";
+    case "exitCode": return "integer";
+    case "durationMs": return "number";
+    case "status": return "string";
+  }
+};
+
+const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
+  const check = node.check as NodeDefinition["check"] & { kind?: string };
+  if (check.kind !== "command") return [{ code: "unsupported_check_kind", message: `Check kind '${String(check.kind)}' is not executable in this release.`, location: `${location}.check.kind` }];
+  if (!check.command.trim()) diagnostics.push({ code: "check_command_required", message: `Check node '${node.id}' requires a command.`, location: `${location}.check.command` });
+  if (!Number.isInteger(check.timeoutMs) || check.timeoutMs <= 0) diagnostics.push({ code: "invalid_check_timeout", message: `Check node '${node.id}' requires a positive integer timeout.`, location: `${location}.check.timeoutMs` });
+  if (check.expectedExitCodes) {
+    if (check.expectedExitCodes.length === 0 || check.expectedExitCodes.some((value) => !Number.isInteger(value))) diagnostics.push({ code: "invalid_expected_exit_codes", message: `Check node '${node.id}' requires integer expected exit codes.`, location: `${location}.check.expectedExitCodes` });
+    if (new Set(check.expectedExitCodes).size !== check.expectedExitCodes.length) diagnostics.push({ code: "duplicate_expected_exit_code", message: `Check node '${node.id}' repeats an expected exit code.`, location: `${location}.check.expectedExitCodes` });
+  }
+  const mappings = new Set<string>();
+  const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
+  check.publish.forEach((mapping, index) => {
+    const mappingLocation = `${location}.check.publish[${index}]`;
+    if (mappings.has(mapping.fact)) diagnostics.push({ code: "duplicate_check_fact_mapping", message: `Check node '${node.id}' maps fact '${mapping.fact}' more than one time.`, location: mappingLocation });
+    mappings.add(mapping.fact);
+    const contractType = contracts.get(mapping.fact);
+    if (!contractType) diagnostics.push({ code: "check_fact_not_declared", message: `Check node '${node.id}' maps undeclared fact '${mapping.fact}'.`, location: `${mappingLocation}.fact` });
+    else if (contractType !== sourceType(mapping.source)) diagnostics.push({ code: "check_fact_type_mismatch", message: `Check source '${mapping.source}' cannot publish fact '${mapping.fact}' with type '${contractType}'.`, location: mappingLocation });
+  });
+  return diagnostics;
+};
+
 export function validateDefinition(definition: HypagraphDefinition): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const ids = new Set<string>();
   const factOwners = new Map<string, string>();
   const factTypes = new Map<string, FactType>();
-
   if (!definition.title.trim()) diagnostics.push({ code: "empty_title", message: "The workflow title must not be empty.", location: "title" });
   if (!definition.goal.trim()) diagnostics.push({ code: "empty_goal", message: "The workflow goal must not be empty.", location: "goal" });
   if (definition.nodes.length === 0) diagnostics.push({ code: "empty_graph", message: "The workflow must have at least one node.", location: "nodes" });
@@ -116,7 +139,6 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     ids.add(node.id);
     if (!node.title.trim()) diagnostics.push({ code: "empty_node_title", message: `Node '${node.id}' must have a title.`, location: `${location}.title` });
     if (new Set(node.requires).size !== node.requires.length) diagnostics.push({ code: "duplicate_dependency", message: `Node '${node.id}' has the same dependency more than one time.`, location: `${location}.requires` });
-
     const localFacts = new Set<string>();
     (node.produces ?? []).forEach((fact, factIndex) => {
       const factLocation = `${location}.produces[${factIndex}]`;
@@ -130,21 +152,21 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     });
   });
 
-  definition.nodes.forEach((node, index) => {
-    node.requires.forEach((required, requiredIndex) => {
-      if (!ids.has(required)) diagnostics.push({ code: "dangling_dependency", message: `Node '${node.id}' requires node '${required}', but that node does not exist.`, location: `nodes[${index}].requires[${requiredIndex}]` });
-    });
-  });
+  definition.nodes.forEach((node, index) => node.requires.forEach((required, requiredIndex) => {
+    if (!ids.has(required)) diagnostics.push({ code: "dangling_dependency", message: `Node '${node.id}' requires node '${required}', but that node does not exist.`, location: `nodes[${index}].requires[${requiredIndex}]` });
+  }));
 
   definition.nodes.forEach((node, index) => {
     const location = `nodes[${index}]`;
     const kind = node.kind ?? "task";
-    if (kind === "task" && node.gate) diagnostics.push({ code: "task_has_gate", message: `Task node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+    if (kind !== "gate" && node.gate) diagnostics.push({ code: "non_gate_has_gate", message: `Node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+    if (kind !== "check" && node.check) diagnostics.push({ code: "non_check_has_check", message: `Node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
+    if (kind === "check") {
+      if (node.gate) diagnostics.push({ code: "check_has_gate", message: `Check node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+      diagnostics.push(...validateCheck(node, location));
+    }
     if (kind === "gate") {
-      if (!node.gate) {
-        diagnostics.push({ code: "gate_definition_required", message: `Gate node '${node.id}' requires a gate definition.`, location: `${location}.gate` });
-        return;
-      }
+      if (!node.gate) { diagnostics.push({ code: "gate_definition_required", message: `Gate node '${node.id}' requires a gate definition.`, location: `${location}.gate` }); return; }
       if (node.produces && node.produces.length > 0) diagnostics.push({ code: "gate_produces_facts", message: `Gate node '${node.id}' must not produce facts.`, location: `${location}.produces` });
       if (node.gate.onTrue.length === 0 || node.gate.onFalse.length === 0) diagnostics.push({ code: "gate_routes_required", message: `Gate '${node.id}' requires true and false route targets.`, location: `${location}.gate` });
       const trueTargets = new Set(node.gate.onTrue);
@@ -164,13 +186,11 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
   });
 
   if (diagnostics.some((item) => item.code === "duplicate_node_id" || item.code === "dangling_dependency")) return diagnostics;
-
   const outgoing = buildOutgoing(definition.nodes);
   const components = stronglyConnectedComponents(definition.nodes.map((node) => node.id), outgoing);
   const cyclic = components.components.filter((component) => isCyclicComponent(component, outgoing));
   const claimedNodes = new Map<string, string>();
   const loopIds = new Set<string>();
-
   definition.loops.forEach((loop, index) => {
     const location = `loops[${index}]`;
     if (!ID_PATTERN.test(loop.id)) diagnostics.push({ code: "invalid_loop_id", message: `Loop ID '${loop.id}' is not valid.`, location: `${location}.id` });
@@ -193,12 +213,10 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     if (loop.feedbackEdges.length === 0) diagnostics.push({ code: "missing_feedback_edge", message: `Loop '${loop.id}' must identify at least one feedback edge.`, location: `${location}.feedbackEdges` });
     if (!cyclic.find((component) => sameSet(component, loop.nodes))) diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
   });
-
   for (const component of cyclic) {
     const matches = definition.loops.filter((loop) => sameSet(loop.nodes, component));
     if (matches.length === 0) diagnostics.push({ code: "undeclared_cycle", message: `Cyclic component [${component.join(", ")}] must be a bounded loop.`, location: "nodes", suggestion: "Add one loop with the same nodes and identify its feedback edges." });
     if (matches.length > 1) diagnostics.push({ code: "duplicate_loop_for_scc", message: `Cyclic component [${component.join(", ")}] has more than one loop declaration.`, location: "loops" });
   }
-
   return diagnostics;
 }

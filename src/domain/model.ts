@@ -20,7 +20,7 @@ export type NodeStatus =
   | "stale";
 export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
-export type NodeKind = "task" | "gate";
+export type NodeKind = "task" | "gate" | "check";
 
 export interface EvidenceReference {
   ref: string;
@@ -34,6 +34,41 @@ export interface GateDefinition {
   onFalse: string[];
 }
 
+export type CheckKind = "command" | "test-report" | "lint-report" | "coverage-report" | "file-assertion" | "git-assertion";
+export type CheckResultStatus = "passed" | "failed" | "timed_out" | "cancelled" | "error";
+export type CheckFactSource = "passed" | "status" | "exitCode" | "durationMs" | "timedOut" | "cancelled";
+
+export interface FactMapping {
+  source: CheckFactSource;
+  fact: string;
+}
+
+export interface CommandCheckDefinition {
+  kind: "command";
+  command: string;
+  arguments?: string[];
+  workingDirectory?: string;
+  timeoutMs: number;
+  expectedExitCodes?: number[];
+  publish: FactMapping[];
+}
+
+export type CheckDefinition = CommandCheckDefinition;
+
+export interface CheckResult {
+  checkKind: CheckKind;
+  attemptId: string;
+  startedAt: string;
+  completedAt: string;
+  status: CheckResultStatus;
+  exitCode?: number;
+  facts: FactInput[];
+  evidence: EvidenceReference[];
+  stdoutRef?: string;
+  stderrRef?: string;
+  error?: string;
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
@@ -43,6 +78,7 @@ export interface NodeDefinition {
   acceptance: string[];
   produces?: FactContract[];
   gate?: GateDefinition;
+  check?: CheckDefinition;
   scope?: { paths: string[] };
 }
 

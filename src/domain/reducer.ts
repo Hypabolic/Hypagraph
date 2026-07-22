@@ -189,7 +189,9 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
 
   switch (command.type) {
     case "start-node": {
-      if ((definitionNode.kind ?? "task") === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
+      const kind = definitionNode.kind ?? "task";
+      if (kind === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
+      if (kind === "check") return reject("check_execution_pending", "Check execution is not available until the M3 execution boundary is implemented.");
       if (state.definition.loops.some((loop) => loop.nodes.includes(command.nodeId))) return reject("loop_execution_pending", "Loop execution is not available in this release.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
       if (Object.values(state.runtime.nodes).some((item) => ["starting", "running", "awaiting_evidence", "verifying"].includes(item.status))) return reject("node_already_active", "Another node has an active attempt.");
