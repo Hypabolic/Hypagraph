@@ -1,7 +1,7 @@
 import { CONDITION_SEMANTICS_VERSION } from "./conditions.js";
 import { sha256 } from "./hash.js";
 import type { FactRecord } from "./facts.js";
-import type { AttemptRuntime, DomainEvent, HypagraphState, NodeRuntime, RouteSelection } from "./model.js";
+import type { AttemptRuntime, CheckResult, DomainEvent, HypagraphState, NodeRuntime, RouteSelection } from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
@@ -23,6 +23,14 @@ const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState =
 const withoutHash = (state: HypagraphState): Omit<HypagraphState, "snapshotHash"> => {
   const { snapshotHash: _snapshotHash, ...rest } = state;
   return rest;
+};
+
+const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string): void => {
+  const value: AttemptRuntime = { attemptId, number: node.attemptCount + 1, status: "running", startedAt: timestamp, evidence: [] };
+  node.attemptCount += 1;
+  node.currentAttemptId = attemptId;
+  node.attempts[attemptId] = value;
+  node.status = "running";
 };
 
 export function applyEvent(state: HypagraphState | undefined, event: DomainEvent): HypagraphState {
@@ -94,12 +102,18 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       }
       break;
     case "hypagraph.attempt.started":
-      if (node && event.attemptId) {
-        const value: AttemptRuntime = { attemptId: event.attemptId, number: node.attemptCount + 1, status: "running", startedAt: event.timestamp, evidence: [] };
-        node.attemptCount += 1;
-        node.currentAttemptId = event.attemptId;
-        node.attempts[event.attemptId] = value;
-        node.status = "running";
+    case "hypagraph.check.started":
+      if (node && event.attemptId) startAttempt(node, event.attemptId, event.timestamp);
+      break;
+    case "hypagraph.check.result-recorded":
+      if (node && attempt) {
+        const result = structuredClone(event.data.result as CheckResult);
+        attempt.status = "submitted";
+        attempt.submittedAt = event.timestamp;
+        attempt.checkResult = result;
+        attempt.evidence = structuredClone(result.evidence);
+        node.evidence = structuredClone(result.evidence);
+        node.status = "awaiting_evidence";
       }
       break;
     case "hypagraph.fact.published":
