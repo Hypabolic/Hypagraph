@@ -15,7 +15,7 @@ export interface PiCheckRunInput {
   nodeId: string;
   attemptId: string;
   requestedAt: string;
-  signal?: AbortSignal;
+  signal: AbortSignal | undefined;
 }
 
 export interface ReadyCommandCheck {
