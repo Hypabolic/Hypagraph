@@ -23,11 +23,11 @@ export class PiSessionWorkflowEventStore implements WorkflowEventStore {
   }
 
   async append(input: WorkflowEventAppend): Promise<void> {
-    validateEventAppend(input);
     const actualSequence = this.sequences.get(input.workflowId) ?? 0;
     if (actualSequence !== input.expectedSequence) {
       throw new WorkflowSequenceConflictError(input.workflowId, input.expectedSequence, actualSequence);
     }
+    validateEventAppend(input);
 
     const batch: PersistedEventBatch = {
       version: 1,
