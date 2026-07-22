@@ -1,4 +1,4 @@
-import type { Condition, ValueExpression } from "./conditions.js";
+import { measureCondition, type Condition, type ValueExpression } from "./conditions.js";
 import type { FactType, FactValue } from "./facts.js";
 import type { Diagnostic, HypagraphDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
@@ -12,18 +12,6 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
   if (left.length !== right.length) return false;
   const values = new Set(left);
   return right.every((item) => values.has(item));
-};
-
-const isFactExpression = (value: ValueExpression): value is Extract<ValueExpression, { kind: "fact" }> => value.kind === "fact";
-
-const conditionFacts = (condition: Condition): string[] => {
-  switch (condition.kind) {
-    case "exists": return [condition.fact];
-    case "not": return conditionFacts(condition.condition);
-    case "all":
-    case "any": return condition.conditions.flatMap(conditionFacts);
-    case "compare": return [condition.left, condition.right].filter(isFactExpression).map((value) => value.name);
-  }
 };
 
 const literalType = (value: FactValue): ConditionValueType => {
@@ -63,34 +51,38 @@ const validateCondition = (
   availableFacts: ReadonlySet<string>,
   location: string,
 ): Diagnostic[] => {
+  const complexity = measureCondition(condition);
+  if (!complexity.ok) return [{ code: complexity.code, message: complexity.message, location }];
+
   const diagnostics: Diagnostic[] = [];
-  switch (condition.kind) {
-    case "exists": {
-      if (!factTypes.has(condition.fact)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${condition.fact}'.`, location });
-      else if (!availableFacts.has(condition.fact)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${condition.fact}' is not produced by an upstream node.`, location });
-      break;
-    }
-    case "not": diagnostics.push(...validateCondition(condition.condition, factTypes, availableFacts, `${location}.condition`)); break;
-    case "all":
-    case "any": {
-      if (condition.conditions.length === 0) diagnostics.push({ code: "empty_condition_group", message: `Condition group '${condition.kind}' must contain at least one condition.`, location });
-      condition.conditions.forEach((item, index) => diagnostics.push(...validateCondition(item, factTypes, availableFacts, `${location}.conditions[${index}]`)));
-      break;
-    }
-    case "compare": {
-      for (const expression of [condition.left, condition.right]) {
-        if (expression.kind !== "fact") continue;
-        if (!factTypes.has(expression.name)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${expression.name}'.`, location });
-        else if (!availableFacts.has(expression.name)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${expression.name}' is not produced by an upstream node.`, location });
+  const visit = (value: Condition, currentLocation: string): void => {
+    switch (value.kind) {
+      case "exists": {
+        if (!factTypes.has(value.fact)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${value.fact}'.`, location: currentLocation });
+        else if (!availableFacts.has(value.fact)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${value.fact}' is not produced by an upstream node.`, location: currentLocation });
+        break;
       }
-      const left = valueType(condition.left, factTypes);
-      const right = valueType(condition.right, factTypes);
-      if (!operatorAccepts(condition.operator, left, right)) {
-        diagnostics.push({ code: "condition_type_mismatch", message: `Operator '${condition.operator}' cannot compare '${left}' with '${right}'.`, location });
+      case "not": visit(value.condition, `${currentLocation}.condition`); break;
+      case "all":
+      case "any": {
+        if (value.conditions.length === 0) diagnostics.push({ code: "empty_condition_group", message: `Condition group '${value.kind}' must contain at least one condition.`, location: currentLocation });
+        value.conditions.forEach((item, index) => visit(item, `${currentLocation}.conditions[${index}]`));
+        break;
       }
-      break;
+      case "compare": {
+        for (const expression of [value.left, value.right]) {
+          if (expression.kind !== "fact") continue;
+          if (!factTypes.has(expression.name)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${expression.name}'.`, location: currentLocation });
+          else if (!availableFacts.has(expression.name)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${expression.name}' is not produced by an upstream node.`, location: currentLocation });
+        }
+        const left = valueType(value.left, factTypes);
+        const right = valueType(value.right, factTypes);
+        if (!operatorAccepts(value.operator, left, right)) diagnostics.push({ code: "condition_type_mismatch", message: `Operator '${value.operator}' cannot compare '${left}' with '${right}'.`, location: currentLocation });
+        break;
+      }
     }
-  }
+  };
+  visit(condition, location);
   return diagnostics;
 };
 
@@ -186,25 +178,19 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     loopIds.add(loop.id);
     if (!Number.isInteger(loop.maxIterations) || loop.maxIterations < 1) diagnostics.push({ code: "invalid_loop_limit", message: `Loop '${loop.id}' must have a positive iteration limit.`, location: `${location}.maxIterations` });
     if (!loop.successWhen.trim()) diagnostics.push({ code: "missing_success_predicate", message: `Loop '${loop.id}' must have a success predicate.`, location: `${location}.successWhen` });
-
     for (const node of loop.nodes) {
       if (!ids.has(node)) diagnostics.push({ code: "dangling_loop_node", message: `Loop '${loop.id}' refers to node '${node}', but that node does not exist.`, location: `${location}.nodes` });
       const owner = claimedNodes.get(node);
       if (owner && owner !== loop.id) diagnostics.push({ code: "overlapping_loop", message: `Node '${node}' is in loops '${owner}' and '${loop.id}'.`, location: `${location}.nodes` });
       claimedNodes.set(node, loop.id);
     }
-
     if (!loop.nodes.includes(loop.entry)) diagnostics.push({ code: "invalid_loop_entry", message: `Loop entry '${loop.entry}' is not in loop '${loop.id}'.`, location: `${location}.entry` });
     if (!loop.nodes.includes(loop.evaluateAfter)) diagnostics.push({ code: "invalid_loop_evaluator", message: `Loop evaluator '${loop.evaluateAfter}' is not in loop '${loop.id}'.`, location: `${location}.evaluateAfter` });
-
     for (const edge of loop.feedbackEdges) {
       const target = definition.nodes.find((node) => node.id === edge.to);
-      if (!loop.nodes.includes(edge.from) || !loop.nodes.includes(edge.to) || !target?.requires.includes(edge.from)) {
-        diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
-      }
+      if (!loop.nodes.includes(edge.from) || !loop.nodes.includes(edge.to) || !target?.requires.includes(edge.from)) diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
     }
     if (loop.feedbackEdges.length === 0) diagnostics.push({ code: "missing_feedback_edge", message: `Loop '${loop.id}' must identify at least one feedback edge.`, location: `${location}.feedbackEdges` });
-
     if (!cyclic.find((component) => sameSet(component, loop.nodes))) diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
   });
 
