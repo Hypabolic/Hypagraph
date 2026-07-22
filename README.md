@@ -6,7 +6,7 @@ Hypagraph lets an agent define coding work as a directed graph. A deterministic 
 
 ## Current implementation
 
-M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is complete in v0.4 and adds deterministic check execution and Pi product integration.
+M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is complete in v0.4 and adds deterministic check execution and Pi product integration. M4 is active and adds executable bounded loops.
 
 The current implementation includes:
 
@@ -72,7 +72,7 @@ The current implementation includes:
 - property tests for generated directed acyclic graphs;
 - replay, determinism, persistence, migration, lifecycle, recovery, cancellation, retry, environment, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-M3 is complete. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
+M4 is the selected next milestone. It adds typed loop success conditions, deterministic feedback continuation, hard iteration limits, progress and patience rules, durable iteration history, and live Pi loop state. M3.1 parser adapters are deferred until after v0.5.
 
 ## v0.4 dogfood result
 
@@ -160,6 +160,7 @@ Hypagraph stores check artifacts under `.hypagraph/check-artifacts`. v0.4 does n
 
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
+- [M4 executable bounded loops vertical-slice plan](docs/m4-vertical-slice-plan.md)
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)

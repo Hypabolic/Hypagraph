@@ -451,7 +451,7 @@ The release evidence is in `docs/v0.4-dogfood.md`.
 
 ## 10. M3.1 adapter extension phase
 
-Start this phase only after v0.4.
+This phase is deferred until after v0.5. M4 executable bounded loops is the selected next milestone.
 
 Implement in this order:
 
