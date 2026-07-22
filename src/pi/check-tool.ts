@@ -15,7 +15,7 @@ export interface PiCheckRunInput {
   nodeId: string;
   attemptId: string;
   requestedAt: string;
-  signal: AbortSignal;
+  signal?: AbortSignal;
 }
 
 export interface ReadyCommandCheck {
@@ -47,7 +47,7 @@ export async function runPiCommandCheck(input: PiCheckRunInput): Promise<Automat
     nodeId: input.nodeId,
     attemptId: input.attemptId,
     requestedAt: input.requestedAt,
-    signal: input.signal,
+    signal: input.signal ?? new AbortController().signal,
   });
 }
 
