@@ -33,6 +33,9 @@ jobs:
       - name: Apply validation, surfaces, and tests
         run: python3 scripts/apply-m4-slice1-surface.py
 
+      - name: Apply type corrections
+        run: python3 scripts/fix-m4-slice1.py
+
       - name: Install locked dependencies
         run: npm ci
 
