@@ -5,9 +5,9 @@ import type {
   Diagnostic,
   EvidenceReference,
   FactInput,
-  FactValue,
   HypagraphCommand,
 } from "../domain/model.js";
+import type { FactValue } from "../domain/facts.js";
 import { sha256 } from "../domain/hash.js";
 
 export interface NormalizedCheckResult {
