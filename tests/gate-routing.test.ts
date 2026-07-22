@@ -105,14 +105,11 @@ describe("gate routing", () => {
     expect(replayEvents(events)).toEqual(routed.state);
   });
 
-  it("rejects a gate when a required fact is not available", () => {
+  it("rejects a condition fact that is not produced upstream", () => {
     const value = definition();
     value.nodes[1]!.requires = [];
-    const created = createWorkflow(value, at, "workflow-missing-fact");
-    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
-    const rejected = handleCommand(created.state, { type: "evaluate-gate", nodeId: "choose", commandId: "command-route", at });
-    expect(rejected.ok).toBe(false);
-    if (!rejected.ok) expect(rejected.diagnostics[0]?.code).toBe("fact_missing");
+    const diagnostics = validateDefinition(value);
+    expect(diagnostics.map((item) => item.code)).toContain("condition_fact_not_upstream");
   });
 
   it("validates gate targets and declared facts", () => {

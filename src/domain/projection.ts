@@ -1,3 +1,4 @@
+import { CONDITION_SEMANTICS_VERSION } from "./conditions.js";
 import { sha256 } from "./hash.js";
 import type { FactRecord } from "./facts.js";
 import type { AttemptRuntime, DomainEvent, HypagraphState, NodeRuntime, RouteSelection } from "./model.js";
@@ -111,12 +112,13 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       break;
     case "hypagraph.route.selected":
       if (node && event.nodeId) {
-        const route = event.data as Pick<RouteSelection, "outcomeId" | "targetNodeIds" | "factsUsed">;
+        const route = event.data as Pick<RouteSelection, "outcomeId" | "targetNodeIds" | "factsUsed"> & { semanticsVersion?: number };
         next.runtime.routes[event.nodeId] = {
           gateNodeId: event.nodeId,
           outcomeId: route.outcomeId,
           targetNodeIds: structuredClone(route.targetNodeIds),
           factsUsed: structuredClone(route.factsUsed),
+          semanticsVersion: route.semanticsVersion ?? CONDITION_SEMANTICS_VERSION,
           eventId: event.eventId,
           sequence: event.sequence,
         };
