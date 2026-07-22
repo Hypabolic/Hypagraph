@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HypagraphDefinition } from "../src/domain/model.js";
-import { createWorkflow } from "../src/domain/reducer.js";
+import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
 import { validateDefinition } from "../src/domain/validate.js";
 
 const definition = (): HypagraphDefinition => ({
@@ -45,6 +45,20 @@ describe("M3 check contracts", () => {
     const created = createWorkflow(value, "2026-07-22T08:00:00.000Z", "workflow-check-contract");
     expect(created.ok).toBe(true);
     if (created.ok) expect(created.state.definition.nodes[0]?.check).toEqual(value.nodes[0]?.check);
+  });
+
+  it("does not run a check through the task lifecycle", () => {
+    const created = createWorkflow(definition(), "2026-07-22T08:00:00.000Z", "workflow-check-contract");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    const result = handleCommand(created.state, {
+      type: "start-node",
+      nodeId: "run-tests",
+      attemptId: "attempt-1",
+      commandId: "command-start-check",
+      at: "2026-07-22T08:01:00.000Z",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.diagnostics[0]?.code).toBe("check_execution_pending");
   });
 
   it("requires a check definition on a check node", () => {
