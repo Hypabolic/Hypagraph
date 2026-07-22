@@ -31,6 +31,21 @@ interface CustomEntry {
   data?: unknown;
 }
 
+interface StoredSnapshotShape {
+  schemaVersion: number;
+  workflowId: string;
+  revision: number;
+  sequence: number;
+  snapshotHash: string;
+  definition: unknown;
+  runtime: unknown;
+}
+
+interface StoredPersisted {
+  events: DomainEvent[];
+  snapshot: StoredSnapshotShape;
+}
+
 const isToolResultEntry = (entry: unknown): entry is ToolResultEntry => {
   if (!entry || typeof entry !== "object") return false;
   const candidate = entry as Partial<ToolResultEntry>;
@@ -43,32 +58,36 @@ const isCustomEntry = (entry: unknown): entry is CustomEntry => {
   return candidate.type === "custom" && typeof candidate.customType === "string";
 };
 
-export function isHypagraphState(value: unknown): value is HypagraphState {
+const isStoredSnapshot = (value: unknown): value is StoredSnapshotShape => {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<HypagraphState>;
-  return candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION
+  const candidate = value as Partial<StoredSnapshotShape>;
+  return (candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION || candidate.schemaVersion === 2)
     && typeof candidate.workflowId === "string"
     && typeof candidate.revision === "number"
     && typeof candidate.sequence === "number"
     && typeof candidate.snapshotHash === "string"
     && !!candidate.definition
     && !!candidate.runtime;
+};
+
+export function isHypagraphState(value: unknown): value is HypagraphState {
+  return isStoredSnapshot(value) && value.schemaVersion === HYPAGRAPH_SCHEMA_VERSION;
 }
 
-const isPersisted = (value: unknown): value is PersistedHypagraph => {
+const isPersisted = (value: unknown): value is StoredPersisted => {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<PersistedHypagraph>;
-  return Array.isArray(candidate.events) && isHypagraphState(candidate.snapshot);
+  const candidate = value as Partial<StoredPersisted>;
+  return Array.isArray(candidate.events) && isStoredSnapshot(candidate.snapshot);
 };
 
 export const isPersistedEventBatch = (value: unknown): value is PersistedEventBatch => {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<PersistedEventBatch>;
+  const candidate = value as Partial<PersistedEventBatch> & { snapshot?: unknown };
   return candidate.version === 1
     && typeof candidate.workflowId === "string"
     && typeof candidate.expectedSequence === "number"
     && Array.isArray(candidate.events)
-    && isHypagraphState(candidate.snapshot);
+    && isStoredSnapshot(candidate.snapshot);
 };
 
 const event = (
@@ -150,9 +169,9 @@ const migrateVersionOne = (value: unknown): PersistedHypagraph | undefined => {
   return { events, snapshot };
 };
 
-const acceptPersisted = (stored: PersistedHypagraph): PersistedHypagraph => {
+const acceptPersisted = (stored: StoredPersisted): PersistedHypagraph => {
   const snapshot = replayEvents(stored.events);
-  if (snapshot.snapshotHash !== stored.snapshot.snapshotHash) throw new Error("The stored Hypagraph snapshot does not match its event stream.");
+  if (stored.snapshot.schemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== stored.snapshot.snapshotHash) throw new Error("The stored Hypagraph snapshot does not match its event stream.");
   return { events: structuredClone(stored.events), snapshot };
 };
 
@@ -169,7 +188,8 @@ const appendStoredBatch = (
 
   const events = [...(sameWorkflow ? latest.events : []), ...structuredClone(batch.events)];
   const snapshot = replayEvents(events);
-  if (snapshot.snapshotHash !== batch.snapshot.snapshotHash) {
+  const storedSchemaVersion = (batch.snapshot as unknown as StoredSnapshotShape).schemaVersion;
+  if (storedSchemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== batch.snapshot.snapshotHash) {
     throw new Error("The stored Hypagraph event batch does not match its snapshot.");
   }
   return { events, snapshot };

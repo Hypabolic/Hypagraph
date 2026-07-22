@@ -30,6 +30,8 @@ const view = (): GraphViewModel => ({
     evaluationNodeId: "test",
     feedbackEdges: [{ source: "test", target: "repair" }],
     maxIterations: 3,
+    status: "inactive",
+    currentIteration: 0,
   }],
   readyNodeIds: ["docs"],
 });

@@ -1,10 +1,13 @@
-import type { HypagraphState } from "./model.js";
+import type { HypagraphState, LoopDefinition } from "./model.js";
 
 export function feedbackEdgeKeys(state: HypagraphState): Set<string> {
   return new Set(
     state.definition.loops.flatMap((loop) => loop.feedbackEdges.map((edge) => `${edge.from}\u0000${edge.to}`)),
   );
 }
+
+const loopForNode = (state: HypagraphState, nodeId: string): LoopDefinition | undefined =>
+  state.definition.loops.find((loop) => loop.nodes.includes(nodeId));
 
 export function dependencyStatuses(state: HypagraphState, nodeId: string): string[] | undefined {
   const node = state.definition.nodes.find((candidate) => candidate.id === nodeId);
@@ -15,9 +18,23 @@ export function dependencyStatuses(state: HypagraphState, nodeId: string): strin
     .map((required) => state.runtime.nodes[required]?.status ?? "missing");
 }
 
+const loopBarriersAreSatisfied = (state: HypagraphState, nodeId: string): boolean => {
+  const node = state.definition.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) return false;
+  const targetLoop = loopForNode(state, nodeId);
+  for (const required of node.requires) {
+    const sourceLoop = loopForNode(state, required);
+    if (!sourceLoop || sourceLoop.id === targetLoop?.id) continue;
+    if (state.runtime.loops[sourceLoop.id]?.status !== "completed") return false;
+  }
+  return true;
+};
+
 export function dependenciesAreSatisfied(state: HypagraphState, nodeId: string): boolean {
   const statuses = dependencyStatuses(state, nodeId);
-  return statuses !== undefined && statuses.every((status) => status === "succeeded" || status === "skipped");
+  return statuses !== undefined
+    && statuses.every((status) => status === "succeeded" || status === "skipped")
+    && loopBarriersAreSatisfied(state, nodeId);
 }
 
 export function dependenciesSelectSkip(state: HypagraphState, nodeId: string): boolean {

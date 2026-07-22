@@ -26,12 +26,18 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     active: activeNodeId(state),
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
-    loops: state.definition.loops.map((loop) => ({
-      id: loop.id,
-      nodes: loop.nodes,
-      maxIterations: loop.maxIterations,
-      status: "validated-not-yet-iterating",
-    })),
+    loops: state.definition.loops.map((loop) => {
+      const runtime = state.runtime.loops[loop.id];
+      return {
+        id: loop.id,
+        nodes: loop.nodes,
+        maxIterations: loop.maxIterations,
+        status: runtime?.status ?? "inactive",
+        currentIteration: runtime?.currentIteration ?? 0,
+        ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
+        ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
+      };
+    }),
     snapshotHash: state.snapshotHash,
   };
 }
@@ -43,19 +49,28 @@ export function renderWorkflow(state: HypagraphState): string {
     `Goal: ${state.definition.goal}`,
     `Active: ${String(summary.active ?? "none")}`,
     `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,
-    "Nodes:",
   ];
+  if (state.definition.loops.length > 0) {
+    lines.push("Loops:");
+    for (const loop of state.definition.loops) {
+      const runtime = state.runtime.loops[loop.id];
+      lines.push(`- ${loop.id}: ${runtime?.status ?? "inactive"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}`);
+    }
+  }
+  lines.push("Nodes:");
   for (const node of state.definition.nodes) {
     const runtime = state.runtime.nodes[node.id]!;
-    lines.push(`- ${node.id}: ${runtime.status} - ${node.title} (attempts ${runtime.attemptCount})`);
+    const attempt = runtime.currentAttemptId ? runtime.attempts[runtime.currentAttemptId] : undefined;
+    lines.push(`- ${node.id}: ${runtime.status} - ${node.title} (attempts ${runtime.attemptCount}${attempt?.iteration === undefined ? "" : `, iteration ${attempt.iteration}`})`);
   }
   return lines.join("\n");
 }
 
 export function renderWidget(state: HypagraphState): string[] {
   const ready = readyNodeIds(state);
+  const activeLoop = Object.values(state.runtime.loops).find((loop) => loop.status === "running");
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]`,
-    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}`,
+    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${activeLoop ? ` | Loop ${activeLoop.loopId}: ${activeLoop.currentIteration}/${activeLoop.maxIterations}` : ""}`,
   ];
 }

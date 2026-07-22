@@ -4,7 +4,7 @@ import type { HypagraphDefinition } from "../domain/model.js";
 
 const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
-const conditionSchema = Type.Any({ description: "A Hypagraph condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
+const conditionSchema = Type.Any({ description: "A Hypagraph typed condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const checkFactSourceSchema = StringEnum(["passed", "status", "exitCode", "durationMs", "timedOut", "cancelled"] as const);
 const retryStatusSchema = StringEnum(["failed", "timed_out", "error"] as const);
 
@@ -62,10 +62,9 @@ const loopSchema = Type.Object({
   nodes: Type.Array(Type.String()),
   entry: Type.String(),
   evaluateAfter: Type.String(),
-  feedbackEdges: Type.Array(feedbackEdgeSchema),
-  successWhen: Type.String({ description: "Reserved Boolean success predicate. Loop execution is not available before M4." }),
+  feedbackEdges: Type.Array(feedbackEdgeSchema, { minItems: 1 }),
+  successWhen: conditionSchema,
   maxIterations: Type.Integer({ minimum: 1 }),
-  patience: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 export const definitionSchema = Type.Object({
@@ -134,9 +133,8 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       entry: loop.entry,
       evaluateAfter: loop.evaluateAfter,
       feedbackEdges: loop.feedbackEdges.map((edge) => ({ ...edge })),
-      successWhen: loop.successWhen,
+      successWhen: structuredClone(loop.successWhen),
       maxIterations: loop.maxIterations,
-      ...(loop.patience === undefined ? {} : { patience: loop.patience }),
     })),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };

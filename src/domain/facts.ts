@@ -17,6 +17,8 @@ export interface PublishedFact {
   attemptId: string;
   revision: number;
   evidence: EvidenceReference[];
+  loopId?: string;
+  iteration?: number;
 }
 
 export interface FactRecord extends PublishedFact {

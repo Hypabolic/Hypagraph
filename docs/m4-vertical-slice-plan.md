@@ -343,6 +343,8 @@ Each slice must cross the domain model, reducer, projection, persistence, Pi ada
 
 ### Slice 1 - Execute one successful iteration
 
+- Status: implementation in progress
+
 #### User result
 
 A user can define a typed structured loop, run its entry-to-evaluation path one time, satisfy the success condition, and release downstream work.

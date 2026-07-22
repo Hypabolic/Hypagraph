@@ -72,6 +72,30 @@ describe("Pi command-check definition", () => {
     expect(created.ok).toBe(true);
   });
 
+  it("normalizes a typed public loop condition", () => {
+    const input: HypagraphDefineInput = {
+      title: "Pi loop",
+      goal: "Complete one iteration",
+      nodes: [
+        { id: "implement", title: "Implement", requires: ["test"], acceptance: [] },
+        { id: "test", title: "Test", requires: ["implement"], acceptance: [], produces: [{ name: "tests.passed", type: "boolean", required: true }] },
+      ],
+      loops: [{
+        id: "repair",
+        nodes: ["implement", "test"],
+        entry: "implement",
+        evaluateAfter: "test",
+        feedbackEdges: [{ from: "test", to: "implement" }],
+        successWhen: { kind: "compare", left: { kind: "fact", name: "tests.passed" }, operator: "eq", right: { kind: "literal", value: true } },
+        maxIterations: 3,
+      }],
+      policy: { mode: "guided", requireEvidence: false },
+    };
+    const definition = normalizeDefinition(input);
+    expect(definition.loops[0]?.successWhen).toEqual(input.loops?.[0]?.successWhen);
+    expect(createWorkflow(definition, at, "workflow-pi-loop").ok).toBe(true);
+  });
+
   it("uses the domain validator for invalid public check mappings", () => {
     const input = validInput();
     input.nodes[0]!.check!.publish[0]!.fact = "tests.undeclared";

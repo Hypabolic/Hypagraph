@@ -1,7 +1,18 @@
 import { CONDITION_SEMANTICS_VERSION } from "./conditions.js";
 import { sha256 } from "./hash.js";
 import type { FactRecord } from "./facts.js";
-import type { AttemptRuntime, CheckResult, DomainEvent, HypagraphState, NodeRuntime, RouteSelection } from "./model.js";
+import type {
+  AttemptRuntime,
+  CheckResult,
+  DomainEvent,
+  HypagraphDefinition,
+  HypagraphState,
+  LegacyLoopPredicate,
+  LoopDefinition,
+  LoopRuntime,
+  NodeRuntime,
+  RouteSelection,
+} from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
@@ -11,10 +22,40 @@ const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState 
 
 const emptyNode = (): NodeRuntime => ({ status: "pending", attemptCount: 0, attempts: {}, evidence: [] });
 
+const isLegacyPredicate = (value: LoopDefinition["successWhen"]): value is string | LegacyLoopPredicate =>
+  typeof value === "string" || value.kind === "legacy-text";
+
+const normaliseDefinition = (definition: HypagraphDefinition): HypagraphDefinition => ({
+  ...structuredClone(definition),
+  loops: definition.loops.map((loop) => ({
+    ...structuredClone(loop),
+    successWhen: typeof loop.successWhen === "string"
+      ? { kind: "legacy-text", text: loop.successWhen }
+      : structuredClone(loop.successWhen),
+  })),
+});
+
+const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
+  const legacy = isLegacyPredicate(loop.successWhen);
+  const legacyText = typeof loop.successWhen === "string" ? loop.successWhen : loop.successWhen.kind === "legacy-text" ? loop.successWhen.text : undefined;
+  return {
+    loopId: loop.id,
+    status: legacy ? "requires_revision" : "inactive",
+    currentIteration: 0,
+    maxIterations: loop.maxIterations,
+    iterations: [],
+    factsUsed: [],
+    ...(legacyText === undefined ? {} : { legacyPredicate: legacyText }),
+  };
+};
+
+const allLoopsCompleted = (state: Omit<HypagraphState, "snapshotHash">): boolean =>
+  Object.values(state.runtime.loops).every((loop) => loop.status === "completed");
+
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
   let phase = state.phase;
-  if (nodes.length > 0 && nodes.every((node) => node.status === "succeeded" || node.status === "skipped")) phase = "completed";
+  if (nodes.length > 0 && nodes.every((node) => node.status === "succeeded" || node.status === "skipped") && allLoopsCompleted(state)) phase = "completed";
   else if (nodes.some((node) => node.status === "blocked") && !nodes.some((node) => ["ready", "running", "verifying", "awaiting_evidence"].includes(node.status))) phase = "blocked";
   else if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") phase = "running";
   return hashState({ ...state, phase });
@@ -25,8 +66,18 @@ const withoutHash = (state: HypagraphState): Omit<HypagraphState, "snapshotHash"
   return rest;
 };
 
-const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string): void => {
-  const value: AttemptRuntime = { attemptId, number: node.attemptCount + 1, status: "running", startedAt: timestamp, evidence: [] };
+const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string, data: Record<string, unknown>): void => {
+  const loopId = typeof data.loopId === "string" ? data.loopId : undefined;
+  const iteration = typeof data.iteration === "number" ? data.iteration : undefined;
+  const value: AttemptRuntime = {
+    attemptId,
+    number: node.attemptCount + 1,
+    status: "running",
+    startedAt: timestamp,
+    evidence: [],
+    ...(loopId === undefined ? {} : { loopId }),
+    ...(iteration === undefined ? {} : { iteration }),
+  };
   node.attemptCount += 1;
   node.currentAttemptId = attemptId;
   node.attempts[attemptId] = value;
@@ -35,8 +86,9 @@ const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string): 
 
 export function applyEvent(state: HypagraphState | undefined, event: DomainEvent): HypagraphState {
   if (event.type === "hypagraph.workflow.defined") {
-    const definition = event.data.definition as HypagraphState["definition"];
+    const definition = normaliseDefinition(event.data.definition as HypagraphDefinition);
     const nodes = Object.fromEntries(definition.nodes.map((node) => [node.id, emptyNode()]));
+    const loops = Object.fromEntries(definition.loops.map((loop) => [loop.id, emptyLoop(loop)]));
     return finalise({
       schemaVersion: HYPAGRAPH_SCHEMA_VERSION,
       workflowId: event.workflowId,
@@ -44,7 +96,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       sequence: event.sequence,
       phase: "running",
       definition,
-      runtime: { nodes, facts: {}, routes: {} },
+      runtime: { nodes, facts: {}, routes: {}, loops },
       createdAt: event.timestamp,
       updatedAt: event.timestamp,
     });
@@ -55,6 +107,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
 
   const next = structuredClone(state);
   next.runtime.routes ??= {};
+  next.runtime.loops ??= {};
   next.sequence = event.sequence;
   next.revision = event.revision;
   next.updatedAt = event.timestamp;
@@ -63,10 +116,20 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
 
   switch (event.type) {
     case "hypagraph.workflow.revised": {
-      next.definition = event.data.definition as HypagraphState["definition"];
-      const retained = next.runtime.nodes;
+      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);
+      const retainedNodes = next.runtime.nodes;
+      const retainedLoops = next.runtime.loops;
       next.runtime.nodes = {};
-      for (const definitionNode of next.definition.nodes) next.runtime.nodes[definitionNode.id] = retained[definitionNode.id] ?? emptyNode();
+      for (const definitionNode of next.definition.nodes) next.runtime.nodes[definitionNode.id] = retainedNodes[definitionNode.id] ?? emptyNode();
+      next.runtime.loops = {};
+      for (const definitionLoop of next.definition.loops) {
+        const retained = retainedLoops[definitionLoop.id];
+        next.runtime.loops[definitionLoop.id] = isLegacyPredicate(definitionLoop.successWhen)
+          ? emptyLoop(definitionLoop)
+          : retained?.status === "requires_revision" || retained === undefined
+            ? emptyLoop(definitionLoop)
+            : retained;
+      }
       for (const gateNodeId of Object.keys(next.runtime.routes)) {
         if (!next.runtime.nodes[gateNodeId]) delete next.runtime.routes[gateNodeId];
       }
@@ -102,7 +165,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       }
       break;
     case "hypagraph.attempt.started":
-      if (node && event.attemptId) startAttempt(node, event.attemptId, event.timestamp);
+      if (node && event.attemptId) startAttempt(node, event.attemptId, event.timestamp, event.data);
       break;
     case "hypagraph.check.started":
       if (node && event.attemptId) {
@@ -111,7 +174,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
             if (fact.producerNodeId === event.nodeId) delete next.runtime.facts[name];
           }
         }
-        startAttempt(node, event.attemptId, event.timestamp);
+        startAttempt(node, event.attemptId, event.timestamp, event.data);
       }
       break;
     case "hypagraph.check.result-recorded":
@@ -189,6 +252,51 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.status = "cancelled";
       }
       break;
+    case "hypagraph.loop.iteration-started": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const runtime = next.runtime.loops[loopId];
+      if (runtime) {
+        const iteration = Number(event.data.iteration);
+        runtime.status = "running";
+        runtime.currentIteration = iteration;
+        runtime.startedAt ??= event.timestamp;
+        runtime.iterations.push({ iteration, startedAt: event.timestamp, factsUsed: [] });
+      }
+      break;
+    }
+    case "hypagraph.loop.evaluated": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const runtime = next.runtime.loops[loopId];
+      if (runtime) {
+        const iteration = Number(event.data.iteration);
+        const record = runtime.iterations.find((item) => item.iteration === iteration);
+        const success = event.data.success === true;
+        const factsUsed = Array.isArray(event.data.factsUsed) ? event.data.factsUsed.filter((item): item is string => typeof item === "string") : [];
+        const semanticsVersion = Number(event.data.semanticsVersion ?? CONDITION_SEMANTICS_VERSION);
+        const decision = event.data.decision === "complete" ? "complete" : "pending";
+        if (record) {
+          record.evaluatedAt = event.timestamp;
+          record.success = success;
+          record.factsUsed = structuredClone(factsUsed);
+          record.semanticsVersion = semanticsVersion;
+          record.decision = decision;
+        }
+        runtime.lastSuccess = success;
+        runtime.factsUsed = structuredClone(factsUsed);
+        runtime.semanticsVersion = semanticsVersion;
+      }
+      break;
+    }
+    case "hypagraph.loop.completed": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const runtime = next.runtime.loops[loopId];
+      if (runtime) {
+        runtime.status = "completed";
+        runtime.completedAt = event.timestamp;
+        runtime.exitReason = "success";
+      }
+      break;
+    }
   }
   return finalise(withoutHash(next));
 }

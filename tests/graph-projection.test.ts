@@ -99,7 +99,7 @@ describe("graph view projection", () => {
       goal: "Show the loop",
       nodes: [
         { id: "implement", title: "Implement", requires: ["test"], acceptance: [] },
-        { id: "test", title: "Test", requires: ["implement"], acceptance: [] },
+        { id: "test", title: "Test", requires: ["implement"], acceptance: [], produces: [{ name: "tests.passed", type: "boolean", required: true }] },
       ],
       loops: [{
         id: "repair",
@@ -107,7 +107,7 @@ describe("graph view projection", () => {
         entry: "implement",
         evaluateAfter: "test",
         feedbackEdges: [{ from: "test", to: "implement" }],
-        successWhen: "tests.failed == 0",
+        successWhen: { kind: "compare", left: { kind: "fact", name: "tests.passed" }, operator: "eq", right: { kind: "literal", value: true } },
         maxIterations: 3,
       }],
       policy: { mode: "guided", requireEvidence: false },
@@ -116,7 +116,7 @@ describe("graph view projection", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
 
     const view = projectGraphView(created.state);
-    expect(view.loops).toEqual([expect.objectContaining({ id: "repair", nodeIds: ["implement", "test"], maxIterations: 3 })]);
+    expect(view.loops).toEqual([expect.objectContaining({ id: "repair", nodeIds: ["implement", "test"], maxIterations: 3, status: "inactive", currentIteration: 0 })]);
     expect(view.nodes.every((node) => node.loopId === "repair")).toBe(true);
     expect(view.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "implement", target: "test", kind: "dependency" }),
