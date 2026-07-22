@@ -19,7 +19,7 @@ export function evaluateCheckStart(
     return reject("attempt_id_reused", `Attempt ID '${attemptId}' was already used.`, "Use a new attempt ID.");
   }
   if (runtime.status === "ready") return { ok: true, retry: false };
-  if (runtime.status !== "failed") return reject("check_not_ready", `The check cannot start from '${runtime.status}'.`);
+  if (runtime.status !== "failed") return reject("check_not_ready", `The check is not ready. It cannot start from '${runtime.status}'.`);
 
   const policy = definition.retry;
   if (!policy) return reject("check_retry_not_allowed", "The check does not permit retry.");
