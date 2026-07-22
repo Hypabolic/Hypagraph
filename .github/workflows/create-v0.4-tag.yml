@@ -1,0 +1,48 @@
+name: Create v0.4.0 tag
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: github.head_ref == 'agent/create-v0.4-tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run repository checks
+        run: npm run check
+
+      - name: Tag the current main commit
+        shell: bash
+        run: |
+          git fetch origin main --tags --force
+          tag="v0.4.0"
+          target="$(git rev-parse origin/main)"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists."
+            exit 0
+          fi
+          version="$(git show "$target:package.json" | node -e "let value=''; process.stdin.on('data', chunk => value += chunk); process.stdin.on('end', () => { const packageValue = JSON.parse(value); if (packageValue.version !== '0.4.0') process.exit(1); });")"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$target" -m "Hypagraph $tag"
+          git push origin "$tag"
