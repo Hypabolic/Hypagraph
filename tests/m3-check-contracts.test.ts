@@ -58,7 +58,7 @@ describe("M3 check contracts", () => {
       at: "2026-07-22T08:01:00.000Z",
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.diagnostics[0]?.code).toBe("check_execution_pending");
+    if (!result.ok) expect(result.diagnostics[0]?.code).toBe("check_start_required");
   });
 
   it("requires a check definition on a check node", () => {
