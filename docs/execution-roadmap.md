@@ -2,7 +2,7 @@
 
 - Status: active
 - Date: 2026-07-22
-- Current milestone: M3.1
+- Current milestone: M4
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -405,34 +405,63 @@ A check result must include:
 
 # M4 - Executable bounded loops
 
+## Status
+
+Active. The detailed implementation plan is in `docs/m4-vertical-slice-plan.md`.
+
+M4 is selected before the M3.1 parser adapters.
+
 ## Objective
 
-Execute declared cyclic regions safely.
+Execute declared cyclic regions as deterministic bounded iteration regions.
+
+A valid v0.5 loop has one entry, one evaluation boundary, typed success rules, declared feedback, a hard iteration limit, and optional numeric progress and patience rules.
+
+## Vertical slices
+
+1. Execute one successful iteration.
+2. Follow feedback and start iteration 2.
+3. Run a check-driven repair loop.
+4. Enforce the hard iteration limit.
+5. Add progress, loss, best result, and patience.
+6. Harden revision, cancellation, and recovery.
+7. Complete the Pi loop product surface.
+8. Dogfood and release v0.5.
 
 ## Loop state
 
 Track:
 
+- loop status;
 - iteration number;
 - hard iteration limit;
-- patience;
-- success predicate;
+- typed success condition;
 - progress or loss value;
-- best result;
+- best metric and best iteration;
+- no-progress count and patience;
 - selected feedback edge;
+- iteration history;
 - exit reason.
 
 Success and progress are different values.
 
-A loop can improve without succeeding. A loop can also satisfy its success predicate without having the best loss value.
+A loop can improve without succeeding. A loop can also satisfy its success condition without having the best metric value.
 
 ## M4 acceptance criteria
 
-- The runtime executes only declared loop cycles.
-- The runtime stops at the hard limit.
-- The runtime can stop after no progress.
-- The runtime stores each iteration result.
-- Replay gives the same loop decision.
+- [ ] New loop definitions use typed success conditions.
+- [ ] The runtime executes only structured declared loop regions.
+- [ ] A false success condition follows only declared feedback.
+- [ ] Current facts and gate routes do not leak into a later iteration.
+- [ ] A failed evaluation check can drive a repair iteration.
+- [ ] The runtime stops at the hard limit.
+- [ ] The runtime can stop after no progress.
+- [ ] The runtime stores each iteration result and best metric.
+- [ ] Downstream work waits for loop success.
+- [ ] Restore does not run a node or check.
+- [ ] Replay gives the same loop decision and state hash.
+- [ ] Pi shows current iteration, progress, and exit reason.
+- [ ] The v0.5 dogfood and release checks pass.
 
 ---
 
