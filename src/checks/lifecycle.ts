@@ -8,6 +8,7 @@ import type {
 } from "../domain/model.js";
 import { sha256 } from "../domain/hash.js";
 import { handleCommand } from "../domain/reducer.js";
+import { enforceCancelledResult } from "./cancellation.js";
 import { createCheckExecutionRequest, executeCheck } from "./execution.js";
 import { createCheckFactPublicationCommand } from "./normalization.js";
 
@@ -174,6 +175,14 @@ export async function runAutomaticCheckLifecycle(
       completedAt,
       input.signal.aborted,
       error,
+    );
+  }
+  if (input.signal.aborted && result.status !== "cancelled") {
+    result = enforceCancelledResult(
+      request,
+      result,
+      input.signal,
+      (input.now ?? (() => new Date()))().toISOString(),
     );
   }
 

@@ -3,9 +3,11 @@ import { relative, resolve, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { ActiveCheckExecutionRegistry } from "./checks/active-executions.js";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
 import { recoverInterruptedChecks } from "./checks/recovery.js";
+import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
@@ -13,7 +15,7 @@ import { projectGraphView } from "./graph/projection.js";
 import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
-import { formatPiCheckResult, runPiCommandCheck } from "./pi/check-tool.js";
+import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
@@ -66,14 +68,21 @@ function updateUi(
 export default function hypagraphExtension(pi: ExtensionAPI): void {
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
-  let checkExecutionActive = false;
+  let sessionGeneration = 0;
   const graphPane = new GraphPaneController();
   const eventStore = new PiSessionWorkflowEventStore(pi);
+  const activeExecutions = new ActiveCheckExecutionRegistry();
 
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
 
+  const ensureNoActiveExecution = (): void => {
+    if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
+  };
+
   const restore = async (ctx: ExtensionContext): Promise<void> => {
+    sessionGeneration += 1;
+    activeExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     eventStore.synchronize(session);
     state = session?.snapshot;
@@ -107,20 +116,37 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     return nodeId;
   };
 
+  const cancelActiveChecks = (nodeId: string | undefined, reason: string): string[] => {
+    if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
+    return activeExecutions.cancel({
+      workflowId: state.workflowId,
+      ...(nodeId ? { nodeId } : {}),
+      reason,
+    }).map((entry) => entry.nodeId);
+  };
+
   pi.on("session_start", async (_event, ctx) => restore(ctx));
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", async () => graphPane.dispose());
+  pi.on("session_shutdown", async () => {
+    activeExecutions.cancelAll();
+    graphPane.dispose();
+  });
 
   pi.on("before_agent_start", async (event) => {
     if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
     const ready = readyNodeIds(state);
-    const readyChecks = ready.filter((nodeId) => {
-      const node = state!.definition.nodes.find((item) => item.id === nodeId);
-      return (node?.kind ?? "task") === "check";
-    });
+    const at = new Date().toISOString();
+    const runnableChecks = state.definition.nodes
+      .filter((node) => (node.kind ?? "task") === "check" && node.check)
+      .filter((node) => {
+        const runtime = state!.runtime.nodes[node.id];
+        if (!runtime || !node.check) return false;
+        return evaluateCheckStart(runtime, node.check, `preview-${state!.sequence}-${node.id}`, at).ok;
+      })
+      .map((node) => node.id);
     const active = activeNode(state);
     return {
-      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse hypagraph_transition before and after task work. Use hypagraph_run_check for a ready check node. Work only on the active task node. Publish declared task facts before result submission. Submit task evidence before a separate verification action. Evaluate ready gates with the evaluate action. Ready nodes are [${ready.join(", ")}]. Ready checks are [${readyChecks.join(", ")}].${active ? ` The active node is '${active.id}'.` : " Start one ready task, run one ready check, or evaluate one ready gate before you change the repository."}`,
+      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse hypagraph_transition before and after task work. Use hypagraph_run_check for a ready or retryable check node. Use hypagraph_cancel_check to stop an active check. Work only on the active task node. Publish declared task facts before result submission. Submit task evidence before a separate verification action. Evaluate ready gates with the evaluate action. Ready nodes are [${ready.join(", ")}]. Runnable checks are [${runnableChecks.join(", ")}].${active ? ` The active node is '${active.id}'.` : " Start one ready task, run one runnable check, or evaluate one ready gate before you change the repository."}`,
     };
   });
 
@@ -144,6 +170,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     promptGuidelines: ["Use hypagraph_define for work that needs explicit dependencies, typed facts, deterministic gates, checks, and evidence."],
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      ensureNoActiveExecution();
       const result = await commitCreatedWorkflow(
         eventStore,
         createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID()),
@@ -176,40 +203,45 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_run_check",
     label: "Run Hypagraph Check",
-    description: "Run one ready command-check node with durable lifecycle commits, timeout, cancellation, bounded output, typed facts, and artifact references.",
-    promptSnippet: "Run a ready deterministic command check",
-    promptGuidelines: ["Use hypagraph_run_check only for a ready check node. Do not start a check with hypagraph_transition."],
+    description: "Run one ready or retryable command-check node with durable lifecycle commits, timeout, cancellation, bounded output, typed facts, and artifact references.",
+    promptSnippet: "Run a deterministic command check",
+    promptGuidelines: ["Use hypagraph_run_check only for a ready or retryable check node. Each retry uses a new attempt ID. Do not start a check with hypagraph_transition."],
     parameters: Type.Object({ nodeId: Type.String() }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
-      if (checkExecutionActive) throw new Error("Another check tool call is active.");
+      if (activeExecutions.hasActive()) throw new Error("Another check tool call is active.");
 
+      const runState = state;
       const nodeId = params.nodeId;
-      const definitionNode = state.definition.nodes.find((node) => node.id === nodeId);
-      if (!definitionNode || (definitionNode.kind ?? "task") !== "check" || !definitionNode.check) {
-        throw new Error(`Node '${nodeId}' is not a check.`);
-      }
-
-      const commandText = [definitionNode.check.command, ...(definitionNode.check.arguments ?? [])].join(" ");
       const attemptId = randomUUID();
       const requestedAt = new Date().toISOString();
+      const runnable = requireRunnableCommandCheck(runState, nodeId, attemptId, requestedAt);
+      const commandText = [runnable.definition.command, ...(runnable.definition.arguments ?? [])].join(" ");
       const executor = new CommandCheckExecutor({
         rootDirectory: ctx.cwd,
         artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
       });
+      const runGeneration = sessionGeneration;
+      const execution = activeExecutions.register({
+        workflowId: runState.workflowId,
+        nodeId,
+        attemptId,
+        startedAt: requestedAt,
+        ...(signal ? { upstreamSignal: signal } : {}),
+      });
 
-      checkExecutionActive = true;
       let elapsedSeconds = 0;
+      const action = runnable.retry ? "Retrying" : "Starting";
       onUpdate?.({
-        content: [{ type: "text", text: `Starting check '${nodeId}': ${commandText}` }],
-        details: { nodeId, attemptId, state: "starting", elapsedSeconds },
+        content: [{ type: "text", text: `${action} check '${nodeId}': ${commandText}` }],
+        details: { nodeId, attemptId, state: "starting", retry: runnable.retry, elapsedSeconds },
       });
       ctx.ui.setStatus("hypagraph-check", `Check ${nodeId}: starting`);
       const timer = setInterval(() => {
         elapsedSeconds += 1;
         onUpdate?.({
           content: [{ type: "text", text: `Check '${nodeId}' is running (${elapsedSeconds} s).` }],
-          details: { nodeId, attemptId, state: "running", elapsedSeconds },
+          details: { nodeId, attemptId, state: "running", retry: runnable.retry, elapsedSeconds },
         });
         ctx.ui.setStatus("hypagraph-check", `Check ${nodeId}: ${elapsedSeconds}s`);
       }, 1_000);
@@ -217,17 +249,22 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
 
       try {
         const lifecycle = await runPiCommandCheck({
-          state,
+          state: runState,
           executor,
           store: eventStore,
           nodeId,
           attemptId,
           requestedAt,
-          signal,
-          onTransition: (transition) => graphPane.update(transition.state),
+          signal: execution.signal,
+          onTransition: (transition) => {
+            if (sessionGeneration !== runGeneration) return;
+            state = transition.state;
+            events.push(...transition.events);
+            updateUi(state, ctx, graphPane);
+          },
         });
+        if (sessionGeneration !== runGeneration) throw new Error("The Pi session changed while the check was active.");
         state = lifecycle.state;
-        events.push(...lifecycle.events);
         updateUi(state, ctx, graphPane);
         if (!lifecycle.ok) return throwDiagnostics(lifecycle.diagnostics);
         const text = `${formatPiCheckResult(state, nodeId, lifecycle.result)}\n\n${renderWorkflow(state)}`;
@@ -239,6 +276,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
             check: {
               nodeId,
               attemptId,
+              retry: runnable.retry,
               result: structuredClone(lifecycle.result),
               commands: structuredClone(lifecycle.commands),
             },
@@ -246,9 +284,26 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         };
       } finally {
         clearInterval(timer);
-        checkExecutionActive = false;
+        execution.release();
         ctx.ui.setStatus("hypagraph-check", undefined);
       }
+    },
+  });
+
+  pi.registerTool({
+    name: "hypagraph_cancel_check",
+    label: "Cancel Hypagraph Check",
+    description: "Request cancellation of the active command check.",
+    promptSnippet: "Cancel an active Hypagraph check",
+    promptGuidelines: ["Use this tool only when a running check must stop. Cancellation is terminal for the current attempt."],
+    parameters: Type.Object({
+      nodeId: Type.Optional(Type.String()),
+      reason: Type.Optional(Type.String()),
+    }),
+    async execute(_toolCallId, params) {
+      const cancelled = cancelActiveChecks(params.nodeId, params.reason?.trim() || "The check was cancelled through Pi.");
+      if (cancelled.length === 0) throw new Error(params.nodeId ? `Check '${params.nodeId}' is not active.` : "There is no active check.");
+      return textResult(`Cancellation requested for: ${cancelled.join(", ")}.`);
     },
   });
 
@@ -257,7 +312,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     label: "Transition Hypagraph",
     description: "Start, publish, submit, verify, evaluate, block, cancel, pause, or resume through the durable event-driven lifecycle.",
     promptSnippet: "Move Hypagraph through its deterministic lifecycle",
-    promptGuidelines: ["Use hypagraph_transition for task and gate lifecycle actions. Use hypagraph_run_check for checks."],
+    promptGuidelines: ["Use hypagraph_transition for task and gate lifecycle actions. Use hypagraph_run_check and hypagraph_cancel_check for checks."],
     parameters: Type.Object({
       nodeId: Type.Optional(Type.String()),
       action: StringEnum(["start", "publish", "submit", "verify", "evaluate", "block", "unblock", "cancel", "pause", "resume"] as const),
@@ -271,10 +326,19 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       const at = new Date().toISOString();
       const correlationId = randomUUID();
       const commands: HypagraphCommand[] = [];
-      if (params.action === "pause") commands.push({ type: "pause-workflow", commandId: randomUUID(), correlationId, at });
-      else if (params.action === "resume") commands.push({ type: "resume-workflow", commandId: randomUUID(), correlationId, at });
-      else {
+      if (params.action === "pause") {
+        ensureNoActiveExecution();
+        commands.push({ type: "pause-workflow", commandId: randomUUID(), correlationId, at });
+      } else if (params.action === "resume") {
+        ensureNoActiveExecution();
+        commands.push({ type: "resume-workflow", commandId: randomUUID(), correlationId, at });
+      } else {
         const nodeId = nodeIdRequired(params.nodeId);
+        if (params.action === "cancel") {
+          const cancelled = cancelActiveChecks(nodeId, params.reason?.trim() || "The check was cancelled through Hypagraph transition.");
+          if (cancelled.length > 0) return textResult(`Cancellation requested for check '${nodeId}'.`);
+        }
+        ensureNoActiveExecution();
         if (params.action === "start") {
           const node = state.definition.nodes.find((item) => item.id === nodeId);
           if ((node?.kind ?? "task") === "check") throw new Error(`Use hypagraph_run_check for check node '${nodeId}'.`);
@@ -316,6 +380,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     promptSnippet: "Revise a Hypagraph",
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      ensureNoActiveExecution();
       await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
       updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);
@@ -323,14 +388,21 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("hypagraph", {
-    description: "Show Hypagraph status or control the graph pane",
+    description: "Show Hypagraph status, cancel a check, or control the graph pane",
     handler: async (args, ctx) => {
-      const action = args.trim().toLowerCase();
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const action = words.map((word) => word.toLowerCase()).join(" ");
       if (action === "graph" || action === "graph open") graphPane.open(ctx);
       else if (action === "graph close") graphPane.close();
       else if (action === "graph toggle") graphPane.toggle(ctx);
       else if (action === "graph focus") graphPane.focus();
-      else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
+      else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "cancel") {
+        const cancelled = cancelActiveChecks(words[2], "The user cancelled the check from Pi.");
+        ctx.ui.notify(cancelled.length > 0 ? `Cancellation requested for: ${cancelled.join(", ")}.` : "There is no matching active check.", cancelled.length > 0 ? "warning" : "info");
+      } else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "active") {
+        const active = state ? activeExecutions.list(state.workflowId) : [];
+        ctx.ui.notify(active.length > 0 ? active.map((entry) => `${entry.nodeId} (${entry.attemptId})`).join("\n") : "There is no active check.", "info");
+      } else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
     },
   });
 }

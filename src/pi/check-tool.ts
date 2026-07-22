@@ -9,6 +9,7 @@ import type {
   AutomaticCheckLifecycleResult,
   CheckLifecycleTransition,
 } from "../checks/lifecycle.js";
+import { evaluateCheckStart } from "../domain/check-policy.js";
 import type { WorkflowEventStore } from "../persistence/event-store.js";
 
 export interface PiCheckRunInput {
@@ -22,12 +23,13 @@ export interface PiCheckRunInput {
   onTransition?: (transition: CheckLifecycleTransition) => void;
 }
 
-export interface ReadyCommandCheck {
+export interface RunnableCommandCheck {
   definition: CommandCheckDefinition;
   state: HypagraphState;
+  retry: boolean;
 }
 
-export function requireReadyCommandCheck(state: HypagraphState, nodeId: string): ReadyCommandCheck {
+const requireCommandCheckDefinition = (state: HypagraphState, nodeId: string): CommandCheckDefinition => {
   const definitionNode = state.definition.nodes.find((node) => node.id === nodeId);
   if (!definitionNode) throw new Error(`Unknown node '${nodeId}'.`);
   if ((definitionNode.kind ?? "task") !== "check" || !definitionNode.check) {
@@ -36,15 +38,32 @@ export function requireReadyCommandCheck(state: HypagraphState, nodeId: string):
   if (definitionNode.check.kind !== "command") {
     throw new Error(`Check '${nodeId}' does not use the command check kind.`);
   }
+  return definitionNode.check;
+};
+
+export function requireReadyCommandCheck(state: HypagraphState, nodeId: string): RunnableCommandCheck {
+  const definition = requireCommandCheckDefinition(state, nodeId);
   const runtime = state.runtime.nodes[nodeId];
-  if (!runtime || runtime.status !== "ready") {
-    throw new Error(`Check '${nodeId}' is not ready.`);
-  }
-  return { definition: structuredClone(definitionNode.check), state: structuredClone(state) };
+  if (!runtime || runtime.status !== "ready") throw new Error(`Check '${nodeId}' is not ready.`);
+  return { definition: structuredClone(definition), state: structuredClone(state), retry: false };
+}
+
+export function requireRunnableCommandCheck(
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+  at: string,
+): RunnableCommandCheck {
+  const definition = requireCommandCheckDefinition(state, nodeId);
+  const runtime = state.runtime.nodes[nodeId];
+  if (!runtime) throw new Error(`Check '${nodeId}' has no runtime state.`);
+  const eligibility = evaluateCheckStart(runtime, definition, attemptId, at);
+  if (!eligibility.ok) throw new Error(eligibility.diagnostic.message);
+  return { definition: structuredClone(definition), state: structuredClone(state), retry: eligibility.retry };
 }
 
 export async function runPiCommandCheck(input: PiCheckRunInput): Promise<AutomaticCheckLifecycleResult> {
-  requireReadyCommandCheck(input.state, input.nodeId);
+  requireRunnableCommandCheck(input.state, input.nodeId, input.attemptId, input.requestedAt);
   return runDurableCheckLifecycle({
     state: input.state,
     executor: input.executor,
@@ -76,9 +95,11 @@ export function formatPiCheckResult(
   const facts = Object.values(state.runtime.facts)
     .filter((fact) => fact.producerNodeId === nodeId && fact.attemptId === result.attemptId)
     .sort((left, right) => left.name.localeCompare(right.name));
+  const attemptNumber = runtime?.attempts[result.attemptId]?.number;
   const lines = [
     `Check: ${nodeId}`,
     `Command: ${command}`,
+    `Attempt: ${attemptNumber ?? "unknown"}`,
     `Node state: ${runtime?.status ?? "unknown"}`,
     `Final status: ${result.status}`,
     `Elapsed: ${Number.isFinite(elapsedMs) ? `${elapsedMs} ms` : "unknown"}`,

@@ -5,6 +5,9 @@ import type { CheckArtifactStore } from "./artifacts.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576;
 const DEFAULT_KILL_GRACE_MS = 1_000;
+const DEFAULT_ENVIRONMENT_VARIABLES = process.platform === "win32"
+  ? ["Path", "PATHEXT", "SystemRoot", "COMSPEC", "TEMP", "TMP"]
+  : ["PATH", "HOME", "TMPDIR"];
 
 interface OutputCapture {
   chunks: Buffer[];
@@ -42,6 +45,21 @@ const resolveWorkingDirectory = (rootDirectory: string, definition: CommandCheck
     throw new Error("The check working directory is outside the configured workspace root.");
   }
   return workingDirectory;
+};
+
+const inheritedEnvironment = (definition: CommandCheckDefinition): NodeJS.ProcessEnv => {
+  const requested = definition.environmentVariables ?? DEFAULT_ENVIRONMENT_VARIABLES;
+  const sourceNames = Object.keys(process.env);
+  const result: NodeJS.ProcessEnv = {};
+  for (const requestedName of requested) {
+    const sourceName = process.platform === "win32"
+      ? sourceNames.find((name) => name.toUpperCase() === requestedName.toUpperCase())
+      : requestedName;
+    if (!sourceName) continue;
+    const value = process.env[sourceName];
+    if (value !== undefined) result[sourceName] = value;
+  }
+  return result;
 };
 
 export class CommandCheckExecutor implements CheckExecutor {
@@ -95,7 +113,7 @@ export class CommandCheckExecutor implements CheckExecutor {
 
     const child = spawn(definition.command, definition.arguments ?? [], {
       cwd: workingDirectory,
-      env: process.env,
+      env: inheritedEnvironment(definition),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,

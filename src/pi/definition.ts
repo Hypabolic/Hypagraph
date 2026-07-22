@@ -6,6 +6,7 @@ const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "du
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
 const conditionSchema = Type.Any({ description: "A Hypagraph condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const checkFactSourceSchema = StringEnum(["passed", "status", "exitCode", "durationMs", "timedOut", "cancelled"] as const);
+const retryStatusSchema = StringEnum(["failed", "timed_out", "error"] as const);
 
 const factContractSchema = Type.Object({
   name: Type.String(),
@@ -24,6 +25,12 @@ const factMappingSchema = Type.Object({
   fact: Type.String(),
 });
 
+const retrySchema = Type.Object({
+  maxAttempts: Type.Integer({ minimum: 2, maximum: 20 }),
+  retryOn: Type.Array(retryStatusSchema, { minItems: 1, uniqueItems: true }),
+  backoffMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 86_400_000 })),
+});
+
 const commandCheckSchema = Type.Object({
   kind: StringEnum(["command"] as const),
   command: Type.String(),
@@ -31,6 +38,8 @@ const commandCheckSchema = Type.Object({
   workingDirectory: Type.Optional(Type.String()),
   timeoutMs: Type.Integer({ minimum: 1 }),
   expectedExitCodes: Type.Optional(Type.Array(Type.Integer())),
+  environmentVariables: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }), { uniqueItems: true })),
+  retry: Type.Optional(retrySchema),
   publish: Type.Array(factMappingSchema),
 });
 
@@ -106,6 +115,14 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
           ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
           timeoutMs: node.check.timeoutMs,
           ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+          ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+          ...(node.check.retry === undefined ? {} : {
+            retry: {
+              maxAttempts: node.check.retry.maxAttempts,
+              retryOn: [...node.check.retry.retryOn],
+              ...(node.check.retry.backoffMs === undefined ? {} : { backoffMs: node.check.retry.backoffMs }),
+            },
+          }),
           publish: node.check.publish.map((mapping) => ({ ...mapping })),
         },
       }),

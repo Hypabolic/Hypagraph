@@ -64,6 +64,31 @@ describe("M3 command check executor", () => {
     expect(failed.exitCode).toBe(3);
   });
 
+  it("inherits only declared environment variables", async () => {
+    const workspace = await root();
+    const artifacts = new MemoryCheckArtifactStore();
+    const executor = new CommandCheckExecutor({ rootDirectory: workspace, artifactStore: artifacts });
+    const allowedName = "HYPAGRAPH_ALLOWED_TEST_VALUE";
+    const deniedName = "HYPAGRAPH_DENIED_TEST_VALUE";
+    const previousAllowed = process.env[allowedName];
+    const previousDenied = process.env[deniedName];
+    process.env[allowedName] = "allowed";
+    process.env[deniedName] = "denied";
+
+    try {
+      const script = `process.stdout.write(JSON.stringify({ allowed: process.env.${allowedName}, denied: process.env.${deniedName} }))`;
+      const result = await executor.execute(request(command(script, { environmentVariables: [allowedName] })), new AbortController().signal);
+      const output = JSON.parse(new TextDecoder().decode(artifacts.artifacts.get(result.stdoutRef!)?.content)) as { allowed?: string; denied?: string };
+      expect(output.allowed).toBe("allowed");
+      expect(output.denied).toBeUndefined();
+    } finally {
+      if (previousAllowed === undefined) delete process.env[allowedName];
+      else process.env[allowedName] = previousAllowed;
+      if (previousDenied === undefined) delete process.env[deniedName];
+      else process.env[deniedName] = previousDenied;
+    }
+  });
+
   it("terminates a command after its timeout", async () => {
     const workspace = await root();
     const executor = new CommandCheckExecutor({ rootDirectory: workspace, artifactStore: new MemoryCheckArtifactStore(), killGraceMs: 10 });

@@ -102,8 +102,17 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       }
       break;
     case "hypagraph.attempt.started":
-    case "hypagraph.check.started":
       if (node && event.attemptId) startAttempt(node, event.attemptId, event.timestamp);
+      break;
+    case "hypagraph.check.started":
+      if (node && event.attemptId) {
+        if (event.data.retry === true && event.nodeId) {
+          for (const [name, fact] of Object.entries(next.runtime.facts)) {
+            if (fact.producerNodeId === event.nodeId) delete next.runtime.facts[name];
+          }
+        }
+        startAttempt(node, event.attemptId, event.timestamp);
+      }
       break;
     case "hypagraph.check.result-recorded":
       if (node && attempt) {

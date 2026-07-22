@@ -37,10 +37,17 @@ export interface GateDefinition {
 export type CheckKind = "command" | "test-report" | "lint-report" | "coverage-report" | "file-assertion" | "git-assertion";
 export type CheckResultStatus = "passed" | "failed" | "timed_out" | "cancelled" | "interrupted" | "error";
 export type CheckFactSource = "passed" | "status" | "exitCode" | "durationMs" | "timedOut" | "cancelled";
+export type CheckRetryStatus = "failed" | "timed_out" | "error";
 
 export interface FactMapping {
   source: CheckFactSource;
   fact: string;
+}
+
+export interface CheckRetryPolicy {
+  maxAttempts: number;
+  retryOn: CheckRetryStatus[];
+  backoffMs?: number;
 }
 
 export interface CommandCheckDefinition {
@@ -50,6 +57,8 @@ export interface CommandCheckDefinition {
   workingDirectory?: string;
   timeoutMs: number;
   expectedExitCodes?: number[];
+  environmentVariables?: string[];
+  retry?: CheckRetryPolicy;
   publish: FactMapping[];
 }
 

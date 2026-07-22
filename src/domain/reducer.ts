@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { evaluateCheckStart } from "./check-policy.js";
 import type { CheckResult, Diagnostic, DomainEvent, EventType, HypagraphCommand, HypagraphDefinition, HypagraphState, ReducerResult } from "./model.js";
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
 import type { PublishedFact } from "./facts.js";
@@ -112,9 +113,20 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     }
     case "start-check": {
       if ((definitionNode.kind ?? "task") !== "check" || !definitionNode.check) return reject("node_not_check", `Node '${command.nodeId}' is not a check.`);
-      if (node.status !== "ready") return reject("check_not_ready", `Check '${command.nodeId}' is not ready.`);
+      const eligibility = evaluateCheckStart(node, definitionNode.check, command.attemptId, command.at);
+      if (!eligibility.ok) return { ok: false, diagnostics: [eligibility.diagnostic] };
       if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
-      next = append(next, events, command, { type: "hypagraph.check.started", nodeId: command.nodeId, attemptId: command.attemptId, data: { checkKind: definitionNode.check.kind } }); break;
+      next = append(next, events, command, {
+        type: "hypagraph.check.started",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          checkKind: definitionNode.check.kind,
+          retry: eligibility.retry,
+          ...(eligibility.previousAttemptId ? { previousAttemptId: eligibility.previousAttemptId } : {}),
+        },
+      });
+      break;
     }
     case "record-check-result": {
       if ((definitionNode.kind ?? "task") !== "check" || !definitionNode.check) return reject("node_not_check", `Node '${command.nodeId}' is not a check.`);
