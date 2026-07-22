@@ -1,5 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import { visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { HypagraphDefinition } from "../src/domain/model.js";
 import { createWorkflow } from "../src/domain/reducer.js";
@@ -53,7 +53,7 @@ describe("Pi graph pane component", () => {
     const lines = component.render(60);
     expect(lines.join("\n")).toContain("Hypagraph · Pane graph");
     expect(lines.join("\n")).toContain("plan");
-    expect(lines.every((line) => line.length === 60)).toBe(true);
+    expect(lines.every((line) => visibleWidth(line) === 60)).toBe(true);
 
     component.handleInput("\r");
     expect(component.render(60).join("\n")).toContain("requires=none");
