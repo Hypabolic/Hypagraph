@@ -1,4 +1,4 @@
-import type { Condition } from "./conditions.js";
+import type { Condition, ValueExpression } from "./conditions.js";
 import type { Diagnostic, HypagraphDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
@@ -11,15 +11,15 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
   return right.every((item) => values.has(item));
 };
 
+const isFactExpression = (value: ValueExpression): value is Extract<ValueExpression, { kind: "fact" }> => value.kind === "fact";
+
 const conditionFacts = (condition: Condition): string[] => {
   switch (condition.kind) {
     case "exists": return [condition.fact];
     case "not": return conditionFacts(condition.condition);
     case "all":
     case "any": return condition.conditions.flatMap(conditionFacts);
-    case "compare": return [condition.left, condition.right]
-      .filter((value): value is Extract<typeof value, { kind: "fact" }> => value.kind === "fact")
-      .map((value) => value.name);
+    case "compare": return [condition.left, condition.right].filter(isFactExpression).map((value) => value.name);
   }
 };
 
