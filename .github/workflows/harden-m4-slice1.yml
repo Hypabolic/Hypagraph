@@ -28,7 +28,13 @@ jobs:
           node-version: 24
 
       - name: Apply the hardening pass
-        run: python3 scripts/harden-m4-slice1.py
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/harden-m4-slice1.py > apply.log 2>&1
+          status=$?
+          cat apply.log
+          exit $status
 
       - name: Install locked dependencies
         run: npm ci
@@ -42,12 +48,14 @@ jobs:
           cat check.log
           exit $status
 
-      - name: Upload check diagnostics
+      - name: Upload hardening diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: m4-slice1-hardening-log
-          path: check.log
+          path: |
+            apply.log
+            check.log
 
       - name: Commit the hardening pass
         shell: bash
