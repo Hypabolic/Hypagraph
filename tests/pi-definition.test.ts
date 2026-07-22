@@ -24,6 +24,12 @@ const validInput = (): HypagraphDefineInput => ({
       workingDirectory: ".",
       timeoutMs: 60_000,
       expectedExitCodes: [0],
+      environmentVariables: ["PATH", "CI"],
+      retry: {
+        maxAttempts: 3,
+        retryOn: ["failed", "timed_out"],
+        backoffMs: 1_000,
+      },
       publish: [
         { source: "passed", fact: "tests.passed" },
         { source: "status", fact: "tests.status" },
@@ -41,13 +47,23 @@ describe("Pi command-check definition", () => {
     expect(node.kind).toBe("check");
     expect(node.check?.command).toBe("npm");
     expect(node.check?.arguments).toEqual(["test"]);
+    expect(node.check?.environmentVariables).toEqual(["PATH", "CI"]);
+    expect(node.check?.retry).toEqual({
+      maxAttempts: 3,
+      retryOn: ["failed", "timed_out"],
+      backoffMs: 1_000,
+    });
     expect(node.check?.publish).toEqual([
       { source: "passed", fact: "tests.passed" },
       { source: "status", fact: "tests.status" },
     ]);
     input.nodes[0]!.check!.arguments![0] = "changed";
+    input.nodes[0]!.check!.environmentVariables![0] = "SECRET";
+    input.nodes[0]!.check!.retry!.retryOn[0] = "error";
     input.nodes[0]!.check!.publish[0]!.fact = "changed.fact";
     expect(node.check?.arguments).toEqual(["test"]);
+    expect(node.check?.environmentVariables).toEqual(["PATH", "CI"]);
+    expect(node.check?.retry?.retryOn).toEqual(["failed", "timed_out"]);
     expect(node.check?.publish[0]?.fact).toBe("tests.passed");
   });
 
