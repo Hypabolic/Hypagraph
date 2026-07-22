@@ -64,7 +64,14 @@ describe("graph layout and renderer", () => {
 
   it("clips every rendered line and supports ASCII output", () => {
     const layout = layoutGraph(view());
-    const unicode = renderGraphScene(view(), layout, { width: 42, height: 18, selectedNodeId: "choose" });
+    const loop = layout.loops[0]!;
+    const unicode = renderGraphScene(view(), layout, {
+      width: 42,
+      height: 18,
+      viewportX: Math.max(0, loop.x),
+      viewportY: Math.max(0, loop.y),
+      selectedNodeId: "repair",
+    });
     const ascii = renderGraphScene(view(), layout, { width: 30, height: 12, unicode: false });
 
     expect(unicode.every((line) => line.length === 42)).toBe(true);
