@@ -8,9 +8,11 @@ import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow, handleCommand } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
+import { projectGraphView } from "./graph/projection.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, runPiCommandCheck } from "./pi/check-tool.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
+import { GraphPaneController } from "./pi/graph-pane.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
@@ -42,7 +44,12 @@ const activeNode = (state: HypagraphState) => state.definition.nodes.find((node)
   return status === "starting" || status === "running" || status === "awaiting_evidence" || status === "verifying";
 });
 
-function updateUi(state: HypagraphState | undefined, ctx: ExtensionContext): void {
+function updateUi(
+  state: HypagraphState | undefined,
+  ctx: ExtensionContext,
+  graphPane: GraphPaneController,
+): void {
+  graphPane.update(state);
   if (!state) {
     ctx.ui.setStatus("hypagraph", undefined);
     ctx.ui.setWidget("hypagraph", undefined);
@@ -57,6 +64,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
   let checkExecutionActive = false;
+  const graphPane = new GraphPaneController();
 
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
@@ -65,7 +73,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     state = session?.snapshot;
     events = session?.events ?? [];
-    updateUi(state, ctx);
+    updateUi(state, ctx, graphPane);
   };
 
   const run = (command: HypagraphCommand): void => {
@@ -83,6 +91,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => restore(ctx));
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
+  pi.on("session_shutdown", async () => graphPane.dispose());
 
   pi.on("before_agent_start", async (event) => {
     if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
@@ -121,7 +130,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       if (!result.ok) return throwDiagnostics(result.diagnostics);
       state = result.state;
       events = [...result.events];
-      updateUi(state, ctx);
+      updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state)}\n\nHypagraph accepted the definition.`);
     },
   });
@@ -129,12 +138,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_read",
     label: "Read Hypagraph",
-    description: "Read the workflow, active node, ready nodes, attempts, facts, routes, checks, and node states.",
+    description: "Read the workflow, graph projection, active node, ready nodes, attempts, facts, routes, checks, and node states.",
     promptSnippet: "Read the current Hypagraph state",
-    parameters: Type.Object({ view: Type.Optional(StringEnum(["summary", "full"] as const)) }),
+    parameters: Type.Object({ view: Type.Optional(StringEnum(["summary", "full", "graph"] as const)) }),
     async execute(_toolCallId, params) {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
-      const text = params.view === "full" ? renderWorkflow(state) : JSON.stringify(workflowSummary(state), null, 2);
+      const text = params.view === "full"
+        ? renderWorkflow(state)
+        : params.view === "graph"
+          ? JSON.stringify(projectGraphView(state), null, 2)
+          : JSON.stringify(workflowSummary(state), null, 2);
       return textResult(text);
     },
   });
@@ -189,16 +202,18 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
           attemptId,
           requestedAt,
           signal,
+          onTransition: (transition) => graphPane.update(transition.state),
         });
         state = lifecycle.state;
         events.push(...lifecycle.events);
-        updateUi(state, ctx);
+        updateUi(state, ctx, graphPane);
         if (!lifecycle.ok) return throwDiagnostics(lifecycle.diagnostics);
         const text = `${formatPiCheckResult(state, nodeId, lifecycle.result)}\n\n${renderWorkflow(state)}`;
         return {
           content: [{ type: "text" as const, text }],
           details: {
             hypagraph: persisted(),
+            graph: projectGraphView(state),
             check: {
               nodeId,
               attemptId,
@@ -263,7 +278,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
           run({ type: "cancel-attempt", nodeId, attemptId, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
         }
       }
-      updateUi(state, ctx);
+      updateUi(state, ctx, graphPane);
       return textResult(renderWorkflow(state));
     },
   });
@@ -276,13 +291,20 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       run({ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() });
-      updateUi(state, ctx);
+      updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);
     },
   });
 
   pi.registerCommand("hypagraph", {
-    description: "Show the active Hypagraph status",
-    handler: async (_args, ctx) => ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info"),
+    description: "Show Hypagraph status or control the graph pane",
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
+      if (action === "graph" || action === "graph open") graphPane.open(ctx);
+      else if (action === "graph close") graphPane.close();
+      else if (action === "graph toggle") graphPane.toggle(ctx);
+      else if (action === "graph focus") graphPane.focus();
+      else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
+    },
   });
 }
