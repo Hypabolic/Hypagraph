@@ -2,100 +2,16 @@ import { randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
-import type { DomainEvent, HypagraphCommand, HypagraphDefinition, HypagraphState, PersistedHypagraph } from "./domain/model.js";
+import { Type } from "typebox";
+import { CommandCheckExecutor } from "./checks/command-executor.js";
+import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
+import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow, handleCommand } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
+import { formatPiCheckResult, runPiCommandCheck } from "./pi/check-tool.js";
+import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
-
-const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
-const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
-const conditionSchema = Type.Any({ description: "A Hypagraph condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
-const factContractSchema = Type.Object({
-  name: Type.String(),
-  type: factTypeSchema,
-  required: Type.Optional(Type.Boolean()),
-});
-const gateSchema = Type.Object({
-  condition: conditionSchema,
-  onTrue: Type.Array(Type.String(), { minItems: 1 }),
-  onFalse: Type.Array(Type.String(), { minItems: 1 }),
-});
-const nodeSchema = Type.Object({
-  id: Type.String({ description: "Stable lowercase node ID" }),
-  title: Type.String(),
-  description: Type.Optional(Type.String()),
-  kind: Type.Optional(StringEnum(["task", "gate"] as const)),
-  requires: Type.Optional(Type.Array(Type.String())),
-  acceptance: Type.Optional(Type.Array(Type.String())),
-  produces: Type.Optional(Type.Array(factContractSchema)),
-  gate: Type.Optional(gateSchema),
-  scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
-});
-const feedbackEdgeSchema = Type.Object({ from: Type.String(), to: Type.String() });
-const loopSchema = Type.Object({
-  id: Type.String(),
-  nodes: Type.Array(Type.String()),
-  entry: Type.String(),
-  evaluateAfter: Type.String(),
-  feedbackEdges: Type.Array(feedbackEdgeSchema),
-  successWhen: Type.String({ description: "Reserved Boolean success predicate. Loop execution is not available before M4." }),
-  maxIterations: Type.Integer({ minimum: 1 }),
-  patience: Type.Optional(Type.Integer({ minimum: 1 })),
-});
-const definitionSchema = Type.Object({
-  title: Type.String(),
-  goal: Type.String(),
-  nodes: Type.Array(nodeSchema, { minItems: 1 }),
-  loops: Type.Optional(Type.Array(loopSchema)),
-  policy: Type.Optional(Type.Object({
-    mode: Type.Optional(StringEnum(["guided", "strict"] as const)),
-    requireEvidence: Type.Optional(Type.Boolean()),
-  })),
-});
-const evidenceSchema = Type.Object({
-  ref: Type.String({ description: "Tool call, command, file, approval, or event reference" }),
-  kind: Type.Optional(StringEnum(["tool", "command", "file", "approval", "note"] as const)),
-  summary: Type.Optional(Type.String()),
-});
-const factInputSchema = Type.Object({
-  name: Type.String(),
-  type: factTypeSchema,
-  value: factValueSchema,
-  evidence: Type.Optional(Type.Array(evidenceSchema)),
-});
-
-export type HypagraphDefineInput = Static<typeof definitionSchema>;
-
-function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefinition {
-  return {
-    title: input.title.trim(),
-    goal: input.goal.trim(),
-    nodes: input.nodes.map((node) => ({
-      id: node.id,
-      title: node.title,
-      ...(node.description === undefined ? {} : { description: node.description }),
-      ...(node.kind === undefined ? {} : { kind: node.kind }),
-      requires: [...(node.requires ?? [])],
-      acceptance: [...(node.acceptance ?? [])],
-      ...(node.produces === undefined ? {} : { produces: node.produces.map((fact) => ({ ...fact })) }),
-      ...(node.gate === undefined ? {} : { gate: structuredClone(node.gate) }),
-      ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
-    })),
-    loops: (input.loops ?? []).map((loop) => ({
-      id: loop.id,
-      nodes: [...loop.nodes],
-      entry: loop.entry,
-      evaluateAfter: loop.evaluateAfter,
-      feedbackEdges: loop.feedbackEdges.map((edge) => ({ ...edge })),
-      successWhen: loop.successWhen,
-      maxIterations: loop.maxIterations,
-      ...(loop.patience === undefined ? {} : { patience: loop.patience }),
-    })),
-    policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
-  };
-}
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
   throw new Error(`Hypagraph rejected the operation:\n${formatDiagnostics(diagnostics)}`);
@@ -140,6 +56,7 @@ function updateUi(state: HypagraphState | undefined, ctx: ExtensionContext): voi
 export default function hypagraphExtension(pi: ExtensionAPI): void {
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
+  let checkExecutionActive = false;
 
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
@@ -170,9 +87,13 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event) => {
     if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
     const ready = readyNodeIds(state);
+    const readyChecks = ready.filter((nodeId) => {
+      const node = state!.definition.nodes.find((item) => item.id === nodeId);
+      return (node?.kind ?? "task") === "check";
+    });
     const active = activeNode(state);
     return {
-      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse hypagraph_transition before and after work. Work only on the active node. Publish declared facts before result submission. Submit evidence before a separate verification action. Evaluate ready gates with the evaluate action. Ready nodes are [${ready.join(", ")}].${active ? ` The active node is '${active.id}'.` : " Start one ready task or evaluate one ready gate before you change the repository."}`,
+      systemPrompt: `${event.systemPrompt}\n\nHYPAGRAPH CONTROL:\n${renderWorkflow(state)}\nUse hypagraph_transition before and after task work. Use hypagraph_run_check for a ready check node. Work only on the active task node. Publish declared task facts before result submission. Submit task evidence before a separate verification action. Evaluate ready gates with the evaluate action. Ready nodes are [${ready.join(", ")}]. Ready checks are [${readyChecks.join(", ")}].${active ? ` The active node is '${active.id}'.` : " Start one ready task, run one ready check, or evaluate one ready gate before you change the repository."}`,
     };
   });
 
@@ -191,9 +112,9 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_define",
     label: "Define Hypagraph",
-    description: "Define and validate a directed coding workflow with task nodes, facts, and gates.",
+    description: "Define and validate a directed coding workflow with task, gate, and command-check nodes.",
     promptSnippet: "Define a validated workflow before multi-step coding work",
-    promptGuidelines: ["Use hypagraph_define for work that needs explicit dependencies, typed facts, deterministic gates, and evidence."],
+    promptGuidelines: ["Use hypagraph_define for work that needs explicit dependencies, typed facts, deterministic gates, checks, and evidence."],
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID());
@@ -208,7 +129,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_read",
     label: "Read Hypagraph",
-    description: "Read the workflow, active node, ready nodes, attempts, facts, routes, and node states.",
+    description: "Read the workflow, active node, ready nodes, attempts, facts, routes, checks, and node states.",
     promptSnippet: "Read the current Hypagraph state",
     parameters: Type.Object({ view: Type.Optional(StringEnum(["summary", "full"] as const)) }),
     async execute(_toolCallId, params) {
@@ -219,11 +140,87 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
+    name: "hypagraph_run_check",
+    label: "Run Hypagraph Check",
+    description: "Run one ready command-check node with a timeout, cancellation, bounded output, typed facts, and artifact references.",
+    promptSnippet: "Run a ready deterministic command check",
+    promptGuidelines: ["Use hypagraph_run_check only for a ready check node. Do not start a check with hypagraph_transition."],
+    parameters: Type.Object({ nodeId: Type.String() }),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
+      if (checkExecutionActive) throw new Error("Another check tool call is active.");
+
+      const nodeId = params.nodeId;
+      const definitionNode = state.definition.nodes.find((node) => node.id === nodeId);
+      if (!definitionNode || (definitionNode.kind ?? "task") !== "check" || !definitionNode.check) {
+        throw new Error(`Node '${nodeId}' is not a check.`);
+      }
+
+      const commandText = [definitionNode.check.command, ...(definitionNode.check.arguments ?? [])].join(" ");
+      const attemptId = randomUUID();
+      const requestedAt = new Date().toISOString();
+      const executor = new CommandCheckExecutor({
+        rootDirectory: ctx.cwd,
+        artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
+      });
+
+      checkExecutionActive = true;
+      let elapsedSeconds = 0;
+      onUpdate?.({
+        content: [{ type: "text", text: `Starting check '${nodeId}': ${commandText}` }],
+        details: { nodeId, attemptId, state: "starting", elapsedSeconds },
+      });
+      ctx.ui.setStatus("hypagraph-check", `Check ${nodeId}: starting`);
+      const timer = setInterval(() => {
+        elapsedSeconds += 1;
+        onUpdate?.({
+          content: [{ type: "text", text: `Check '${nodeId}' is running (${elapsedSeconds} s).` }],
+          details: { nodeId, attemptId, state: "running", elapsedSeconds },
+        });
+        ctx.ui.setStatus("hypagraph-check", `Check ${nodeId}: ${elapsedSeconds}s`);
+      }, 1_000);
+      timer.unref();
+
+      try {
+        const lifecycle = await runPiCommandCheck({
+          state,
+          executor,
+          nodeId,
+          attemptId,
+          requestedAt,
+          signal,
+        });
+        state = lifecycle.state;
+        events.push(...lifecycle.events);
+        updateUi(state, ctx);
+        if (!lifecycle.ok) return throwDiagnostics(lifecycle.diagnostics);
+        const text = `${formatPiCheckResult(state, nodeId, lifecycle.result)}\n\n${renderWorkflow(state)}`;
+        return {
+          content: [{ type: "text" as const, text }],
+          details: {
+            hypagraph: persisted(),
+            check: {
+              nodeId,
+              attemptId,
+              result: structuredClone(lifecycle.result),
+              commands: structuredClone(lifecycle.commands),
+            },
+          },
+        };
+      } finally {
+        clearInterval(timer);
+        checkExecutionActive = false;
+        ctx.ui.setStatus("hypagraph-check", undefined);
+      }
+    },
+  });
+
+  pi.registerTool({
     name: "hypagraph_transition",
     label: "Transition Hypagraph",
     description: "Start, publish, submit, verify, evaluate, block, cancel, pause, or resume through the event-driven lifecycle.",
     promptSnippet: "Move Hypagraph through its deterministic lifecycle",
-    promptGuidelines: ["Publish facts before submit. Submit evidence before a separate verify action. Evaluate gates instead of starting them."],
+    promptGuidelines: ["Use hypagraph_transition for task and gate lifecycle actions. Use hypagraph_run_check for checks."],
     parameters: Type.Object({
       nodeId: Type.Optional(Type.String()),
       action: StringEnum(["start", "publish", "submit", "verify", "evaluate", "block", "unblock", "cancel", "pause", "resume"] as const),
@@ -240,8 +237,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       else if (params.action === "resume") run({ type: "resume-workflow", commandId: randomUUID(), correlationId, at });
       else {
         const nodeId = nodeIdRequired(params.nodeId);
-        if (params.action === "start") run({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
-        else if (params.action === "evaluate") run({ type: "evaluate-gate", nodeId, commandId: randomUUID(), correlationId, at });
+        if (params.action === "start") {
+          const node = state.definition.nodes.find((item) => item.id === nodeId);
+          if ((node?.kind ?? "task") === "check") throw new Error(`Use hypagraph_run_check for check node '${nodeId}'.`);
+          run({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
+        } else if (params.action === "evaluate") run({ type: "evaluate-gate", nodeId, commandId: randomUUID(), correlationId, at });
         else if (params.action === "publish") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);

@@ -1,5 +1,6 @@
 node_modules/
 coverage/
 dist/
+.hypagraph/
 *.log
 .DS_Store
