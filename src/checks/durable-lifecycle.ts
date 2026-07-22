@@ -10,6 +10,7 @@ import { sha256 } from "../domain/hash.js";
 import { handleCommand } from "../domain/reducer.js";
 import type { WorkflowEventStore } from "../persistence/event-store.js";
 import { WorkflowSequenceConflictError } from "../persistence/event-store.js";
+import { enforceCancelledResult } from "./cancellation.js";
 import { createCheckExecutionRequest, executeCheck } from "./execution.js";
 import { createCheckFactPublicationCommand } from "./normalization.js";
 import type { AutomaticCheckLifecycleResult, CheckLifecycleStage, CheckLifecycleTransition } from "./lifecycle.js";
@@ -152,6 +153,14 @@ export async function runDurableCheckLifecycle(
       completedAt,
       input.signal.aborted,
       error,
+    );
+  }
+  if (input.signal.aborted && result.status !== "cancelled") {
+    result = enforceCancelledResult(
+      request,
+      result,
+      input.signal,
+      (input.now ?? (() => new Date()))().toISOString(),
     );
   }
 
