@@ -1,8 +1,9 @@
 # M3 completion phase plan
 
-- Status: active
+- Status: complete
 - Milestone: M3
 - Release marker: v0.4
+- Completed: 2026-07-22
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -21,7 +22,7 @@ The completion phase adds:
 - retry and environment policy;
 - product dogfood and the v0.4 release.
 
-Do not start M4 loop execution before this phase is complete.
+This phase is complete. Start M3.1 or M4 only after the v0.4 tag exists.
 
 ## 2. Product result
 
@@ -37,7 +38,7 @@ At the end of this phase, a user can:
 8. Restore the session without running a check again.
 9. See the result, facts, evidence, and output references.
 10. Use published facts in a deterministic gate.
-11. Retry an interrupted or failed check with a new attempt ID.
+11. Retry an allowed failed check with a new attempt ID.
 
 ## 3. Scope decision
 
@@ -441,6 +442,12 @@ Update:
 ### Done when
 
 A Pi user can run a deterministic command check that publishes facts and selects a gate route while the live graph pane shows the workflow. Restore and replay do not run the command again.
+
+## 9.1 Completion record
+
+The v0.4 dogfood run completed on 2026-07-22 through Pi 0.80.10. The run covered command execution, fact publication, deterministic route selection, live graph rendering, declared-loop rendering, durable session restoration, replay equality, cancellation, and failure handling.
+
+The release evidence is in `docs/v0.4-dogfood.md`.
 
 ## 10. M3.1 adapter extension phase
 
