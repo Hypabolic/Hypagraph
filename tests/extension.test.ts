@@ -18,6 +18,7 @@ describe("Pi extension registration", () => {
     expect(tools).toEqual([
       "hypagraph_define",
       "hypagraph_read",
+      "hypagraph_run_check",
       "hypagraph_transition",
       "hypagraph_revise",
     ]);
