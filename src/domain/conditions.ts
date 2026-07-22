@@ -1,5 +1,9 @@
 import type { FactRecord, FactValue } from "./facts.js";
 
+export const CONDITION_SEMANTICS_VERSION = 1 as const;
+export const MAX_CONDITION_NODES = 128 as const;
+export const MAX_CONDITION_DEPTH = 32 as const;
+
 export type ComparisonOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "in";
 
 export type ValueExpression =
@@ -16,6 +20,10 @@ export type Condition =
 export type ConditionResult =
   | { ok: true; value: boolean; factsUsed: string[] }
   | { ok: false; code: string; message: string; factsUsed: string[] };
+
+interface EvaluationBudget {
+  remaining: number;
+}
 
 const resolve = (
   expression: ValueExpression,
@@ -40,19 +48,28 @@ const compare = (left: FactValue, operator: ComparisonOperator, right: FactValue
   }
 };
 
-export const evaluateCondition = (
+const evaluate = (
   condition: Condition,
   facts: Readonly<Record<string, FactRecord>>,
+  budget: EvaluationBudget,
 ): ConditionResult => {
+  budget.remaining -= 1;
+  if (budget.remaining < 0) return { ok: false, code: "condition_limit_exceeded", message: "The condition exceeds the evaluation limit.", factsUsed: [] };
+
   switch (condition.kind) {
     case "exists": return { ok: true, value: facts[condition.fact] !== undefined, factsUsed: [condition.fact] };
     case "not": {
-      const result = evaluateCondition(condition.condition, facts);
+      const result = evaluate(condition.condition, facts, budget);
       return result.ok ? { ok: true, value: !result.value, factsUsed: result.factsUsed } : result;
     }
     case "all":
     case "any": {
-      const results = condition.conditions.map((item) => evaluateCondition(item, facts));
+      const results: ConditionResult[] = [];
+      for (const item of condition.conditions) {
+        const result = evaluate(item, facts, budget);
+        results.push(result);
+        if (!result.ok) break;
+      }
       const failed = results.find((item) => !item.ok);
       const factsUsed = [...new Set(results.flatMap((item) => item.factsUsed))].sort();
       if (failed && !failed.ok) return { ...failed, factsUsed };
@@ -71,3 +88,8 @@ export const evaluateCondition = (
     }
   }
 };
+
+export const evaluateCondition = (
+  condition: Condition,
+  facts: Readonly<Record<string, FactRecord>>,
+): ConditionResult => evaluate(condition, facts, { remaining: MAX_CONDITION_NODES });
