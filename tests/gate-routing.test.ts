@@ -54,17 +54,33 @@ const prepareGate = () => {
   const events: DomainEvent[] = [...created.events];
   let state = created.state;
 
-  for (const [suffix, command] of [
-    ["start", { type: "start-node", nodeId: "inspect", attemptId: "attempt-1" }],
-    ["facts", { type: "publish-facts", nodeId: "inspect", attemptId: "attempt-1", facts: [{ name: "tests.failed", type: "integer", value: 0 }] }],
-    ["submit", { type: "submit-result", nodeId: "inspect", attemptId: "attempt-1", evidence: [] }],
-    ["verify", { type: "begin-verification", nodeId: "inspect", attemptId: "attempt-1" }],
-    ["pass", { type: "complete-verification", nodeId: "inspect", attemptId: "attempt-1", passed: true }],
-  ] as const) {
-    const result = apply(state, { ...command, commandId: `command-${suffix}`, at });
-    state = result.state;
-    events.push(...result.events);
-  }
+  const started = apply(state, { type: "start-node", nodeId: "inspect", attemptId: "attempt-1", commandId: "command-start", at });
+  state = started.state;
+  events.push(...started.events);
+
+  const published = apply(state, {
+    type: "publish-facts",
+    nodeId: "inspect",
+    attemptId: "attempt-1",
+    facts: [{ name: "tests.failed", type: "integer", value: 0 }],
+    commandId: "command-facts",
+    at,
+  });
+  state = published.state;
+  events.push(...published.events);
+
+  const submitted = apply(state, { type: "submit-result", nodeId: "inspect", attemptId: "attempt-1", evidence: [], commandId: "command-submit", at });
+  state = submitted.state;
+  events.push(...submitted.events);
+
+  const verifying = apply(state, { type: "begin-verification", nodeId: "inspect", attemptId: "attempt-1", commandId: "command-verify", at });
+  state = verifying.state;
+  events.push(...verifying.events);
+
+  const passed = apply(state, { type: "complete-verification", nodeId: "inspect", attemptId: "attempt-1", passed: true, commandId: "command-pass", at });
+  state = passed.state;
+  events.push(...passed.events);
+
   return { state, events };
 };
 
