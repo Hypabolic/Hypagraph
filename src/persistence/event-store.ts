@@ -55,12 +55,12 @@ export class InMemoryWorkflowEventStore implements WorkflowEventStore {
   }
 
   async append(input: WorkflowEventAppend): Promise<void> {
-    validateEventAppend(input);
     const current = this.streams.get(input.workflowId);
     const actualSequence = current?.snapshot.sequence ?? 0;
     if (actualSequence !== input.expectedSequence) {
       throw new WorkflowSequenceConflictError(input.workflowId, input.expectedSequence, actualSequence);
     }
+    validateEventAppend(input);
 
     const events = [...(current?.events ?? []), ...structuredClone(input.events)];
     const snapshot = replayEvents(events);
