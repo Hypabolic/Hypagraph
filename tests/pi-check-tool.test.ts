@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runPiCommandCheck, requireReadyCommandCheck, formatPiCheckResult } from "../src/pi/check-tool.js";
 import type { CheckExecutor, CheckResult, HypagraphDefinition } from "../src/domain/model.js";
 import { createWorkflow } from "../src/domain/reducer.js";
+import { InMemoryWorkflowEventStore } from "../src/persistence/event-store.js";
 
 const requestedAt = "2026-07-22T11:10:00.000Z";
 
@@ -33,10 +34,12 @@ const definition = (): HypagraphDefinition => ({
   policy: { mode: "guided", requireEvidence: false },
 });
 
-const createdState = () => {
-  const created = createWorkflow(definition(), requestedAt, "workflow-pi-adapter");
-  if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
-  return created.state;
+const created = () => {
+  const result = createWorkflow(definition(), requestedAt, "workflow-pi-adapter");
+  if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+  const store = new InMemoryWorkflowEventStore();
+  store.seed({ events: result.events, snapshot: result.state });
+  return { result, store };
 };
 
 const passedResult = (): CheckResult => ({
@@ -53,20 +56,22 @@ const passedResult = (): CheckResult => ({
 
 describe("Pi check execution adapter", () => {
   it("requires a ready command check", () => {
-    const state = createdState();
+    const state = created().result.state;
     const check = requireReadyCommandCheck(state, "tests");
     expect(check.definition.command).toBe("npm");
     check.definition.arguments![0] = "changed";
     expect(state.definition.nodes[0]!.check?.arguments).toEqual(["test"]);
   });
 
-  it("runs the automatic lifecycle without changing the input state", async () => {
-    const state = createdState();
+  it("runs the durable lifecycle without changing the input state", async () => {
+    const fixture = created();
+    const state = fixture.result.state;
     const before = structuredClone(state);
     const execute = vi.fn(async () => passedResult());
     const result = await runPiCommandCheck({
       state,
       executor: { execute },
+      store: fixture.store,
       nodeId: "tests",
       attemptId: "attempt-1",
       requestedAt,
@@ -81,6 +86,7 @@ describe("Pi check execution adapter", () => {
     expect(result.state.runtime.facts["tests.passed"]?.value).toBe(true);
     expect(result.state.runtime.facts["tests.status"]?.value).toBe("passed");
     expect(formatPiCheckResult(result.state, "tests", result.result)).toContain("Final status: passed");
+    expect(fixture.store.read(result.state.workflowId)?.snapshot).toEqual(result.state);
   });
 
   it("rejects a task node", () => {
@@ -92,9 +98,9 @@ describe("Pi check execution adapter", () => {
       requires: [],
       acceptance: [],
     };
-    const created = createWorkflow(value, requestedAt, "workflow-task");
-    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
-    expect(() => requireReadyCommandCheck(created.state, "task")).toThrow("is not a check");
+    const result = createWorkflow(value, requestedAt, "workflow-task");
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    expect(() => requireReadyCommandCheck(result.state, "task")).toThrow("is not a check");
   });
 
   it("rejects a check that is not ready", async () => {
@@ -107,11 +113,14 @@ describe("Pi check execution adapter", () => {
       acceptance: [],
     });
     value.nodes[1]!.requires = ["prepare"];
-    const created = createWorkflow(value, requestedAt, "workflow-not-ready");
-    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    const result = createWorkflow(value, requestedAt, "workflow-not-ready");
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    const store = new InMemoryWorkflowEventStore();
+    store.seed({ events: result.events, snapshot: result.state });
     await expect(runPiCommandCheck({
-      state: created.state,
+      state: result.state,
       executor: { execute: vi.fn(async () => passedResult()) },
+      store,
       nodeId: "tests",
       attemptId: "attempt-1",
       requestedAt,
@@ -139,9 +148,11 @@ describe("Pi check execution adapter", () => {
         return cancelled;
       }),
     };
+    const fixture = created();
     const result = await runPiCommandCheck({
-      state: createdState(),
+      state: fixture.result.state,
       executor,
+      store: fixture.store,
       nodeId: "tests",
       attemptId: "attempt-1",
       requestedAt,
