@@ -1,8 +1,8 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Date: 2026-07-21
-- Current milestone: M1
+- Date: 2026-07-22
+- Current milestone: M3.1
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -197,8 +197,8 @@ Make the current single-session graph engine a stable base for later runtime wor
 - [x] Unsupported snapshots cannot become canonical state.
 - [x] The test suite checks the principal domain invariants.
 - [x] Repository writing rules are explicit.
-- [ ] Continuous integration runs `npm run check` on a clean checkout.
-- [ ] A complete Pi dogfood run is recorded.
+- [x] Continuous integration runs `npm run check` on a clean checkout.
+- [x] A complete Pi dogfood run is recorded.
 
 The two unchecked items are release tasks. They do not change the M0 domain model.
 
@@ -356,6 +356,10 @@ The engine must:
 
 # M3 - Deterministic check execution
 
+## Status
+
+Complete in v0.4. The dogfood record is in `docs/v0.4-dogfood.md`.
+
 ## Objective
 
 Make build, test, lint, coverage, and security checks first-class nodes.
@@ -385,11 +389,17 @@ A check result must include:
 
 ## M3 acceptance criteria
 
-- A test check publishes typed facts.
-- A gate can use those facts.
-- A timeout is an explicit result.
-- A check cannot change canonical state directly.
-- Check output is treated as untrusted input.
+- [x] A test check publishes typed facts.
+- [x] A gate can use those facts.
+- [x] A timeout is an explicit result.
+- [x] A check cannot change canonical state directly.
+- [x] Check output is treated as untrusted input.
+- [x] Pi stores check lifecycle events before the next external side effect.
+- [x] Restore does not rerun a command.
+- [x] The user can cancel a running check.
+- [x] Retry policy is explicit and bounded.
+- [x] The live Pi graph pane shows routes, loops, feedback edges, and runtime state.
+- [x] The complete dogfood path is recorded.
 
 ---
 

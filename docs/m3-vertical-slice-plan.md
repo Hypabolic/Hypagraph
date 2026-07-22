@@ -1,6 +1,6 @@
 # M3 deterministic check execution plan
 
-- Status: planned
+- Status: complete
 - Milestone: M3
 - Release marker: v0.4
 - Writing standard: ASD-STE100 Simplified Technical English
@@ -19,7 +19,7 @@ A check must:
 - support timeout and cancellation;
 - rebuild from events without running again.
 
-The first useful end-to-end result is complete after Slice 5. Slices 6 to 11 add more check types and harden the runtime.
+Slices 1 to 5 implement the core check runtime. Slices 6 to 10 close the Pi product path and the v0.4 release. Structured parser adapters move to M3.1.
 
 ## 2. Mandatory design rules
 

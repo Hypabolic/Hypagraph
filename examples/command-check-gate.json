@@ -1,0 +1,132 @@
+{
+  "title": "Command check gate",
+  "goal": "Run repository checks and select the next task from the result",
+  "nodes": [
+    {
+      "id": "run-tests",
+      "title": "Run repository checks",
+      "kind": "check",
+      "requires": [],
+      "acceptance": [
+        "The repository check command completes."
+      ],
+      "produces": [
+        {
+          "name": "tests.passed",
+          "type": "boolean",
+          "required": true
+        },
+        {
+          "name": "tests.status",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "check": {
+        "kind": "command",
+        "command": "npm",
+        "arguments": [
+          "run",
+          "check"
+        ],
+        "timeoutMs": 120000,
+        "expectedExitCodes": [
+          0
+        ],
+        "publish": [
+          {
+            "source": "passed",
+            "fact": "tests.passed"
+          },
+          {
+            "source": "status",
+            "fact": "tests.status"
+          }
+        ],
+        "retry": {
+          "maxAttempts": 2,
+          "retryOn": [
+            "failed",
+            "timed_out",
+            "error"
+          ],
+          "backoffMs": 1000
+        },
+        "environmentVariables": [
+          "PATH",
+          "HOME",
+          "TMPDIR"
+        ]
+      }
+    },
+    {
+      "id": "route-tests",
+      "title": "Select the test route",
+      "kind": "gate",
+      "requires": [
+        "run-tests"
+      ],
+      "acceptance": [
+        "The route is selected from tests.passed."
+      ],
+      "gate": {
+        "condition": {
+          "kind": "compare",
+          "operator": "eq",
+          "left": {
+            "kind": "fact",
+            "name": "tests.passed"
+          },
+          "right": {
+            "kind": "literal",
+            "value": true
+          }
+        },
+        "onTrue": [
+          "document"
+        ],
+        "onFalse": [
+          "repair"
+        ]
+      }
+    },
+    {
+      "id": "document",
+      "title": "Document the passing result",
+      "kind": "task",
+      "requires": [
+        "route-tests"
+      ],
+      "acceptance": [
+        "The passing result is documented."
+      ],
+      "scope": {
+        "paths": [
+          "docs/**"
+        ]
+      }
+    },
+    {
+      "id": "repair",
+      "title": "Repair the failed result",
+      "kind": "task",
+      "requires": [
+        "route-tests"
+      ],
+      "acceptance": [
+        "The failing check has a repair."
+      ],
+      "scope": {
+        "paths": [
+          "src/**",
+          "tests/**"
+        ]
+      }
+    }
+  ],
+  "loops": [],
+  "policy": {
+    "mode": "strict",
+    "requireEvidence": true
+  }
+}

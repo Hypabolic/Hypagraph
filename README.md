@@ -6,7 +6,7 @@ Hypagraph lets an agent define coding work as a directed graph. A deterministic 
 
 ## Current implementation
 
-M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is the active milestone and adds deterministic check execution and Pi product integration.
+M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is complete in v0.4 and adds deterministic check execution and Pi product integration.
 
 The current implementation includes:
 
@@ -72,7 +72,13 @@ The current implementation includes:
 - property tests for generated directed acyclic graphs;
 - replay, determinism, persistence, migration, lifecycle, recovery, cancellation, retry, environment, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-The next M3 work is end-to-end dogfood validation and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
+M3 is complete. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
+
+## v0.4 dogfood result
+
+The v0.4 release was tested through the real Pi product path. The run defined a complex graph, ran deterministic checks, published facts, selected a gate route, restored the session without rerunning the command, and kept the live graph pane open. The pane showed the selected route, the ready frontier, a declared loop boundary, and its feedback edge.
+
+See [the v0.4 dogfood record](docs/v0.4-dogfood.md) and [the command-check gate example](examples/command-check-gate.json).
 
 ## Language rules
 
@@ -148,6 +154,8 @@ Retries are explicit. Hypagraph does not retry automatically. A retry must use a
 
 A command check stores environment-variable names only. It does not store environment values. The executor inherits a small safe launch environment by default. A definition can replace that default with an explicit list of names.
 
+Hypagraph stores check artifacts under `.hypagraph/check-artifacts`. v0.4 does not delete artifacts automatically. They remain until the user or workspace cleanup removes them. The default stdout and stderr capture limit is 1,048,576 bytes for each stream.
+
 ## Design documents
 
 - [Product and technical specification](docs/product-spec.md)
@@ -156,6 +164,8 @@ A command check stores environment-variable names only. It does not store enviro
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
 - [Check cancellation, retry, and environment policy](docs/check-execution-policy.md)
+- [v0.4 dogfood record](docs/v0.4-dogfood.md)
+- [v0.4 release notes](CHANGELOG.md)
 - [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
 - [Event-driven runtime](docs/event-runtime.md)
 - [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)
