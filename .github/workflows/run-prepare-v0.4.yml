@@ -41,6 +41,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add --all
+          git add package.json package-lock.json README.md CHANGELOG.md docs examples
           git commit -m "Prepare Hypagraph v0.4 release"
           git push origin HEAD:agent/m3-slice-10-v0.4-release
