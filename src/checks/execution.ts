@@ -1,4 +1,5 @@
-import type { CheckExecutionRequest, CheckExecutor, CheckResult, HypagraphState } from "../domain/model.js";
+import type { CheckExecutionRequest, CheckExecutor, CheckResult, Diagnostic, HypagraphCommand, HypagraphState } from "../domain/model.js";
+import { createCheckFactPublicationCommand } from "./normalization.js";
 
 export function createCheckExecutionRequest(state: HypagraphState, nodeId: string, attemptId: string, requestedAt: string): CheckExecutionRequest {
   const node = state.definition.nodes.find((item) => item.id === nodeId);
@@ -18,4 +19,20 @@ export function createCheckExecutionRequest(state: HypagraphState, nodeId: strin
 export async function executeCheck(executor: CheckExecutor, request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult> {
   const result = await executor.execute(structuredClone(request), signal);
   return structuredClone(result);
+}
+
+export type ExecutedCheck =
+  | { ok: true; result: CheckResult; publicationCommand: HypagraphCommand }
+  | { ok: false; result: CheckResult; diagnostics: Diagnostic[] };
+
+export async function executeAndNormalizeCheck(
+  executor: CheckExecutor,
+  request: CheckExecutionRequest,
+  signal: AbortSignal,
+  recordedAt: string,
+): Promise<ExecutedCheck> {
+  const result = await executeCheck(executor, request, signal);
+  const publication = createCheckFactPublicationCommand(request, result, recordedAt);
+  if (!publication.ok) return { ok: false, result, diagnostics: publication.diagnostics };
+  return { ok: true, result, publicationCommand: publication.command };
 }
