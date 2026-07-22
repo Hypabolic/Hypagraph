@@ -1,3 +1,4 @@
+import type { Condition } from "./conditions.js";
 import type { Diagnostic, HypagraphDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
@@ -8,6 +9,18 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
   if (left.length !== right.length) return false;
   const values = new Set(left);
   return right.every((item) => values.has(item));
+};
+
+const conditionFacts = (condition: Condition): string[] => {
+  switch (condition.kind) {
+    case "exists": return [condition.fact];
+    case "not": return conditionFacts(condition.condition);
+    case "all":
+    case "any": return condition.conditions.flatMap(conditionFacts);
+    case "compare": return [condition.left, condition.right]
+      .filter((value): value is Extract<typeof value, { kind: "fact" }> => value.kind === "fact")
+      .map((value) => value.name);
+  }
 };
 
 export function validateDefinition(definition: HypagraphDefinition): Diagnostic[] {
@@ -34,7 +47,7 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       if (localFacts.has(fact.name)) diagnostics.push({ code: "duplicate_fact_contract", message: `Node '${node.id}' declares fact '${fact.name}' more than one time.`, location: `${factLocation}.name` });
       localFacts.add(fact.name);
       const owner = factOwners.get(fact.name);
-      if (owner && owner !== node.id) diagnostics.push({ code: "conflicting_fact_producer", message: `Facts '${fact.name}' has producers '${owner}' and '${node.id}'.`, location: `${factLocation}.name` });
+      if (owner && owner !== node.id) diagnostics.push({ code: "conflicting_fact_producer", message: `Fact '${fact.name}' has producers '${owner}' and '${node.id}'.`, location: `${factLocation}.name` });
       factOwners.set(fact.name, node.id);
     });
   });
@@ -43,6 +56,31 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     node.requires.forEach((required, requiredIndex) => {
       if (!ids.has(required)) diagnostics.push({ code: "dangling_dependency", message: `Node '${node.id}' requires node '${required}', but that node does not exist.`, location: `nodes[${index}].requires[${requiredIndex}]` });
     });
+  });
+
+  definition.nodes.forEach((node, index) => {
+    const location = `nodes[${index}]`;
+    const kind = node.kind ?? "task";
+    if (kind === "task" && node.gate) diagnostics.push({ code: "task_has_gate", message: `Task node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+    if (kind === "gate") {
+      if (!node.gate) {
+        diagnostics.push({ code: "gate_definition_required", message: `Gate node '${node.id}' requires a gate definition.`, location: `${location}.gate` });
+        return;
+      }
+      if (node.gate.onTrue.length === 0 || node.gate.onFalse.length === 0) diagnostics.push({ code: "gate_routes_required", message: `Gate '${node.id}' requires true and false route targets.`, location: `${location}.gate` });
+      const trueTargets = new Set(node.gate.onTrue);
+      const falseTargets = new Set(node.gate.onFalse);
+      if (trueTargets.size !== node.gate.onTrue.length || falseTargets.size !== node.gate.onFalse.length) diagnostics.push({ code: "duplicate_gate_target", message: `Gate '${node.id}' repeats a route target.`, location: `${location}.gate` });
+      for (const targetId of [...node.gate.onTrue, ...node.gate.onFalse]) {
+        const target = definition.nodes.find((item) => item.id === targetId);
+        if (!target) diagnostics.push({ code: "dangling_gate_target", message: `Gate '${node.id}' targets node '${targetId}', but that node does not exist.`, location: `${location}.gate` });
+        else if (!target.requires.includes(node.id)) diagnostics.push({ code: "gate_target_dependency_required", message: `Gate target '${targetId}' must require gate '${node.id}'.`, location: `${location}.gate` });
+      }
+      for (const targetId of trueTargets) if (falseTargets.has(targetId)) diagnostics.push({ code: "overlapping_gate_target", message: `Gate target '${targetId}' occurs in both outcomes.`, location: `${location}.gate` });
+      for (const fact of conditionFacts(node.gate.condition)) {
+        if (!factOwners.has(fact)) diagnostics.push({ code: "unknown_condition_fact", message: `Gate '${node.id}' uses undeclared fact '${fact}'.`, location: `${location}.gate.condition` });
+      }
+    }
   });
 
   if (diagnostics.some((item) => item.code === "duplicate_node_id" || item.code === "dangling_dependency")) return diagnostics;
@@ -79,9 +117,7 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     }
     if (loop.feedbackEdges.length === 0) diagnostics.push({ code: "missing_feedback_edge", message: `Loop '${loop.id}' must identify at least one feedback edge.`, location: `${location}.feedbackEdges` });
 
-    if (!cyclic.find((component) => sameSet(component, loop.nodes))) {
-      diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
-    }
+    if (!cyclic.find((component) => sameSet(component, loop.nodes))) diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
   });
 
   for (const component of cyclic) {
