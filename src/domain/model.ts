@@ -1,7 +1,7 @@
 import type { Condition } from "./conditions.js";
 import type { FactContract, FactRecord, FactType, FactValue } from "./facts.js";
 
-export const HYPAGRAPH_SCHEMA_VERSION = 2 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 3 as const;
 export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
 export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
@@ -106,15 +106,52 @@ export interface NodeDefinition {
 
 export interface FeedbackEdge { from: string; to: string }
 
+export interface LegacyLoopPredicate {
+  kind: "legacy-text";
+  text: string;
+}
+
+export type LoopSuccessPredicate = Condition | LegacyLoopPredicate | string;
+
 export interface LoopDefinition {
   id: string;
   nodes: string[];
   entry: string;
   evaluateAfter: string;
   feedbackEdges: FeedbackEdge[];
-  successWhen: string;
+  successWhen: LoopSuccessPredicate;
   maxIterations: number;
   patience?: number;
+}
+
+export type LoopStatus = "pending" | "running" | "succeeded" | "requires_revision";
+export type LoopDecision = "complete" | "pending";
+
+export interface LoopIterationRuntime {
+  iteration: number;
+  startedAt: string;
+  evaluatedAt?: string;
+  evaluationEventId?: string;
+  evaluationSequence?: number;
+  success?: boolean;
+  factsUsed: string[];
+  semanticsVersion?: number;
+  decision?: LoopDecision;
+}
+
+export interface LoopRuntime {
+  loopId: string;
+  status: LoopStatus;
+  currentIteration: number;
+  maxIterations: number;
+  iterations: LoopIterationRuntime[];
+  lastSuccess?: boolean;
+  factsUsed: string[];
+  semanticsVersion?: number;
+  startedAt?: string;
+  completedAt?: string;
+  exitReason?: "success";
+  legacyPredicate?: string;
 }
 
 export interface WorkflowPolicy {
@@ -140,6 +177,8 @@ export interface AttemptRuntime {
   evidence: EvidenceReference[];
   failureReason?: string;
   checkResult?: CheckResult;
+  loopId?: string;
+  iteration?: number;
 }
 
 export interface NodeRuntime {
@@ -172,6 +211,7 @@ export interface HypagraphState {
     nodes: Record<string, NodeRuntime>;
     facts: Record<string, FactRecord>;
     routes: Record<string, RouteSelection>;
+    loops: Record<string, LoopRuntime>;
   };
   createdAt: string;
   updatedAt: string;
@@ -206,7 +246,10 @@ export type EventType =
   | "hypagraph.verification.started"
   | "hypagraph.verification.passed"
   | "hypagraph.verification.failed"
-  | "hypagraph.attempt.cancelled";
+  | "hypagraph.attempt.cancelled"
+  | "hypagraph.loop.iteration-started"
+  | "hypagraph.loop.evaluated"
+  | "hypagraph.loop.completed";
 
 export interface DomainEvent<T = Record<string, unknown>> {
   eventId: string;
@@ -220,6 +263,7 @@ export interface DomainEvent<T = Record<string, unknown>> {
   correlationId: string;
   nodeId?: string;
   attemptId?: string;
+  loopId?: string;
   data: T;
 }
 

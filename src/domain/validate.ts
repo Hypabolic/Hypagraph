@@ -1,6 +1,6 @@
 import { measureCondition, type Condition, type ValueExpression } from "./conditions.js";
 import type { FactType, FactValue } from "./facts.js";
-import type { CheckFactSource, Diagnostic, HypagraphDefinition, NodeDefinition } from "./model.js";
+import type { CheckFactSource, Diagnostic, HypagraphDefinition, LegacyLoopPredicate, LoopDefinition, NodeDefinition } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -46,7 +46,31 @@ const operatorAccepts = (operator: Extract<Condition, { kind: "compare" }>["oper
   }
 };
 
-const validateCondition = (condition: Condition, factTypes: ReadonlyMap<string, FactType>, availableFacts: ReadonlySet<string>, location: string): Diagnostic[] => {
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+
+const isFactValue = (value: unknown): value is FactValue =>
+  typeof value === "boolean" || typeof value === "number" || typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"));
+
+const isValueExpression = (value: unknown): value is ValueExpression => {
+  if (!isRecord(value)) return false;
+  if (value.kind === "fact") return typeof value.name === "string";
+  return value.kind === "literal" && isFactValue(value.value);
+};
+
+const isConditionShape = (value: unknown, depth = 0): value is Condition => {
+  if (!isRecord(value) || depth > 32 || typeof value.kind !== "string") return false;
+  switch (value.kind) {
+    case "exists": return typeof value.fact === "string";
+    case "not": return isConditionShape(value.condition, depth + 1);
+    case "all":
+    case "any": return Array.isArray(value.conditions) && value.conditions.every((item) => isConditionShape(item, depth + 1));
+    case "compare": return ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"].includes(String(value.operator)) && isValueExpression(value.left) && isValueExpression(value.right);
+    default: return false;
+  }
+};
+
+const validateCondition = (condition: unknown, factTypes: ReadonlyMap<string, FactType>, availableFacts: ReadonlySet<string>, location: string): Diagnostic[] => {
+  if (!isConditionShape(condition)) return [{ code: "invalid_condition", message: "The condition must use the supported typed condition structure.", location }];
   const complexity = measureCondition(condition);
   if (!complexity.ok) return [{ code: complexity.code, message: complexity.message, location }];
   const diagnostics: Diagnostic[] = [];
@@ -54,7 +78,7 @@ const validateCondition = (condition: Condition, factTypes: ReadonlyMap<string, 
     switch (value.kind) {
       case "exists":
         if (!factTypes.has(value.fact)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${value.fact}'.`, location: currentLocation });
-        else if (!availableFacts.has(value.fact)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${value.fact}' is not produced by an upstream node.`, location: currentLocation });
+        else if (!availableFacts.has(value.fact)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${value.fact}' is not available before this decision.`, location: currentLocation });
         break;
       case "not": visit(value.condition, `${currentLocation}.condition`); break;
       case "all":
@@ -66,7 +90,7 @@ const validateCondition = (condition: Condition, factTypes: ReadonlyMap<string, 
         for (const expression of [value.left, value.right]) {
           if (expression.kind !== "fact") continue;
           if (!factTypes.has(expression.name)) diagnostics.push({ code: "unknown_condition_fact", message: `The condition uses undeclared fact '${expression.name}'.`, location: currentLocation });
-          else if (!availableFacts.has(expression.name)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${expression.name}' is not produced by an upstream node.`, location: currentLocation });
+          else if (!availableFacts.has(expression.name)) diagnostics.push({ code: "condition_fact_not_upstream", message: `Fact '${expression.name}' is not available before this decision.`, location: currentLocation });
         }
         const left = valueType(value.left, factTypes);
         const right = valueType(value.right, factTypes);
@@ -81,13 +105,17 @@ const validateCondition = (condition: Condition, factTypes: ReadonlyMap<string, 
 
 const upstreamNodeIds = (definition: HypagraphDefinition, nodeId: string): Set<string> => {
   const byId = new Map(definition.nodes.map((node) => [node.id, node]));
+  const edgeKey = (sourceId: string, targetId: string): string => `${sourceId}->${targetId}`;
+  const feedback = new Set(definition.loops.flatMap((loop) => loop.feedbackEdges.map((edge) => edgeKey(edge.from, edge.to))));
+  const dependencies = (targetId: string): string[] => (byId.get(targetId)?.requires ?? [])
+    .filter((sourceId) => !feedback.has(edgeKey(sourceId, targetId)));
   const result = new Set<string>();
-  const queue = [...(byId.get(nodeId)?.requires ?? [])];
+  const queue = [...dependencies(nodeId)];
   while (queue.length > 0) {
     const current = queue.shift()!;
     if (result.has(current)) continue;
     result.add(current);
-    queue.push(...(byId.get(current)?.requires ?? []));
+    queue.push(...dependencies(current));
   }
   return result;
 };
@@ -151,6 +179,55 @@ const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => 
     else if (contractType !== sourceType(mapping.source)) diagnostics.push({ code: "check_fact_type_mismatch", message: `Check source '${mapping.source}' cannot publish fact '${mapping.fact}' with type '${contractType}'.`, location: mappingLocation });
   });
   return diagnostics;
+};
+
+const isLegacyPredicate = (value: unknown): value is string | LegacyLoopPredicate => typeof value === "string" || (isRecord(value) && value.kind === "legacy-text" && typeof value.text === "string");
+
+const feedbackKey = (from: string, to: string): string => `${from}\u0000${to}`;
+
+const iterationOutgoing = (definition: HypagraphDefinition, loop: LoopDefinition): Map<string, string[]> => {
+  const nodes = new Set(loop.nodes);
+  const feedback = new Set(loop.feedbackEdges.map((edge) => feedbackKey(edge.from, edge.to)));
+  const outgoing = new Map(loop.nodes.map((nodeId) => [nodeId, [] as string[]]));
+  for (const target of definition.nodes) {
+    if (!nodes.has(target.id)) continue;
+    for (const source of target.requires) {
+      if (!nodes.has(source) || feedback.has(feedbackKey(source, target.id))) continue;
+      outgoing.get(source)?.push(target.id);
+    }
+  }
+  for (const values of outgoing.values()) values.sort();
+  return outgoing;
+};
+
+const reachableFrom = (start: string, outgoing: ReadonlyMap<string, readonly string[]>): Set<string> => {
+  const result = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (result.has(current)) continue;
+    result.add(current);
+    queue.push(...(outgoing.get(current) ?? []));
+  }
+  return result;
+};
+
+const hasCycle = (nodes: readonly string[], outgoing: ReadonlyMap<string, readonly string[]>): boolean => {
+  const indegree = new Map(nodes.map((node) => [node, 0]));
+  for (const values of outgoing.values()) for (const target of values) indegree.set(target, (indegree.get(target) ?? 0) + 1);
+  const queue = nodes.filter((node) => indegree.get(node) === 0).sort();
+  let count = 0;
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    count += 1;
+    for (const target of outgoing.get(current) ?? []) {
+      const next = (indegree.get(target) ?? 0) - 1;
+      indegree.set(target, next);
+      if (next === 0) queue.push(target);
+    }
+    queue.sort();
+  }
+  return count !== nodes.length;
 };
 
 export function validateDefinition(definition: HypagraphDefinition): Diagnostic[] {
@@ -223,11 +300,13 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
   const loopIds = new Set<string>();
   definition.loops.forEach((loop, index) => {
     const location = `loops[${index}]`;
+    const loopNodes = new Set(loop.nodes);
     if (!ID_PATTERN.test(loop.id)) diagnostics.push({ code: "invalid_loop_id", message: `Loop ID '${loop.id}' is not valid.`, location: `${location}.id` });
     if (loopIds.has(loop.id)) diagnostics.push({ code: "duplicate_loop_id", message: `Loop ID '${loop.id}' occurs more than one time.`, location: `${location}.id` });
     loopIds.add(loop.id);
+    if (new Set(loop.nodes).size !== loop.nodes.length) diagnostics.push({ code: "duplicate_loop_node", message: `Loop '${loop.id}' repeats a node.`, location: `${location}.nodes` });
     if (!Number.isInteger(loop.maxIterations) || loop.maxIterations < 1) diagnostics.push({ code: "invalid_loop_limit", message: `Loop '${loop.id}' must have a positive iteration limit.`, location: `${location}.maxIterations` });
-    if (!loop.successWhen.trim()) diagnostics.push({ code: "missing_success_predicate", message: `Loop '${loop.id}' must have a success predicate.`, location: `${location}.successWhen` });
+    if (loop.patience !== undefined) diagnostics.push({ code: "loop_patience_not_available", message: `Loop '${loop.id}' cannot use patience before the M4 progress slice.`, location: `${location}.patience` });
     for (const node of loop.nodes) {
       if (!ids.has(node)) diagnostics.push({ code: "dangling_loop_node", message: `Loop '${loop.id}' refers to node '${node}', but that node does not exist.`, location: `${location}.nodes` });
       const owner = claimedNodes.get(node);
@@ -236,12 +315,52 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     }
     if (!loop.nodes.includes(loop.entry)) diagnostics.push({ code: "invalid_loop_entry", message: `Loop entry '${loop.entry}' is not in loop '${loop.id}'.`, location: `${location}.entry` });
     if (!loop.nodes.includes(loop.evaluateAfter)) diagnostics.push({ code: "invalid_loop_evaluator", message: `Loop evaluator '${loop.evaluateAfter}' is not in loop '${loop.id}'.`, location: `${location}.evaluateAfter` });
+    const entryNode = definition.nodes.find((node) => node.id === loop.entry);
+    const evaluatorNode = definition.nodes.find((node) => node.id === loop.evaluateAfter);
+    if (entryNode && (entryNode.kind ?? "task") === "gate") diagnostics.push({ code: "loop_entry_cannot_be_gate", message: `Loop entry '${loop.entry}' must be a task or check node.`, location: `${location}.entry` });
+    if (evaluatorNode && (evaluatorNode.kind ?? "task") === "gate") diagnostics.push({ code: "loop_evaluator_cannot_be_gate", message: `Loop evaluator '${loop.evaluateAfter}' must be a task or check node.`, location: `${location}.evaluateAfter` });
+
+    for (const nodeId of loop.nodes) {
+      const node = definition.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) continue;
+      for (const required of node.requires) {
+        if (!loopNodes.has(required) && node.id !== loop.entry) diagnostics.push({ code: "loop_external_input_not_entry", message: `External dependency '${required}' must enter loop '${loop.id}' through '${loop.entry}'.`, location: `${location}.nodes` });
+      }
+    }
+    for (const target of definition.nodes) {
+      if (loopNodes.has(target.id)) continue;
+      for (const required of target.requires) {
+        if (loopNodes.has(required) && required !== loop.evaluateAfter) diagnostics.push({ code: "loop_external_output_not_evaluator", message: `External node '${target.id}' must leave loop '${loop.id}' through '${loop.evaluateAfter}'.`, location: `${location}.evaluateAfter` });
+      }
+    }
+
+    const feedbackEdges = new Set<string>();
     for (const edge of loop.feedbackEdges) {
+      const key = feedbackKey(edge.from, edge.to);
+      feedbackEdges.add(key);
       const target = definition.nodes.find((node) => node.id === edge.to);
-      if (!loop.nodes.includes(edge.from) || !loop.nodes.includes(edge.to) || !target?.requires.includes(edge.from)) diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
+      if (!loopNodes.has(edge.from) || !loopNodes.has(edge.to) || !target?.requires.includes(edge.from)) diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
+      if (edge.from !== loop.evaluateAfter || edge.to !== loop.entry) diagnostics.push({ code: "invalid_feedback_boundary", message: `Feedback in loop '${loop.id}' must go from '${loop.evaluateAfter}' to '${loop.entry}'.`, location: `${location}.feedbackEdges` });
     }
     if (loop.feedbackEdges.length === 0) diagnostics.push({ code: "missing_feedback_edge", message: `Loop '${loop.id}' must identify at least one feedback edge.`, location: `${location}.feedbackEdges` });
+
     if (!cyclic.find((component) => sameSet(component, loop.nodes))) diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
+
+    if (loop.nodes.every((nodeId) => ids.has(nodeId)) && loopNodes.has(loop.entry) && loopNodes.has(loop.evaluateAfter)) {
+      const iteration = iterationOutgoing(definition, loop);
+      if (hasCycle(loop.nodes, iteration)) diagnostics.push({ code: "loop_iteration_not_acyclic", message: `Loop '${loop.id}' must become acyclic after feedback edges are removed.`, location: `${location}.feedbackEdges` });
+      const fromEntry = reachableFrom(loop.entry, iteration);
+      for (const nodeId of loop.nodes) if (!fromEntry.has(nodeId)) diagnostics.push({ code: "loop_node_not_reachable_from_entry", message: `Node '${nodeId}' is not reachable from loop entry '${loop.entry}'.`, location: `${location}.nodes` });
+      for (const nodeId of loop.nodes) if (!reachableFrom(nodeId, iteration).has(loop.evaluateAfter)) diagnostics.push({ code: "loop_node_cannot_reach_evaluator", message: `Node '${nodeId}' cannot reach loop evaluator '${loop.evaluateAfter}'.`, location: `${location}.nodes` });
+    }
+
+    if (isLegacyPredicate(loop.successWhen)) {
+      diagnostics.push({ code: typeof loop.successWhen === "string" ? "loop_predicate_must_be_typed" : "loop_predicate_revision_required", message: `Loop '${loop.id}' requires a typed success condition.`, location: `${location}.successWhen` });
+    } else {
+      const allowedOwners = new Set([...upstreamNodeIds(definition, loop.entry), ...loop.nodes]);
+      const availableFacts = new Set([...factOwners].filter(([, owner]) => allowedOwners.has(owner)).map(([name]) => name));
+      diagnostics.push(...validateCondition(loop.successWhen, factTypes, availableFacts, `${location}.successWhen`));
+    }
   });
   for (const component of cyclic) {
     const matches = definition.loops.filter((loop) => sameSet(loop.nodes, component));

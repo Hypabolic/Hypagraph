@@ -118,7 +118,7 @@ const drawRect = (
   }
 };
 
-const drawLoop = (canvas: CharacterCanvas, loop: GraphLayout["loops"][number], unicode: boolean): void => {
+const drawLoop = (canvas: CharacterCanvas, loop: GraphLayout["loops"][number], view: GraphViewModel, unicode: boolean): void => {
   const glyphs = unicode
     ? { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "┄", v: "┆" }
     : { tl: "+", tr: "+", bl: "+", br: "+", h: ".", v: ":" };
@@ -134,7 +134,10 @@ const drawLoop = (canvas: CharacterCanvas, loop: GraphLayout["loops"][number], u
     canvas.set(loop.x, y, glyphs.v);
     canvas.set(loop.x + loop.width - 1, y, glyphs.v);
   }
-  canvas.text(loop.x + 2, loop.y, `loop ${loop.id} [0/${loop.maxIterations}]`, Math.max(0, loop.width - 4));
+  const viewLoop = view.loops.find((candidate) => candidate.id === loop.id);
+  const iteration = viewLoop?.currentIteration ?? 0;
+  const suffix = viewLoop?.status === "succeeded" ? " complete" : viewLoop?.status === "requires_revision" ? " revise" : "";
+  canvas.text(loop.x + 2, loop.y, `loop ${loop.id} [${iteration}/${loop.maxIterations}]${suffix}`, Math.max(0, loop.width - 4));
 };
 
 const segmentGlyphs = (edge: GraphLayoutEdge, unicode: boolean): { horizontal: string; vertical: string } => {
@@ -218,7 +221,7 @@ const drawNode = (
 export function renderGraphScene(view: GraphViewModel, layout: GraphLayout, options: GraphRenderOptions): string[] {
   const unicode = options.unicode ?? true;
   const canvas = new CharacterCanvas(Math.max(1, layout.width), Math.max(1, layout.height));
-  for (const loop of layout.loops) drawLoop(canvas, loop, unicode);
+  for (const loop of layout.loops) drawLoop(canvas, loop, view, unicode);
   for (const edge of layout.edges) drawEdge(canvas, edge, unicode);
   for (const node of layout.nodes) drawNode(canvas, node, view, options.selectedNodeId, unicode);
   return canvas.lines(

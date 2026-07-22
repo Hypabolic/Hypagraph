@@ -1,6 +1,7 @@
 import type {
   CheckResultStatus,
   HypagraphState,
+  LoopStatus,
   NodeKind,
   NodeStatus,
   WorkflowPhase,
@@ -27,6 +28,7 @@ export interface GraphViewNode {
   factCount: number;
   evidenceCount: number;
   loopId?: string;
+  iteration?: number;
   check?: GraphViewCheckSummary;
 }
 
@@ -52,6 +54,10 @@ export interface GraphViewLoop {
   evaluationNodeId: string;
   feedbackEdges: GraphViewFeedbackEdge[];
   maxIterations: number;
+  status: LoopStatus;
+  currentIteration: number;
+  lastSuccess?: boolean;
+  exitReason?: string;
 }
 
 export interface GraphViewModel {
@@ -92,6 +98,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         .map((edge) => ({ source: edge.from, target: edge.to }))
         .sort((left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target));
       for (const edge of feedbackEdges) feedbackKeys.add(`${edge.source}\u0000${edge.target}`);
+      const runtime = state.runtime.loops[loop.id];
       return {
         id: loop.id,
         nodeIds: [...loop.nodes].sort(),
@@ -99,6 +106,10 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         evaluationNodeId: loop.evaluateAfter,
         feedbackEdges,
         maxIterations: loop.maxIterations,
+        status: runtime?.status ?? "pending",
+        currentIteration: runtime?.currentIteration ?? 0,
+        ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
+        ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
@@ -128,6 +139,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         factCount: factCountByNode.get(definition.id) ?? 0,
         evidenceCount: runtime.evidence.length,
         ...(loopByNode.get(definition.id) === undefined ? {} : { loopId: loopByNode.get(definition.id)! }),
+        ...(attempt?.iteration === undefined ? {} : { iteration: attempt.iteration }),
         ...(checkResult === undefined
           ? {}
           : {

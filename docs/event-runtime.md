@@ -1,22 +1,23 @@
 # Hypagraph event-driven runtime
 
 - Status: implemented
-- Version: 0.3
-- Date: 2026-07-21
+- Version: 0.5 development
+- Date: 2026-07-22
+- Writing standard: ASD-STE100 Simplified Technical English
 
 ## Purpose
 
-The graph defines the work. The runtime controls execution.
+The graph defines the work. The deterministic runtime controls state changes.
 
-Hypagraph now uses commands, versioned events, and pure projections. The Pi extension does not change graph state directly.
+Hypagraph uses commands, versioned events, and pure projections. The Pi extension does not change canonical graph state directly.
 
 ## Source of truth
 
 The ordered event stream is the source of truth.
 
-A snapshot is a projection of that event stream. Hypagraph stores the event stream and the snapshot together. During restoration, Hypagraph replays the events and compares the new snapshot hash with the stored snapshot hash.
+A snapshot is a projection of that event stream. Hypagraph stores each accepted event batch with its resulting snapshot. Restore replays the events and checks the snapshot hash.
 
-Hypagraph rejects the stored data when the hashes do not match.
+Schema version 2 snapshots are accepted only through the migration path. New schema version 3 batches must match their replayed hash.
 
 ## Event envelope
 
@@ -26,37 +27,37 @@ Each event contains:
 - workflow ID;
 - graph revision;
 - sequence number;
-- event type;
-- event version;
+- event type and version;
 - timestamp;
 - causation ID;
 - correlation ID;
 - optional node ID;
 - optional attempt ID;
+- optional loop ID;
 - event data.
 
-Sequence numbers must be contiguous. The first event has sequence number 1.
+Sequence numbers are contiguous. The first event has sequence number 1.
 
 ## Commands
 
-The runtime supports these commands:
+The runtime supports commands for:
 
-- revise workflow;
-- start node;
-- submit attempt result;
-- begin verification;
-- complete verification;
-- block node;
-- unblock node;
-- cancel attempt;
-- pause workflow;
-- resume workflow.
+- workflow revision, pause, and resume;
+- task and check start;
+- check-result recording;
+- typed fact publication;
+- gate evaluation;
+- result submission and verification;
+- node block and unblock;
+- attempt cancellation.
 
-A command produces events or diagnostics. A rejected command produces no events.
+A command returns events or diagnostics. A rejected command returns no events.
 
-## Node lifecycle
+The model cannot select a loop decision. Loop start and evaluation are deterministic effects of existing task and check commands.
 
-The M1 node states are:
+## Node and attempt lifecycle
+
+Node states are:
 
 ```text
 pending
@@ -69,39 +70,48 @@ succeeded
 failed
 blocked
 cancelled
+skipped
 stale
 ```
 
-The current runtime does not use `starting` yet. The state is reserved for delegated execution.
-
-## Attempt lifecycle
-
-Each node start creates an immutable attempt ID.
-
-The attempt states are:
-
-```text
-running
-submitted
-verifying
-succeeded
-failed
-cancelled
-```
+Each node start creates an immutable attempt ID. Attempts inside a loop also store the loop ID and iteration number.
 
 A result is valid only when its attempt ID is the current attempt ID for the node. Hypagraph rejects stale results and stale cancellation requests.
 
-## Completion flow
+## Typed facts and gates
 
-The public `hypagraph_transition` tool keeps the current `complete` action. The Pi adapter converts this action into three commands:
+Facts are bound to:
 
-1. submit the attempt result;
-2. begin verification;
-3. complete verification.
+- producer node;
+- attempt ID;
+- workflow revision;
+- optional loop ID;
+- optional loop iteration.
 
-This keeps the public tool simple. It also keeps execution success separate from verification success in the event history.
+A gate uses the typed condition structure. The route-selection event stores the outcome, facts used, and condition-semantics version.
 
-Later check executors can replace the immediate verification pass without a public tool change.
+## Loop Slice 1 lifecycle
+
+A new loop definition uses a typed `successWhen` condition.
+
+When the ready loop entry starts, one command batch records:
+
+1. `hypagraph.loop.iteration-started`;
+2. the task-attempt or check-start event.
+
+When the evaluation node passes verification, the same command batch records:
+
+1. the verification-passed event;
+2. `hypagraph.loop.evaluated`;
+3. `hypagraph.loop.completed` when the condition is true;
+4. any newly ready downstream nodes;
+5. workflow completion when applicable.
+
+The loop evaluation event stores the iteration, success value, facts used, condition-semantics version, and decision. Replay uses the stored decision. It does not evaluate the condition again from later facts.
+
+A node outside the loop cannot become ready from the evaluation node until the loop status is `succeeded`.
+
+Slice 1 does not start a second iteration. A false condition records a pending decision and keeps downstream work blocked. Slice 2 adds feedback continuation and iteration reset.
 
 ## Readiness
 
@@ -110,28 +120,52 @@ Readiness is recorded as an event.
 Hypagraph emits a node-ready event when:
 
 - the node is pending or stale;
-- all required predecessor nodes succeeded;
-- the node is not inside an executable loop that is not yet supported.
+- all non-feedback dependencies succeeded or were skipped;
+- each source loop for an external dependency succeeded.
 
 The ready frontier is a projection of node-ready events.
+
+## Durable check boundary
+
+A command check keeps this order:
+
+```text
+store check start
+    |
+    v
+run command
+    |
+    v
+store facts
+    |
+    v
+store raw result
+    |
+    v
+store verification and loop decision
+```
+
+Restore does not run a task or check.
 
 ## Replay rules
 
 Replay must obey these rules:
 
-1. The first event must define the workflow.
-2. Every event must have the same workflow ID.
-3. Event sequence numbers must be contiguous.
-4. Events must be applied in sequence order.
-5. The same event stream must always produce the same snapshot hash.
+1. The first event defines the workflow.
+2. Every event has the same workflow ID.
+3. Event sequence numbers are contiguous.
+4. Events are applied in sequence order.
+5. The same event stream produces the same snapshot hash.
+6. Loop decisions come from stored events.
+7. Replay does not read the clock, run a process, or call Pi.
 
 ## Schema migration
 
-Schema version 2 is the current format.
+Schema version 3 is the current snapshot format.
 
-Hypagraph can read a valid schema version 1 snapshot. It converts the old node states into a schema version 2 event stream. It then rebuilds a new snapshot from those events.
+A valid version 2 event stream without loops replays into schema version 3 automatically.
 
-All new state changes use schema version 2 events.
+A version 2 loop with a textual predicate remains readable. Migration stores the text as legacy predicate data and sets the loop status to `requires_revision`. Hypagraph does not guess how to convert the text into executable logic. A definition revision must supply a typed condition before the loop can run.
 
 ## Pi adapter boundary
 
@@ -139,22 +173,23 @@ The Pi extension can:
 
 - convert tool input into commands;
 - call the domain command handler;
-- append returned events;
-- store events and snapshots;
-- render projections;
-- enforce file scope at the Pi tool boundary.
+- append returned event batches;
+- run an external check only after its start event is stored;
+- render text and graph projections;
+- enforce file scope at the Pi boundary.
 
-The Pi extension must not contain domain transition rules.
+The Pi extension must not contain loop decision rules.
 
-## Current limits
+## Current M4 limit
 
-M1 does not add:
+M4 Slice 1 supports one successful loop iteration.
 
-- deterministic check runners;
-- typed facts;
-- gate evaluation;
-- executable loops;
-- delegated workers;
-- concurrent execution.
+It does not yet support:
 
-These functions belong to later milestones.
+- feedback continuation into iteration 2;
+- hard-limit failure;
+- progress metrics or patience;
+- failed-check observation as a continuation signal;
+- loop cancellation and revision hardening;
+- parallel iterations;
+- nested or overlapping loops.
