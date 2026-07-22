@@ -1,6 +1,6 @@
 import { sha256 } from "./hash.js";
 import type { FactRecord } from "./facts.js";
-import type { AttemptRuntime, DomainEvent, HypagraphState, NodeRuntime } from "./model.js";
+import type { AttemptRuntime, DomainEvent, HypagraphState, NodeRuntime, RouteSelection } from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
@@ -13,7 +13,7 @@ const emptyNode = (): NodeRuntime => ({ status: "pending", attemptCount: 0, atte
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
   let phase = state.phase;
-  if (nodes.length > 0 && nodes.every((node) => node.status === "succeeded")) phase = "completed";
+  if (nodes.length > 0 && nodes.every((node) => node.status === "succeeded" || node.status === "skipped")) phase = "completed";
   else if (nodes.some((node) => node.status === "blocked") && !nodes.some((node) => ["ready", "running", "verifying", "awaiting_evidence"].includes(node.status))) phase = "blocked";
   else if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") phase = "running";
   return hashState({ ...state, phase });
@@ -35,7 +35,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       sequence: event.sequence,
       phase: "running",
       definition,
-      runtime: { nodes, facts: {} },
+      runtime: { nodes, facts: {}, routes: {} },
       createdAt: event.timestamp,
       updatedAt: event.timestamp,
     });
@@ -45,6 +45,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
   if (event.sequence !== state.sequence + 1) throw new Error("The event sequence is not contiguous.");
 
   const next = structuredClone(state);
+  next.runtime.routes ??= {};
   next.sequence = event.sequence;
   next.revision = event.revision;
   next.updatedAt = event.timestamp;
@@ -57,6 +58,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       const retained = next.runtime.nodes;
       next.runtime.nodes = {};
       for (const definitionNode of next.definition.nodes) next.runtime.nodes[definitionNode.id] = retained[definitionNode.id] ?? emptyNode();
+      next.runtime.routes = {};
       break;
     }
     case "hypagraph.workflow.paused": next.phase = "paused"; break;
@@ -64,11 +66,13 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.workflow.completed": next.phase = "completed"; break;
     case "hypagraph.workflow.failed": next.phase = "failed"; break;
     case "hypagraph.node.ready": if (node) node.status = "ready"; break;
+    case "hypagraph.node.skipped": if (node) node.status = "skipped"; break;
     case "hypagraph.node.invalidated":
       if (node) {
         node.status = "stale";
         delete node.currentAttemptId;
         node.evidence = [];
+        delete next.runtime.routes[event.nodeId!];
         for (const [name, fact] of Object.entries(next.runtime.facts)) {
           if (fact.producerNodeId === event.nodeId) delete next.runtime.facts[name];
         }
@@ -103,6 +107,20 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
           eventId: event.eventId,
           sequence: event.sequence,
         };
+      }
+      break;
+    case "hypagraph.route.selected":
+      if (node && event.nodeId) {
+        const route = event.data as Pick<RouteSelection, "outcomeId" | "targetNodeIds" | "factsUsed">;
+        next.runtime.routes[event.nodeId] = {
+          gateNodeId: event.nodeId,
+          outcomeId: route.outcomeId,
+          targetNodeIds: structuredClone(route.targetNodeIds),
+          factsUsed: structuredClone(route.factsUsed),
+          eventId: event.eventId,
+          sequence: event.sequence,
+        };
+        node.status = "succeeded";
       }
       break;
     case "hypagraph.attempt.result-submitted":

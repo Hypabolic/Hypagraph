@@ -11,8 +11,9 @@ import type {
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
 import type { PublishedFact } from "./facts.js";
 import { validatePublishedFact } from "./facts.js";
+import { evaluateCondition } from "./conditions.js";
 import { applyEvent, replayEvents } from "./projection.js";
-import { dependenciesAreSatisfied } from "./readiness.js";
+import { dependenciesAreSatisfied, dependenciesSelectSkip } from "./readiness.js";
 import { buildOutgoing } from "./scc.js";
 import { sha256 } from "./hash.js";
 import { validateDefinition } from "./validate.js";
@@ -67,13 +68,32 @@ const appendReadyEvents = (
   command: { commandId: string; correlationId?: string; at: string },
 ): HypagraphState => {
   let next = state;
-  for (const node of next.definition.nodes) {
-    const runtime = next.runtime.nodes[node.id];
-    if (!runtime || (runtime.status !== "pending" && runtime.status !== "stale")) continue;
-    if (!dependenciesAreSatisfied(next, node.id)) continue;
-    next = append(next, events, command, { type: "hypagraph.node.ready", nodeId: node.id });
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of next.definition.nodes) {
+      const runtime = next.runtime.nodes[node.id];
+      if (!runtime || (runtime.status !== "pending" && runtime.status !== "stale")) continue;
+      if (!dependenciesAreSatisfied(next, node.id)) continue;
+      next = append(next, events, command, {
+        type: dependenciesSelectSkip(next, node.id) ? "hypagraph.node.skipped" : "hypagraph.node.ready",
+        nodeId: node.id,
+      });
+      changed = true;
+    }
   }
   return next;
+};
+
+const appendCompletionIfNeeded = (
+  state: HypagraphState,
+  events: DomainEvent[],
+  command: { commandId: string; correlationId?: string; at: string },
+): HypagraphState => {
+  if (Object.values(state.runtime.nodes).every((item) => item.status === "succeeded" || item.status === "skipped")) {
+    return append(state, events, command, { type: "hypagraph.workflow.completed" });
+  }
+  return state;
 };
 
 export function createWorkflow(
@@ -156,9 +176,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     });
     events.push(revised);
     next = applyEvent(next, revised);
-    for (const nodeId of invalidated) {
-      next = append(next, events, command, { type: "hypagraph.node.invalidated", nodeId });
-    }
+    for (const nodeId of invalidated) next = append(next, events, command, { type: "hypagraph.node.invalidated", nodeId });
     next = appendReadyEvents(next, events, command);
     return { ok: true, state: next, events };
   }
@@ -169,32 +187,43 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
 
   switch (command.type) {
     case "start-node": {
-      if (state.definition.loops.some((loop) => loop.nodes.includes(command.nodeId))) {
-        return reject("loop_execution_pending", "Loop execution is not available in this release.");
-      }
+      if ((definitionNode.kind ?? "task") === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
+      if (state.definition.loops.some((loop) => loop.nodes.includes(command.nodeId))) return reject("loop_execution_pending", "Loop execution is not available in this release.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
       if (Object.values(state.runtime.nodes).some((item) => ["starting", "running", "awaiting_evidence", "verifying"].includes(item.status))) {
         return reject("node_already_active", "Another node has an active attempt.");
       }
+      next = append(next, events, command, { type: "hypagraph.attempt.started", nodeId: command.nodeId, attemptId: command.attemptId });
+      break;
+    }
+    case "evaluate-gate": {
+      if ((definitionNode.kind ?? "task") !== "gate" || !definitionNode.gate) return reject("node_not_gate", `Node '${command.nodeId}' is not a gate.`);
+      if (node.status !== "ready") return reject("gate_not_ready", `Gate '${command.nodeId}' is not ready.`);
+      if (state.runtime.routes[command.nodeId]) return reject("gate_already_evaluated", `Gate '${command.nodeId}' already selected a route.`);
+      const result = evaluateCondition(definitionNode.gate.condition, state.runtime.facts);
+      if (!result.ok) return reject(result.code, result.message, `nodes.${command.nodeId}.gate.condition`);
+      const selected = result.value ? definitionNode.gate.onTrue : definitionNode.gate.onFalse;
+      const unselected = result.value ? definitionNode.gate.onFalse : definitionNode.gate.onTrue;
       next = append(next, events, command, {
-        type: "hypagraph.attempt.started",
+        type: "hypagraph.route.selected",
         nodeId: command.nodeId,
-        attemptId: command.attemptId,
+        data: { outcomeId: result.value ? "true" : "false", targetNodeIds: structuredClone(selected), factsUsed: result.factsUsed },
       });
+      for (const nodeId of unselected) {
+        const runtime = next.runtime.nodes[nodeId];
+        if (runtime && ["pending", "ready", "stale"].includes(runtime.status)) {
+          next = append(next, events, command, { type: "hypagraph.node.skipped", nodeId });
+        }
+      }
+      next = appendReadyEvents(next, events, command);
+      next = appendCompletionIfNeeded(next, events, command);
       break;
     }
     case "publish-facts": {
-      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) {
-        return reject("stale_fact_attempt", "The facts do not match the current attempt.");
-      }
-      if (!["running", "awaiting_evidence", "verifying"].includes(node.status)) {
-        return reject("fact_publication_not_allowed", `Node '${command.nodeId}' cannot publish facts from '${node.status}'.`);
-      }
+      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_fact_attempt", "The facts do not match the current attempt.");
+      if (!["running", "awaiting_evidence", "verifying"].includes(node.status)) return reject("fact_publication_not_allowed", `Node '${command.nodeId}' cannot publish facts from '${node.status}'.`);
       if (command.facts.length === 0) return reject("facts_required", "Publish at least one fact.");
-      if (new Set(command.facts.map((fact) => fact.name)).size !== command.facts.length) {
-        return reject("duplicate_fact_input", "A publication command must not contain the same fact more than one time.");
-      }
-
+      if (new Set(command.facts.map((fact) => fact.name)).size !== command.facts.length) return reject("duplicate_fact_input", "A publication command must not contain the same fact more than one time.");
       const validated: PublishedFact[] = [];
       for (const input of command.facts) {
         const fact: PublishedFact = {
@@ -206,83 +235,41 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           revision: state.revision,
           evidence: structuredClone(input.evidence ?? []),
         };
-        const result = validatePublishedFact(fact, {
-          contracts: definitionNode.produces ?? [],
-          currentRevision: state.revision,
-          currentAttemptId: command.attemptId,
-        });
+        const result = validatePublishedFact(fact, { contracts: definitionNode.produces ?? [], currentRevision: state.revision, currentAttemptId: command.attemptId });
         if (!result.ok) return reject(result.code, result.message, `facts.${input.name}`);
         validated.push(result.fact);
       }
-
-      for (const fact of validated) {
-        next = append(next, events, command, {
-          type: "hypagraph.fact.published",
-          nodeId: command.nodeId,
-          attemptId: command.attemptId,
-          data: { fact: structuredClone(fact) },
-        });
-      }
+      for (const fact of validated) next = append(next, events, command, { type: "hypagraph.fact.published", nodeId: command.nodeId, attemptId: command.attemptId, data: { fact: structuredClone(fact) } });
       break;
     }
     case "submit-result": {
-      if (node.status !== "running" || node.currentAttemptId !== command.attemptId) {
-        return reject("stale_attempt", "The result does not match the current running attempt.");
-      }
-      if (state.definition.policy.requireEvidence && command.evidence.length === 0) {
-        return reject("evidence_required", `Node '${command.nodeId}' requires evidence.`);
-      }
-      next = append(next, events, command, {
-        type: "hypagraph.attempt.result-submitted",
-        nodeId: command.nodeId,
-        attemptId: command.attemptId,
-        data: { evidence: structuredClone(command.evidence) },
-      });
+      if (node.status !== "running" || node.currentAttemptId !== command.attemptId) return reject("stale_attempt", "The result does not match the current running attempt.");
+      if (state.definition.policy.requireEvidence && command.evidence.length === 0) return reject("evidence_required", `Node '${command.nodeId}' requires evidence.`);
+      next = append(next, events, command, { type: "hypagraph.attempt.result-submitted", nodeId: command.nodeId, attemptId: command.attemptId, data: { evidence: structuredClone(command.evidence) } });
       break;
     }
     case "begin-verification": {
-      if (node.status !== "awaiting_evidence" || node.currentAttemptId !== command.attemptId) {
-        return reject("attempt_not_submitted", "Submit the current attempt result before verification.");
-      }
-      next = append(next, events, command, {
-        type: "hypagraph.verification.started",
-        nodeId: command.nodeId,
-        attemptId: command.attemptId,
-      });
+      if (node.status !== "awaiting_evidence" || node.currentAttemptId !== command.attemptId) return reject("attempt_not_submitted", "Submit the current attempt result before verification.");
+      next = append(next, events, command, { type: "hypagraph.verification.started", nodeId: command.nodeId, attemptId: command.attemptId });
       break;
     }
     case "complete-verification": {
-      if (node.status !== "verifying" || node.currentAttemptId !== command.attemptId) {
-        return reject("attempt_not_verifying", "The current attempt is not in verification.");
-      }
+      if (node.status !== "verifying" || node.currentAttemptId !== command.attemptId) return reject("attempt_not_verifying", "The current attempt is not in verification.");
       if (command.passed) {
         const missing = requiredFactsArePresent(state, command.nodeId, command.attemptId);
         if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
       }
-      next = append(next, events, command, {
-        type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed",
-        nodeId: command.nodeId,
-        attemptId: command.attemptId,
-        data: command.reason ? { reason: command.reason } : {},
-      });
+      next = append(next, events, command, { type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
       if (command.passed) {
         next = appendReadyEvents(next, events, command);
-        if (Object.values(next.runtime.nodes).every((item) => item.status === "succeeded")) {
-          next = append(next, events, command, { type: "hypagraph.workflow.completed" });
-        }
+        next = appendCompletionIfNeeded(next, events, command);
       }
       break;
     }
     case "block-node": {
-      if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) {
-        return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`);
-      }
+      if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`);
       if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason.");
-      next = append(next, events, command, {
-        type: "hypagraph.node.blocked",
-        nodeId: command.nodeId,
-        data: { reason: command.reason.trim() },
-      });
+      next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim() } });
       break;
     }
     case "unblock-node": {
@@ -292,15 +279,8 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       break;
     }
     case "cancel-attempt": {
-      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) {
-        return reject("stale_attempt", "The cancellation does not match the current attempt.");
-      }
-      next = append(next, events, command, {
-        type: "hypagraph.attempt.cancelled",
-        nodeId: command.nodeId,
-        attemptId: command.attemptId,
-        data: command.reason ? { reason: command.reason } : {},
-      });
+      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_attempt", "The cancellation does not match the current attempt.");
+      next = append(next, events, command, { type: "hypagraph.attempt.cancelled", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
       break;
     }
   }

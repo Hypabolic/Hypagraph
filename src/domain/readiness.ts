@@ -6,14 +6,23 @@ export function feedbackEdgeKeys(state: HypagraphState): Set<string> {
   );
 }
 
-export function dependenciesAreSatisfied(state: HypagraphState, nodeId: string): boolean {
+export function dependencyStatuses(state: HypagraphState, nodeId: string): string[] | undefined {
   const node = state.definition.nodes.find((candidate) => candidate.id === nodeId);
-  if (!node) return false;
+  if (!node) return undefined;
   const feedback = feedbackEdgeKeys(state);
-  return node.requires.every((required) => {
-    if (feedback.has(`${required}\u0000${node.id}`)) return true;
-    return state.runtime.nodes[required]?.status === "succeeded";
-  });
+  return node.requires
+    .filter((required) => !feedback.has(`${required}\u0000${node.id}`))
+    .map((required) => state.runtime.nodes[required]?.status ?? "missing");
+}
+
+export function dependenciesAreSatisfied(state: HypagraphState, nodeId: string): boolean {
+  const statuses = dependencyStatuses(state, nodeId);
+  return statuses !== undefined && statuses.every((status) => status === "succeeded" || status === "skipped");
+}
+
+export function dependenciesSelectSkip(state: HypagraphState, nodeId: string): boolean {
+  const statuses = dependencyStatuses(state, nodeId);
+  return !!statuses && statuses.length > 0 && statuses.every((status) => status === "skipped");
 }
 
 export function isNodeReady(state: HypagraphState, nodeId: string): boolean {

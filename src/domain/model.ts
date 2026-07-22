@@ -1,3 +1,4 @@
+import type { Condition } from "./conditions.js";
 import type { FactContract, FactRecord, FactType, FactValue } from "./facts.js";
 
 export const HYPAGRAPH_SCHEMA_VERSION = 2 as const;
@@ -15,9 +16,11 @@ export type NodeStatus =
   | "failed"
   | "blocked"
   | "cancelled"
+  | "skipped"
   | "stale";
 export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
+export type NodeKind = "task" | "gate";
 
 export interface EvidenceReference {
   ref: string;
@@ -25,13 +28,21 @@ export interface EvidenceReference {
   summary?: string;
 }
 
+export interface GateDefinition {
+  condition: Condition;
+  onTrue: string[];
+  onFalse: string[];
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
   description?: string;
+  kind?: NodeKind;
   requires: string[];
   acceptance: string[];
   produces?: FactContract[];
+  gate?: GateDefinition;
   scope?: { paths: string[] };
 }
 
@@ -81,6 +92,15 @@ export interface NodeRuntime {
   blockedReason?: string;
 }
 
+export interface RouteSelection {
+  gateNodeId: string;
+  outcomeId: "true" | "false";
+  targetNodeIds: string[];
+  factsUsed: string[];
+  eventId: string;
+  sequence: number;
+}
+
 export interface HypagraphState {
   schemaVersion: typeof HYPAGRAPH_SCHEMA_VERSION;
   workflowId: string;
@@ -91,6 +111,7 @@ export interface HypagraphState {
   runtime: {
     nodes: Record<string, NodeRuntime>;
     facts: Record<string, FactRecord>;
+    routes: Record<string, RouteSelection>;
   };
   createdAt: string;
   updatedAt: string;
@@ -112,12 +133,14 @@ export type EventType =
   | "hypagraph.workflow.completed"
   | "hypagraph.workflow.failed"
   | "hypagraph.node.ready"
+  | "hypagraph.node.skipped"
   | "hypagraph.node.invalidated"
   | "hypagraph.node.blocked"
   | "hypagraph.node.unblocked"
   | "hypagraph.attempt.started"
   | "hypagraph.attempt.result-submitted"
   | "hypagraph.fact.published"
+  | "hypagraph.route.selected"
   | "hypagraph.verification.started"
   | "hypagraph.verification.passed"
   | "hypagraph.verification.failed"
@@ -154,6 +177,7 @@ export interface FactInput {
 export type HypagraphCommand =
   | (CommandBase & { type: "revise"; definition: HypagraphDefinition })
   | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
   | (CommandBase & { type: "begin-verification"; nodeId: string; attemptId: string })
