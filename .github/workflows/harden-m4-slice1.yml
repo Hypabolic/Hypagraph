@@ -42,8 +42,16 @@ jobs:
           if [ "$status" -eq 0 ]; then
             python3 - <<'PY'
           from pathlib import Path
-          path = Path("src/ui/format.ts")
-          path.write_text(path.read_text().replace('runtime?.status ?? "inactive"', 'runtime?.status ?? "pending"'))
+          replacements = {
+              "src/ui/format.ts": [('runtime?.status ?? "inactive"', 'runtime?.status ?? "pending"')],
+              "src/domain/readiness.ts": [('status !== "completed"', 'status !== "succeeded"')],
+          }
+          for name, items in replacements.items():
+              path = Path(name)
+              text = path.read_text()
+              for old, new in items:
+                  text = text.replace(old, new)
+              path.write_text(text)
           PY
           fi
           cat apply.log
