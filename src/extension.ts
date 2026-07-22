@@ -11,22 +11,7 @@ import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from
 
 const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
-const valueExpressionSchema = Type.Union([
-  Type.Object({ kind: Type.Literal("fact"), name: Type.String() }),
-  Type.Object({ kind: Type.Literal("literal"), value: factValueSchema }),
-]);
-const conditionSchema = Type.Recursive((This) => Type.Union([
-  Type.Object({ kind: Type.Literal("all"), conditions: Type.Array(This) }),
-  Type.Object({ kind: Type.Literal("any"), conditions: Type.Array(This) }),
-  Type.Object({ kind: Type.Literal("not"), condition: This }),
-  Type.Object({ kind: Type.Literal("exists"), fact: Type.String() }),
-  Type.Object({
-    kind: Type.Literal("compare"),
-    left: valueExpressionSchema,
-    operator: StringEnum(["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"] as const),
-    right: valueExpressionSchema,
-  }),
-]));
+const conditionSchema = Type.Any({ description: "A Hypagraph condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const factContractSchema = Type.Object({
   name: Type.String(),
   type: factTypeSchema,
