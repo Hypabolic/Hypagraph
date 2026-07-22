@@ -11,7 +11,7 @@ import type {
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
 import type { PublishedFact } from "./facts.js";
 import { validatePublishedFact } from "./facts.js";
-import { evaluateCondition } from "./conditions.js";
+import { CONDITION_SEMANTICS_VERSION, evaluateCondition } from "./conditions.js";
 import { applyEvent, replayEvents } from "./projection.js";
 import { dependenciesAreSatisfied, dependenciesSelectSkip } from "./readiness.js";
 import { buildOutgoing } from "./scc.js";
@@ -36,20 +36,24 @@ const makeEvent = (
   workflowId: string,
   revision: number,
   input: EventInput,
-): DomainEvent => ({
-  eventId: randomUUID(),
-  workflowId,
-  revision,
-  sequence: (state?.sequence ?? 0) + 1,
-  type: input.type,
-  version: HYPAGRAPH_EVENT_VERSION,
-  timestamp: command.at,
-  causationId: command.commandId,
-  correlationId: command.correlationId ?? command.commandId,
-  ...(input.nodeId ? { nodeId: input.nodeId } : {}),
-  ...(input.attemptId ? { attemptId: input.attemptId } : {}),
-  data: input.data ?? {},
-});
+): DomainEvent => {
+  const sequence = (state?.sequence ?? 0) + 1;
+  const eventId = sha256({ workflowId, revision, sequence, commandId: command.commandId, type: input.type, nodeId: input.nodeId ?? null, attemptId: input.attemptId ?? null });
+  return {
+    eventId,
+    workflowId,
+    revision,
+    sequence,
+    type: input.type,
+    version: HYPAGRAPH_EVENT_VERSION,
+    timestamp: command.at,
+    causationId: command.commandId,
+    correlationId: command.correlationId ?? command.commandId,
+    ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+    ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+    data: input.data ?? {},
+  };
+};
 
 const append = (
   state: HypagraphState,
@@ -103,7 +107,7 @@ export function createWorkflow(
 ): ReducerResult {
   const diagnostics = validateDefinition(definition);
   if (diagnostics.length > 0) return { ok: false, diagnostics };
-  const command = { commandId: randomUUID(), at };
+  const command = { commandId: `define:${workflowId}`, at };
   const defined = makeEvent(undefined, command, workflowId, 1, {
     type: "hypagraph.workflow.defined",
     data: { definition: structuredClone(definition) },
@@ -146,9 +150,7 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
 };
 
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
-  if (state.phase === "completed" || state.phase === "failed" || state.phase === "cancelled") {
-    return reject("terminal_workflow", `The workflow is ${state.phase}.`);
-  }
+  if (state.phase === "completed" || state.phase === "failed" || state.phase === "cancelled") return reject("terminal_workflow", `The workflow is ${state.phase}.`);
   const events: DomainEvent[] = [];
   let next = state;
 
@@ -190,9 +192,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if ((definitionNode.kind ?? "task") === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
       if (state.definition.loops.some((loop) => loop.nodes.includes(command.nodeId))) return reject("loop_execution_pending", "Loop execution is not available in this release.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
-      if (Object.values(state.runtime.nodes).some((item) => ["starting", "running", "awaiting_evidence", "verifying"].includes(item.status))) {
-        return reject("node_already_active", "Another node has an active attempt.");
-      }
+      if (Object.values(state.runtime.nodes).some((item) => ["starting", "running", "awaiting_evidence", "verifying"].includes(item.status))) return reject("node_already_active", "Another node has an active attempt.");
       next = append(next, events, command, { type: "hypagraph.attempt.started", nodeId: command.nodeId, attemptId: command.attemptId });
       break;
     }
@@ -207,13 +207,11 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       next = append(next, events, command, {
         type: "hypagraph.route.selected",
         nodeId: command.nodeId,
-        data: { outcomeId: result.value ? "true" : "false", targetNodeIds: structuredClone(selected), factsUsed: result.factsUsed },
+        data: { outcomeId: result.value ? "true" : "false", targetNodeIds: structuredClone(selected), factsUsed: result.factsUsed, semanticsVersion: CONDITION_SEMANTICS_VERSION },
       });
       for (const nodeId of unselected) {
         const runtime = next.runtime.nodes[nodeId];
-        if (runtime && ["pending", "ready", "stale"].includes(runtime.status)) {
-          next = append(next, events, command, { type: "hypagraph.node.skipped", nodeId });
-        }
+        if (runtime && ["pending", "ready", "stale"].includes(runtime.status)) next = append(next, events, command, { type: "hypagraph.node.skipped", nodeId });
       }
       next = appendReadyEvents(next, events, command);
       next = appendCompletionIfNeeded(next, events, command);
@@ -221,7 +219,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     }
     case "publish-facts": {
       if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_fact_attempt", "The facts do not match the current attempt.");
-      if (!["running", "awaiting_evidence", "verifying"].includes(node.status)) return reject("fact_publication_not_allowed", `Node '${command.nodeId}' cannot publish facts from '${node.status}'.`);
+      if (node.status !== "running") return reject("fact_publication_not_allowed", `Node '${command.nodeId}' cannot publish facts from '${node.status}'.`);
       if (command.facts.length === 0) return reject("facts_required", "Publish at least one fact.");
       if (new Set(command.facts.map((fact) => fact.name)).size !== command.facts.length) return reject("duplicate_fact_input", "A publication command must not contain the same fact more than one time.");
       const validated: PublishedFact[] = [];

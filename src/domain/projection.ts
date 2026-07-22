@@ -59,7 +59,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       const retained = next.runtime.nodes;
       next.runtime.nodes = {};
       for (const definitionNode of next.definition.nodes) next.runtime.nodes[definitionNode.id] = retained[definitionNode.id] ?? emptyNode();
-      next.runtime.routes = {};
+      for (const gateNodeId of Object.keys(next.runtime.routes)) {
+        if (!next.runtime.nodes[gateNodeId]) delete next.runtime.routes[gateNodeId];
+      }
       break;
     }
     case "hypagraph.workflow.paused": next.phase = "paused"; break;

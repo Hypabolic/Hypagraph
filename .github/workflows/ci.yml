@@ -34,4 +34,18 @@ jobs:
         run: npm install
 
       - name: Run type checks and tests
-        run: npm run check
+        id: check
+        shell: bash
+        run: |
+          set +e
+          npm run check > check.log 2>&1
+          status=$?
+          cat check.log
+          exit $status
+
+      - name: Upload check log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-log-node-${{ matrix.node-version }}
+          path: check.log
