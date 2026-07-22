@@ -23,7 +23,12 @@ const routedDefinition = (): HypagraphDefinition => ({
       requires: ["prepare"],
       acceptance: [],
       gate: {
-        condition: { kind: "fact", name: "tests.passed" },
+        condition: {
+          kind: "compare",
+          left: { kind: "fact", name: "tests.passed" },
+          operator: "eq",
+          right: { kind: "literal", value: true },
+        },
         onTrue: ["document"],
         onFalse: ["repair"],
       },
