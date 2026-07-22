@@ -2,11 +2,11 @@
 
 Hypagraph is a graph-native workflow and execution-control extension for coding agents. The first integration is for the Pi coding agent.
 
-Hypagraph lets an agent define coding work as a directed graph. A deterministic runtime then controls execution with commands, events, attempts, dependencies, node contracts, evidence, bounded loop declarations, and branch-aware session state.
+Hypagraph lets an agent define coding work as a directed graph. A deterministic runtime then controls execution with commands, events, attempts, dependencies, node contracts, evidence, typed facts, gates, bounded loop declarations, and branch-aware session state.
 
 ## Current implementation
 
-M0 provides the stable graph foundation. M1 adds the event-driven execution runtime.
+M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates.
 
 The current implementation includes:
 
@@ -26,14 +26,22 @@ The current implementation includes:
 - dependency-based readiness events;
 - one-active-attempt enforcement;
 - evidence-gated result submission;
+- typed fact contracts and fact publication;
+- fact binding to workflow revisions and attempts;
+- a typed condition abstract syntax tree;
+- static condition and operator type validation;
+- bounded deterministic condition evaluation;
+- gate nodes with persisted route selections;
+- branch skipping and branch-aware joins;
+- route invalidation after graph revisions;
 - Tarjan strongly connected component detection;
 - exact loop-region validation;
 - downstream invalidation after graph revisions;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, and lifecycle tests.
+- replay, determinism, persistence, migration, lifecycle, fact, and routing tests.
 
-Typed facts, gate evaluation, deterministic check runners, executable loops, full graph visualization in Pi, and delegated node execution are planned next.
+Deterministic check runners, executable loops, full graph visualization in Pi, and delegated node execution are planned next.
 
 ## Language rules
 
