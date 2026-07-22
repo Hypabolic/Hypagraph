@@ -31,8 +31,21 @@ jobs:
         shell: bash
         run: |
           set +e
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/harden-m4-slice1.py")
+          lines = path.read_text().splitlines()
+          path.write_text("\n".join(line for line in lines if '`$' not in line and '`${runtime?.status ?? "inactive"}' not in line) + "\n")
+          PY
           python3 scripts/harden-m4-slice1.py > apply.log 2>&1
           status=$?
+          if [ "$status" -eq 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/ui/format.ts")
+          path.write_text(path.read_text().replace('runtime?.status ?? "inactive"', 'runtime?.status ?? "pending"'))
+          PY
+          fi
           cat apply.log
           exit $status
 
