@@ -111,12 +111,13 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       break;
     case "hypagraph.route.selected":
       if (node && event.nodeId) {
-        const route = event.data as Pick<RouteSelection, "outcomeId" | "targetNodeIds" | "factsUsed">;
+        const route = event.data as Pick<RouteSelection, "outcomeId" | "targetNodeIds" | "factsUsed" | "semanticsVersion">;
         next.runtime.routes[event.nodeId] = {
           gateNodeId: event.nodeId,
           outcomeId: route.outcomeId,
           targetNodeIds: structuredClone(route.targetNodeIds),
           factsUsed: structuredClone(route.factsUsed),
+          semanticsVersion: route.semanticsVersion,
           eventId: event.eventId,
           sequence: event.sequence,
         };
