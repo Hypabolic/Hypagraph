@@ -12,8 +12,18 @@ The current implementation includes:
 
 - an installable Pi package and a bundled Hypagraph skill;
 - the `hypagraph_define`, `hypagraph_read`, `hypagraph_run_check`, `hypagraph_transition`, and `hypagraph_revise` tools;
-- one public Pi command, `/hypagraph`;
+- the `/hypagraph` command and graph-pane subcommands;
 - public Pi definitions for task, gate, and command-check nodes;
+- a live transport-independent graph projection;
+- a deterministic layered terminal graph layout;
+- dependency, selected-route, skipped-route, and loop-feedback edges;
+- declared loop boundaries;
+- a responsive Pi graph pane;
+- a passive right-side pane on wide terminals;
+- a full-screen graph view on narrow terminals;
+- read-only node navigation and inspection;
+- stable graph positions when runtime state changes;
+- terminal-control sanitisation and ASCII rendering fallback;
 - a bounded local command-check executor with no shell by default;
 - timeout and cancellation support;
 - bounded stdout and stderr capture;
@@ -46,9 +56,9 @@ The current implementation includes:
 - downstream invalidation after graph revisions;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, lifecycle, fact, routing, check, artifact, and Pi adapter tests.
+- replay, determinism, persistence, migration, lifecycle, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-The next M3 work adds a dedicated live graph pane, durable lifecycle commits, interrupted-run recovery, retry policy, dogfood validation, and the v0.4 release. Structured report parsers move to M3.1. Executable loops and delegated node execution follow in later milestones.
+The next M3 work adds durable lifecycle commits, interrupted-run recovery, retry policy, dogfood validation, and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
 
 ## Language rules
 
@@ -77,11 +87,17 @@ pi install git:github.com/Hypabolic/Hypagraph
 | Name | Purpose |
 | --- | --- |
 | `/hypagraph` | Show the active workflow state. |
+| `/hypagraph graph` | Open the live graph pane, or focus it when it is open. |
+| `/hypagraph graph toggle` | Open or close the live graph pane. |
+| `/hypagraph graph focus` | Give keyboard focus to the open graph pane. |
+| `/hypagraph graph close` | Close the graph pane. |
 | `hypagraph_define` | Validate and create a workflow. |
-| `hypagraph_read` | Read the projected state and ready nodes. |
+| `hypagraph_read` | Read the projected state. Use the `graph` view for the structured graph projection. |
 | `hypagraph_run_check` | Run one ready deterministic command check. |
 | `hypagraph_transition` | Start, complete, block, or unblock a task node, or evaluate a gate. |
 | `hypagraph_revise` | Replace the graph and invalidate changed work. |
+
+The graph pane uses arrow keys or `h`, `j`, `k`, and `l` for navigation. Use Enter to show node details, Home to select the active node, `r` to select the ready frontier, `+` or `-` to change density, Escape to release focus on wide terminals, and `q` to close the pane.
 
 ## Design documents
 
