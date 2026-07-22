@@ -35,7 +35,7 @@ export interface GateDefinition {
 }
 
 export type CheckKind = "command" | "test-report" | "lint-report" | "coverage-report" | "file-assertion" | "git-assertion";
-export type CheckResultStatus = "passed" | "failed" | "timed_out" | "cancelled" | "error";
+export type CheckResultStatus = "passed" | "failed" | "timed_out" | "cancelled" | "interrupted" | "error";
 export type CheckFactSource = "passed" | "status" | "exitCode" | "durationMs" | "timedOut" | "cancelled";
 
 export interface FactMapping {

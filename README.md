@@ -30,6 +30,11 @@ The current implementation includes:
 - file-backed check artifact references;
 - automatic check result normalization and lifecycle completion;
 - typed fact publication from check results;
+- a Pi session journal for accepted event batches;
+- optimistic workflow sequence checks;
+- durable check-start, fact, result, and verification boundaries;
+- restore-time closure of interrupted check attempts;
+- verification recovery from a stored raw result without command rerun;
 - versioned commands and events;
 - an append-only event stream as the source of truth;
 - pure event projection and deterministic replay;
@@ -56,9 +61,9 @@ The current implementation includes:
 - downstream invalidation after graph revisions;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, lifecycle, fact, routing, check, artifact, graph, and Pi adapter tests.
+- replay, determinism, persistence, migration, lifecycle, recovery, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-The next M3 work adds durable lifecycle commits, interrupted-run recovery, retry policy, dogfood validation, and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
+The next M3 work adds cancellation control, retry policy, environment policy, dogfood validation, and the v0.4 release. Structured report parsers move to M3.1. Executable loops, replay navigation, graph revision comparison, and delegated node execution follow in later milestones.
 
 ## Language rules
 
@@ -91,13 +96,37 @@ pi install git:github.com/Hypabolic/Hypagraph
 | `/hypagraph graph toggle` | Open or close the live graph pane. |
 | `/hypagraph graph focus` | Give keyboard focus to the open graph pane. |
 | `/hypagraph graph close` | Close the graph pane. |
-| `hypagraph_define` | Validate and create a workflow. |
+| `hypagraph_define` | Validate, create, and durably store a workflow. |
 | `hypagraph_read` | Read the projected state. Use the `graph` view for the structured graph projection. |
-| `hypagraph_run_check` | Run one ready deterministic command check. |
-| `hypagraph_transition` | Start, complete, block, or unblock a task node, or evaluate a gate. |
-| `hypagraph_revise` | Replace the graph and invalidate changed work. |
+| `hypagraph_run_check` | Durably start and run one ready deterministic command check. |
+| `hypagraph_transition` | Durably apply a task or gate lifecycle transition. |
+| `hypagraph_revise` | Durably replace the graph and invalidate changed work. |
 
 The graph pane uses arrow keys or `h`, `j`, `k`, and `l` for navigation. Use Enter to show node details, Home to select the active node, `r` to select the ready frontier, `+` or `-` to change density, Escape to release focus on wide terminals, and `q` to close the pane.
+
+## Durable session storage
+
+Hypagraph writes each accepted event batch to a Pi custom session entry. Each batch contains the expected sequence, the new events, and the resulting snapshot. Restore checks sequence continuity and rebuilds the snapshot from the stored events.
+
+A command check follows this order:
+
+```text
+store check start
+    |
+    v
+run command
+    |
+    v
+store facts
+    |
+    v
+store raw result
+    |
+    v
+store verification result
+```
+
+If the start cannot be stored, Hypagraph does not run the command. Restore does not rerun a command. It records an interrupted result for a check that has no stored result, or it finishes verification when a raw result is already stored.
 
 ## Design documents
 
@@ -105,6 +134,7 @@ The graph pane uses arrow keys or `h`, `j`, `k`, and `l` for navigation. Use Ent
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
+- [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
 - [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
 - [Event-driven runtime](docs/event-runtime.md)
 - [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)

@@ -5,10 +5,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
+import { recoverInterruptedChecks } from "./checks/recovery.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
-import { createWorkflow, handleCommand } from "./domain/reducer.js";
+import { createWorkflow } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { projectGraphView } from "./graph/projection.js";
+import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
+import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, runPiCommandCheck } from "./pi/check-tool.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
@@ -65,23 +68,38 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let events: DomainEvent[] = [];
   let checkExecutionActive = false;
   const graphPane = new GraphPaneController();
+  const eventStore = new PiSessionWorkflowEventStore(pi);
 
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
 
-  const restore = (ctx: ExtensionContext): void => {
+  const restore = async (ctx: ExtensionContext): Promise<void> => {
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
+    eventStore.synchronize(session);
     state = session?.snapshot;
     events = session?.events ?? [];
+    if (state) {
+      const recovery = await recoverInterruptedChecks({
+        state,
+        store: eventStore,
+        at: new Date().toISOString(),
+        onCommit: (next) => graphPane.update(next),
+      });
+      state = recovery.state;
+      events.push(...recovery.events);
+      if (recovery.recoveredAttemptIds.length > 0) {
+        ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovery.recoveredAttemptIds.join(", ")}.`, "warning");
+      }
+    }
     updateUi(state, ctx, graphPane);
   };
 
-  const run = (command: HypagraphCommand): void => {
+  const runCommands = async (commands: readonly HypagraphCommand[]): Promise<void> => {
     if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
-    const result = handleCommand(state, command);
+    const result = await applyCommandsAndCommit(eventStore, state, commands);
     if (!result.ok) return throwDiagnostics(result.diagnostics);
-    state = result.state;
-    events.push(...result.events);
+    state = result.value.state;
+    events.push(...result.value.events);
   };
 
   const nodeIdRequired = (nodeId: string | undefined): string => {
@@ -126,7 +144,10 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     promptGuidelines: ["Use hypagraph_define for work that needs explicit dependencies, typed facts, deterministic gates, checks, and evidence."],
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID());
+      const result = await commitCreatedWorkflow(
+        eventStore,
+        createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID()),
+      );
       if (!result.ok) return throwDiagnostics(result.diagnostics);
       state = result.state;
       events = [...result.events];
@@ -155,7 +176,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_run_check",
     label: "Run Hypagraph Check",
-    description: "Run one ready command-check node with a timeout, cancellation, bounded output, typed facts, and artifact references.",
+    description: "Run one ready command-check node with durable lifecycle commits, timeout, cancellation, bounded output, typed facts, and artifact references.",
     promptSnippet: "Run a ready deterministic command check",
     promptGuidelines: ["Use hypagraph_run_check only for a ready check node. Do not start a check with hypagraph_transition."],
     parameters: Type.Object({ nodeId: Type.String() }),
@@ -198,6 +219,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         const lifecycle = await runPiCommandCheck({
           state,
           executor,
+          store: eventStore,
           nodeId,
           attemptId,
           requestedAt,
@@ -233,7 +255,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_transition",
     label: "Transition Hypagraph",
-    description: "Start, publish, submit, verify, evaluate, block, cancel, pause, or resume through the event-driven lifecycle.",
+    description: "Start, publish, submit, verify, evaluate, block, cancel, pause, or resume through the durable event-driven lifecycle.",
     promptSnippet: "Move Hypagraph through its deterministic lifecycle",
     promptGuidelines: ["Use hypagraph_transition for task and gate lifecycle actions. Use hypagraph_run_check for checks."],
     parameters: Type.Object({
@@ -248,36 +270,40 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
       const at = new Date().toISOString();
       const correlationId = randomUUID();
-      if (params.action === "pause") run({ type: "pause-workflow", commandId: randomUUID(), correlationId, at });
-      else if (params.action === "resume") run({ type: "resume-workflow", commandId: randomUUID(), correlationId, at });
+      const commands: HypagraphCommand[] = [];
+      if (params.action === "pause") commands.push({ type: "pause-workflow", commandId: randomUUID(), correlationId, at });
+      else if (params.action === "resume") commands.push({ type: "resume-workflow", commandId: randomUUID(), correlationId, at });
       else {
         const nodeId = nodeIdRequired(params.nodeId);
         if (params.action === "start") {
           const node = state.definition.nodes.find((item) => item.id === nodeId);
           if ((node?.kind ?? "task") === "check") throw new Error(`Use hypagraph_run_check for check node '${nodeId}'.`);
-          run({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
-        } else if (params.action === "evaluate") run({ type: "evaluate-gate", nodeId, commandId: randomUUID(), correlationId, at });
+          commands.push({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
+        } else if (params.action === "evaluate") commands.push({ type: "evaluate-gate", nodeId, commandId: randomUUID(), correlationId, at });
         else if (params.action === "publish") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          run({ type: "publish-facts", nodeId, attemptId, facts: structuredClone(params.facts ?? []), commandId: randomUUID(), correlationId, at });
+          commands.push({ type: "publish-facts", nodeId, attemptId, facts: structuredClone(params.facts ?? []), commandId: randomUUID(), correlationId, at });
         } else if (params.action === "submit") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          run({ type: "submit-result", nodeId, attemptId, evidence: params.evidence ?? [], commandId: randomUUID(), correlationId, at });
+          commands.push({ type: "submit-result", nodeId, attemptId, evidence: params.evidence ?? [], commandId: randomUUID(), correlationId, at });
         } else if (params.action === "verify") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          if (state.runtime.nodes[nodeId]?.status === "awaiting_evidence") run({ type: "begin-verification", nodeId, attemptId, commandId: randomUUID(), correlationId, at });
-          run({ type: "complete-verification", nodeId, attemptId, passed: params.passed ?? true, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
-        } else if (params.action === "block") run({ type: "block-node", nodeId, reason: params.reason ?? "", commandId: randomUUID(), correlationId, at });
-        else if (params.action === "unblock") run({ type: "unblock-node", nodeId, commandId: randomUUID(), correlationId, at });
+          if (state.runtime.nodes[nodeId]?.status === "awaiting_evidence") {
+            commands.push({ type: "begin-verification", nodeId, attemptId, commandId: randomUUID(), correlationId, at });
+          }
+          commands.push({ type: "complete-verification", nodeId, attemptId, passed: params.passed ?? true, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
+        } else if (params.action === "block") commands.push({ type: "block-node", nodeId, reason: params.reason ?? "", commandId: randomUUID(), correlationId, at });
+        else if (params.action === "unblock") commands.push({ type: "unblock-node", nodeId, commandId: randomUUID(), correlationId, at });
         else {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          run({ type: "cancel-attempt", nodeId, attemptId, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
+          commands.push({ type: "cancel-attempt", nodeId, attemptId, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
         }
       }
+      await runCommands(commands);
       updateUi(state, ctx, graphPane);
       return textResult(renderWorkflow(state));
     },
@@ -286,11 +312,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hypagraph_revise",
     label: "Revise Hypagraph",
-    description: "Replace the graph definition and invalidate changed work.",
+    description: "Replace the graph and invalidate changed work.",
     promptSnippet: "Revise a Hypagraph",
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      run({ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() });
+      await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
       updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);
     },

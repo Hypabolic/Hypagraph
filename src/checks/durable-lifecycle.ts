@@ -8,51 +8,23 @@ import type {
 } from "../domain/model.js";
 import { sha256 } from "../domain/hash.js";
 import { handleCommand } from "../domain/reducer.js";
+import type { WorkflowEventStore } from "../persistence/event-store.js";
+import { WorkflowSequenceConflictError } from "../persistence/event-store.js";
 import { createCheckExecutionRequest, executeCheck } from "./execution.js";
 import { createCheckFactPublicationCommand } from "./normalization.js";
+import type { AutomaticCheckLifecycleResult, CheckLifecycleStage, CheckLifecycleTransition } from "./lifecycle.js";
 
-export type CheckLifecycleStage =
-  | "start"
-  | "publish"
-  | "record"
-  | "begin-verification"
-  | "complete-verification";
-
-export interface CheckLifecycleTransition {
-  stage: CheckLifecycleStage;
-  state: HypagraphState;
-  events: DomainEvent[];
-  command: HypagraphCommand;
-}
-
-export interface AutomaticCheckLifecycleInput {
+export interface DurableCheckLifecycleInput {
   state: HypagraphState;
   executor: CheckExecutor;
+  store: WorkflowEventStore;
   nodeId: string;
   attemptId: string;
   requestedAt: string;
   signal: AbortSignal;
   now?: () => Date;
-  onTransition?: (transition: CheckLifecycleTransition) => void;
+  onCommit?: (transition: CheckLifecycleTransition) => void;
 }
-
-export type AutomaticCheckLifecycleResult =
-  | {
-      ok: true;
-      state: HypagraphState;
-      events: DomainEvent[];
-      commands: HypagraphCommand[];
-      result: CheckResult;
-    }
-  | {
-      ok: false;
-      stage: CheckLifecycleStage;
-      state: HypagraphState;
-      events: DomainEvent[];
-      commands: HypagraphCommand[];
-      diagnostics: Diagnostic[];
-      result?: CheckResult;
-    };
 
 const commandId = (
   state: HypagraphState,
@@ -75,7 +47,7 @@ const failureReason = (result: CheckResult): string => {
     case "failed": return result.exitCode === undefined ? "The check failed." : `The check failed with exit code ${result.exitCode}.`;
     case "timed_out": return "The check timed out.";
     case "cancelled": return "The check was cancelled.";
-    case "interrupted": return "The check was interrupted.";
+    case "interrupted": return "The check was interrupted before the host stored a result.";
     case "error": return "The check executor returned an error.";
     case "passed": return "";
   }
@@ -114,38 +86,44 @@ const missingRequiredFacts = (state: HypagraphState, nodeId: string, attemptId: 
     .map((contract) => contract.name);
 };
 
-export async function runAutomaticCheckLifecycle(
-  input: AutomaticCheckLifecycleInput,
+const storeDiagnostic = (error: unknown): Diagnostic => error instanceof WorkflowSequenceConflictError
+  ? { code: "event_store_sequence_conflict", message: error.message }
+  : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
+
+export async function runDurableCheckLifecycle(
+  input: DurableCheckLifecycleInput,
 ): Promise<AutomaticCheckLifecycleResult> {
   let state = input.state;
   const events: DomainEvent[] = [];
   const commands: HypagraphCommand[] = [];
   const correlationId = commandId(state, input.nodeId, input.attemptId, "check-lifecycle");
 
-  const apply = (stage: CheckLifecycleStage, command: HypagraphCommand): AutomaticCheckLifecycleResult | undefined => {
+  const commitOne = async (
+    stage: CheckLifecycleStage,
+    command: HypagraphCommand,
+    result?: CheckResult,
+  ): Promise<AutomaticCheckLifecycleResult | undefined> => {
     const reduced = handleCommand(state, command);
     commands.push(structuredClone(command));
     if (!reduced.ok) {
-      return {
-        ok: false,
-        stage,
-        state,
-        events,
-        commands,
-        diagnostics: reduced.diagnostics,
-      };
+      return { ok: false, stage, state, events, commands, diagnostics: reduced.diagnostics, ...(result ? { result } : {}) };
+    }
+    try {
+      await input.store.append({
+        workflowId: state.workflowId,
+        expectedSequence: state.sequence,
+        events: reduced.events,
+        snapshot: reduced.state,
+      });
+    } catch (error) {
+      return { ok: false, stage, state, events, commands, diagnostics: [storeDiagnostic(error)], ...(result ? { result } : {}) };
     }
     state = reduced.state;
     events.push(...reduced.events);
     try {
-      input.onTransition?.({
-        stage,
-        state: structuredClone(state),
-        events: structuredClone(reduced.events),
-        command: structuredClone(command),
-      });
+      input.onCommit?.({ stage, state: structuredClone(state), events: structuredClone(reduced.events), command: structuredClone(command) });
     } catch {
-      // A view observer cannot change check execution or canonical state.
+      // A view observer cannot change persistence or canonical state.
     }
     return undefined;
   };
@@ -158,7 +136,7 @@ export async function runAutomaticCheckLifecycle(
     correlationId,
     at: input.requestedAt,
   };
-  const startFailure = apply("start", startCommand);
+  const startFailure = await commitOne("start", startCommand);
   if (startFailure) return startFailure;
 
   const request = createCheckExecutionRequest(state, input.nodeId, input.attemptId, input.requestedAt);
@@ -179,16 +157,12 @@ export async function runAutomaticCheckLifecycle(
 
   const publication = createCheckFactPublicationCommand(request, result, result.completedAt);
   if (publication.ok && publication.command.type === "publish-facts" && publication.command.facts.length > 0) {
-    const publicationCommand: HypagraphCommand = {
-      ...publication.command,
-      correlationId,
-    };
-    const publicationFailure = apply("publish", publicationCommand);
-    if (publicationFailure) return { ...publicationFailure, result };
+    const publicationCommand: HypagraphCommand = { ...publication.command, correlationId };
+    const publicationFailure = await commitOne("publish", publicationCommand, result);
+    if (publicationFailure) return publicationFailure;
   }
 
   const requiredFacts = missingRequiredFacts(state, input.nodeId, input.attemptId);
-
   const recordCommand: HypagraphCommand = {
     type: "record-check-result",
     nodeId: input.nodeId,
@@ -198,19 +172,8 @@ export async function runAutomaticCheckLifecycle(
     correlationId,
     at: result.completedAt,
   };
-  const recordFailure = apply("record", recordCommand);
-  if (recordFailure) return { ...recordFailure, result };
-
-  const beginCommand: HypagraphCommand = {
-    type: "begin-verification",
-    nodeId: input.nodeId,
-    attemptId: input.attemptId,
-    commandId: commandId(state, input.nodeId, input.attemptId, "begin-check-verification", result),
-    correlationId,
-    at: result.completedAt,
-  };
-  const beginFailure = apply("begin-verification", beginCommand);
-  if (beginFailure) return { ...beginFailure, result };
+  const recordFailure = await commitOne("record", recordCommand, result);
+  if (recordFailure) return recordFailure;
 
   const normalizationReason = publication.ok
     ? undefined
@@ -219,6 +182,14 @@ export async function runAutomaticCheckLifecycle(
     ? undefined
     : `The check did not publish required facts: ${requiredFacts.join(", ")}.`;
   const passed = result.status === "passed" && publication.ok && requiredFacts.length === 0;
+  const beginCommand: HypagraphCommand = {
+    type: "begin-verification",
+    nodeId: input.nodeId,
+    attemptId: input.attemptId,
+    commandId: commandId(state, input.nodeId, input.attemptId, "begin-check-verification", result),
+    correlationId,
+    at: result.completedAt,
+  };
   const completeCommand: HypagraphCommand = {
     type: "complete-verification",
     nodeId: input.nodeId,
@@ -233,8 +204,37 @@ export async function runAutomaticCheckLifecycle(
     correlationId,
     at: result.completedAt,
   };
-  const completeFailure = apply("complete-verification", completeCommand);
-  if (completeFailure) return { ...completeFailure, result };
+
+  const beforeVerification = state;
+  const begun = handleCommand(beforeVerification, beginCommand);
+  commands.push(structuredClone(beginCommand));
+  if (!begun.ok) return { ok: false, stage: "begin-verification", state, events, commands, diagnostics: begun.diagnostics, result };
+  const completed = handleCommand(begun.state, completeCommand);
+  commands.push(structuredClone(completeCommand));
+  if (!completed.ok) return { ok: false, stage: "complete-verification", state, events, commands, diagnostics: completed.diagnostics, result };
+  const verificationEvents = [...begun.events, ...completed.events];
+  try {
+    await input.store.append({
+      workflowId: beforeVerification.workflowId,
+      expectedSequence: beforeVerification.sequence,
+      events: verificationEvents,
+      snapshot: completed.state,
+    });
+  } catch (error) {
+    return { ok: false, stage: "complete-verification", state, events, commands, diagnostics: [storeDiagnostic(error)], result };
+  }
+  state = completed.state;
+  events.push(...verificationEvents);
+  try {
+    input.onCommit?.({
+      stage: "complete-verification",
+      state: structuredClone(state),
+      events: structuredClone(verificationEvents),
+      command: structuredClone(completeCommand),
+    });
+  } catch {
+    // A view observer cannot change persistence or canonical state.
+  }
 
   return { ok: true, state, events, commands, result };
 }

@@ -4,15 +4,17 @@ import type {
   CommandCheckDefinition,
   HypagraphState,
 } from "../domain/model.js";
-import {
-  runAutomaticCheckLifecycle,
-  type AutomaticCheckLifecycleResult,
-  type CheckLifecycleTransition,
+import { runDurableCheckLifecycle } from "../checks/durable-lifecycle.js";
+import type {
+  AutomaticCheckLifecycleResult,
+  CheckLifecycleTransition,
 } from "../checks/lifecycle.js";
+import type { WorkflowEventStore } from "../persistence/event-store.js";
 
 export interface PiCheckRunInput {
   state: HypagraphState;
   executor: CheckExecutor;
+  store: WorkflowEventStore;
   nodeId: string;
   attemptId: string;
   requestedAt: string;
@@ -43,14 +45,15 @@ export function requireReadyCommandCheck(state: HypagraphState, nodeId: string):
 
 export async function runPiCommandCheck(input: PiCheckRunInput): Promise<AutomaticCheckLifecycleResult> {
   requireReadyCommandCheck(input.state, input.nodeId);
-  return runAutomaticCheckLifecycle({
+  return runDurableCheckLifecycle({
     state: input.state,
     executor: input.executor,
+    store: input.store,
     nodeId: input.nodeId,
     attemptId: input.attemptId,
     requestedAt: input.requestedAt,
     signal: input.signal ?? new AbortController().signal,
-    ...(input.onTransition === undefined ? {} : { onTransition: input.onTransition }),
+    ...(input.onTransition === undefined ? {} : { onCommit: input.onTransition }),
   });
 }
 
