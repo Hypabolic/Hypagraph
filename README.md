@@ -6,7 +6,7 @@ Hypagraph lets an agent define coding work as a directed graph. A deterministic 
 
 ## Current implementation
 
-M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is the active planning milestone and adds deterministic check execution.
+M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is the active milestone and adds deterministic check execution.
 
 The current implementation includes:
 
@@ -34,14 +34,20 @@ The current implementation includes:
 - gate nodes with persisted route selections;
 - branch skipping and branch-aware joins;
 - route invalidation after graph revisions;
+- command-check contracts and validation;
+- a check execution boundary outside the reducer;
+- a bounded local command runner with timeout and cancellation;
+- artifact-backed stdout and stderr capture;
+- deterministic check-result normalization;
+- automatic check fact publication and lifecycle completion;
 - Tarjan strongly connected component detection;
 - exact loop-region validation;
 - downstream invalidation after graph revisions;
 - strict file-scope enforcement;
 - property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, lifecycle, fact, and routing tests.
+- replay, determinism, persistence, migration, lifecycle, fact, routing, and check tests.
 
-Deterministic check runners are planned in M3. Executable loops, full graph visualization in Pi, and delegated node execution follow in later milestones.
+The next M3 work exposes command checks through Pi and adds durable lifecycle commits. Executable loops, full graph visualization in Pi, and delegated node execution follow in later milestones.
 
 ## Language rules
 
@@ -80,6 +86,7 @@ pi install git:github.com/Hypabolic/Hypagraph
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
+- [M3 completion phase plan](docs/m3-completion-phase-plan.md)
 - [Event-driven runtime](docs/event-runtime.md)
 - [Graph visualization and delegated execution architecture](docs/delegation-and-visualisation.md)
 - [Pi workflow comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
