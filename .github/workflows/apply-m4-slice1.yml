@@ -37,7 +37,13 @@ jobs:
         run: npm ci
 
       - name: Run repository checks
-        run: npm run check
+        shell: bash
+        run: |
+          set +e
+          npm run check > check.log 2>&1
+          status=$?
+          tail -n 250 check.log
+          exit $status
 
       - name: Commit Slice 1
         shell: bash
