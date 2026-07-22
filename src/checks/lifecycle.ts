@@ -75,6 +75,7 @@ const failureReason = (result: CheckResult): string => {
     case "failed": return result.exitCode === undefined ? "The check failed." : `The check failed with exit code ${result.exitCode}.`;
     case "timed_out": return "The check timed out.";
     case "cancelled": return "The check was cancelled.";
+    case "interrupted": return "The check was interrupted.";
     case "error": return "The check executor returned an error.";
     case "passed": return "";
   }
