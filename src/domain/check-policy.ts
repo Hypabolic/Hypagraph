@@ -30,7 +30,7 @@ export function evaluateCheckStart(
   const previousAttemptId = runtime.currentAttemptId;
   const previous = previousAttemptId ? runtime.attempts[previousAttemptId] : undefined;
   const previousStatus = previous?.checkResult?.status;
-  if (!previousAttemptId || !previousStatus || !policy.retryOn.includes(previousStatus as never)) {
+  if (!previousAttemptId || !previousStatus || !policy.retryOn.some((status) => status === previousStatus)) {
     return reject("check_retry_status_not_allowed", `The previous check status '${previousStatus ?? "unknown"}' does not permit retry.`);
   }
 
