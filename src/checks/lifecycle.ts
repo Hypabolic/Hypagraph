@@ -13,7 +13,6 @@ import { createCheckFactPublicationCommand } from "./normalization.js";
 
 export type CheckLifecycleStage =
   | "start"
-  | "normalize"
   | "publish"
   | "record"
   | "begin-verification"
@@ -74,20 +73,37 @@ const failureReason = (result: CheckResult): string => {
 };
 
 const executorErrorResult = (
+  checkKind: CheckResult["checkKind"],
   attemptId: string,
   requestedAt: string,
   completedAt: string,
+  cancelled: boolean,
   error: unknown,
 ): CheckResult => ({
-  checkKind: "command",
+  checkKind,
   attemptId,
   startedAt: requestedAt,
   completedAt,
-  status: "error",
+  status: cancelled ? "cancelled" : "error",
   facts: [],
   evidence: [],
   error: error instanceof Error ? error.message : String(error),
 });
+
+const missingRequiredFacts = (state: HypagraphState, nodeId: string, attemptId: string): string[] => {
+  const definition = state.definition.nodes.find((item) => item.id === nodeId);
+  if (!definition) return [];
+  return (definition.produces ?? [])
+    .filter((contract) => contract.required)
+    .filter((contract) => {
+      const fact = state.runtime.facts[contract.name];
+      return !fact
+        || fact.producerNodeId !== nodeId
+        || fact.attemptId !== attemptId
+        || fact.revision !== state.revision;
+    })
+    .map((contract) => contract.name);
+};
 
 export async function runAutomaticCheckLifecycle(
   input: AutomaticCheckLifecycleInput,
@@ -132,11 +148,18 @@ export async function runAutomaticCheckLifecycle(
     result = await executeCheck(input.executor, request, input.signal);
   } catch (error) {
     const completedAt = (input.now ?? (() => new Date()))().toISOString();
-    result = executorErrorResult(input.attemptId, input.requestedAt, completedAt, error);
+    result = executorErrorResult(
+      request.definition.kind,
+      input.attemptId,
+      input.requestedAt,
+      completedAt,
+      input.signal.aborted,
+      error,
+    );
   }
 
   const publication = createCheckFactPublicationCommand(request, result, result.completedAt);
-  if (publication.ok) {
+  if (publication.ok && publication.command.type === "publish-facts" && publication.command.facts.length > 0) {
     const publicationCommand: HypagraphCommand = {
       ...publication.command,
       correlationId,
@@ -144,6 +167,8 @@ export async function runAutomaticCheckLifecycle(
     const publicationFailure = apply("publish", publicationCommand);
     if (publicationFailure) return { ...publicationFailure, result };
   }
+
+  const requiredFacts = missingRequiredFacts(state, input.nodeId, input.attemptId);
 
   const recordCommand: HypagraphCommand = {
     type: "record-check-result",
@@ -171,16 +196,20 @@ export async function runAutomaticCheckLifecycle(
   const normalizationReason = publication.ok
     ? undefined
     : `Check result normalization failed: ${publication.diagnostics.map((item) => item.message).join(" ")}`;
-  const passed = result.status === "passed" && publication.ok;
+  const requiredFactsReason = requiredFacts.length === 0
+    ? undefined
+    : `The check did not publish required facts: ${requiredFacts.join(", ")}.`;
+  const passed = result.status === "passed" && publication.ok && requiredFacts.length === 0;
   const completeCommand: HypagraphCommand = {
     type: "complete-verification",
     nodeId: input.nodeId,
     attemptId: input.attemptId,
     passed,
-    ...(!passed ? { reason: normalizationReason ?? failureReason(result) } : {}),
+    ...(!passed ? { reason: normalizationReason ?? requiredFactsReason ?? failureReason(result) } : {}),
     commandId: commandId(state, input.nodeId, input.attemptId, "complete-check-verification", {
       result,
       normalized: publication.ok,
+      requiredFacts,
     }),
     correlationId,
     at: result.completedAt,
