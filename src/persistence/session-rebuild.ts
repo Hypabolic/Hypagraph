@@ -160,12 +160,12 @@ const appendStoredBatch = (
   latest: PersistedHypagraph | undefined,
   batch: PersistedEventBatch,
 ): PersistedHypagraph => {
-  validateEventAppend(batch);
   const sameWorkflow = latest?.snapshot.workflowId === batch.workflowId;
   const actualSequence = sameWorkflow ? latest.snapshot.sequence : 0;
   if (actualSequence !== batch.expectedSequence) {
     throw new WorkflowSequenceConflictError(batch.workflowId, batch.expectedSequence, actualSequence);
   }
+  validateEventAppend(batch);
 
   const events = [...(sameWorkflow ? latest.events : []), ...structuredClone(batch.events)];
   const snapshot = replayEvents(events);
