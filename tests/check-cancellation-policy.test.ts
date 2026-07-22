@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runAutomaticCheckLifecycle } from "../src/checks/lifecycle.js";
-import type { CheckExecutor, HypagraphDefinition } from "../src/domain/model.js";
+import type { CheckExecutor, CheckResult, HypagraphDefinition } from "../src/domain/model.js";
 import { createWorkflow } from "../src/domain/reducer.js";
 
 const definition: HypagraphDefinition = {
@@ -38,7 +38,7 @@ describe("check cancellation policy", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const controller = new AbortController();
     const executor: CheckExecutor = {
-      execute: vi.fn(async (request) => {
+      execute: vi.fn(async (request): Promise<CheckResult> => {
         controller.abort("The user cancelled the check.");
         return {
           checkKind: request.definition.kind,
