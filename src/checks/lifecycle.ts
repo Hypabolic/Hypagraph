@@ -18,6 +18,13 @@ export type CheckLifecycleStage =
   | "begin-verification"
   | "complete-verification";
 
+export interface CheckLifecycleTransition {
+  stage: CheckLifecycleStage;
+  state: HypagraphState;
+  events: DomainEvent[];
+  command: HypagraphCommand;
+}
+
 export interface AutomaticCheckLifecycleInput {
   state: HypagraphState;
   executor: CheckExecutor;
@@ -26,6 +33,7 @@ export interface AutomaticCheckLifecycleInput {
   requestedAt: string;
   signal: AbortSignal;
   now?: () => Date;
+  onTransition?: (transition: CheckLifecycleTransition) => void;
 }
 
 export type AutomaticCheckLifecycleResult =
@@ -128,6 +136,16 @@ export async function runAutomaticCheckLifecycle(
     }
     state = reduced.state;
     events.push(...reduced.events);
+    try {
+      input.onTransition?.({
+        stage,
+        state: structuredClone(state),
+        events: structuredClone(reduced.events),
+        command: structuredClone(command),
+      });
+    } catch {
+      // A view observer cannot change check execution or canonical state.
+    }
     return undefined;
   };
 
