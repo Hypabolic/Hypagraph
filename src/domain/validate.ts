@@ -105,7 +105,10 @@ const validateCondition = (condition: unknown, factTypes: ReadonlyMap<string, Fa
 
 const upstreamNodeIds = (definition: HypagraphDefinition, nodeId: string): Set<string> => {
   const byId = new Map(definition.nodes.map((node) => [node.id, node]));
+  const edgeKey = (sourceId: string, targetId: string): string => `${sourceId}->${targetId}`;
+  const feedback = new Set(definition.loops.flatMap((loop) => loop.feedbackEdges.map((edge) => edgeKey(edge.from, edge.to))));
   const dependencies = (targetId: string): string[] => (byId.get(targetId)?.requires ?? [])
+    .filter((sourceId) => !feedback.has(edgeKey(sourceId, targetId)));
   const result = new Set<string>();
   const queue = [...dependencies(nodeId)];
   while (queue.length > 0) {

@@ -102,6 +102,48 @@ describe("static graph validation", () => {
     expect(validateDefinition(definition).some((item) => item.code === "loop_external_input_not_entry")).toBe(true);
   });
 
+  it("rejects a loop gate that reads a fact from after the gate", () => {
+    const definition: HypagraphDefinition = {
+      title: "Loop gate fact order",
+      goal: "Reject a later fact",
+      nodes: [
+        { id: "implement", title: "Implement", requires: ["test"], acceptance: [] },
+        {
+          id: "choose",
+          title: "Choose",
+          kind: "gate",
+          requires: ["implement"],
+          acceptance: [],
+          gate: {
+            condition: successCondition,
+            onTrue: ["repair-a"],
+            onFalse: ["repair-b"],
+          },
+        },
+        { id: "repair-a", title: "Repair A", requires: ["choose"], acceptance: [] },
+        { id: "repair-b", title: "Repair B", requires: ["choose"], acceptance: [] },
+        {
+          id: "test",
+          title: "Test",
+          requires: ["repair-a", "repair-b"],
+          acceptance: [],
+          produces: [{ name: "tests.passed", type: "boolean", required: true }],
+        },
+      ],
+      loops: [{
+        id: "repair",
+        nodes: ["implement", "choose", "repair-a", "repair-b", "test"],
+        entry: "implement",
+        evaluateAfter: "test",
+        feedbackEdges: [{ from: "test", to: "implement" }],
+        successWhen: successCondition,
+        maxIterations: 3,
+      }],
+      policy: { mode: "guided", requireEvidence: false },
+    };
+    expect(validateDefinition(definition).some((item) => item.code === "condition_fact_not_upstream" && item.location?.includes("nodes[1].gate.condition"))).toBe(true);
+  });
+
   it("finds only one-node components in generated directed acyclic graphs", () => {
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 15 }),
