@@ -32,7 +32,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
         id: loop.id,
         nodes: loop.nodes,
         maxIterations: loop.maxIterations,
-        status: runtime?.status ?? "inactive",
+        status: runtime?.status ?? "pending",
         currentIteration: runtime?.currentIteration ?? 0,
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
         ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
@@ -54,7 +54,7 @@ export function renderWorkflow(state: HypagraphState): string {
     lines.push("Loops:");
     for (const loop of state.definition.loops) {
       const runtime = state.runtime.loops[loop.id];
-      lines.push(`- ${loop.id}: ${runtime?.status ?? "inactive"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}`);
+      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}`);
     }
   }
   lines.push("Nodes:");

@@ -124,13 +124,15 @@ export interface LoopDefinition {
   patience?: number;
 }
 
-export type LoopStatus = "inactive" | "running" | "completed" | "requires_revision";
+export type LoopStatus = "pending" | "running" | "succeeded" | "requires_revision";
 export type LoopDecision = "complete" | "pending";
 
 export interface LoopIterationRuntime {
   iteration: number;
   startedAt: string;
   evaluatedAt?: string;
+  evaluationEventId?: string;
+  evaluationSequence?: number;
   success?: boolean;
   factsUsed: string[];
   semanticsVersion?: number;

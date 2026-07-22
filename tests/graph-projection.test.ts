@@ -116,7 +116,7 @@ describe("graph view projection", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
 
     const view = projectGraphView(created.state);
-    expect(view.loops).toEqual([expect.objectContaining({ id: "repair", nodeIds: ["implement", "test"], maxIterations: 3, status: "inactive", currentIteration: 0 })]);
+    expect(view.loops).toEqual([expect.objectContaining({ id: "repair", nodeIds: ["implement", "test"], maxIterations: 3, status: "pending", currentIteration: 0 })]);
     expect(view.nodes.every((node) => node.loopId === "repair")).toBe(true);
     expect(view.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "implement", target: "test", kind: "dependency" }),

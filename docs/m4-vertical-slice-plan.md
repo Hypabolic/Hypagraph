@@ -343,7 +343,7 @@ Each slice must cross the domain model, reducer, projection, persistence, Pi ada
 
 ### Slice 1 - Execute one successful iteration
 
-- Status: implementation in progress
+- Status: complete
 
 #### User result
 

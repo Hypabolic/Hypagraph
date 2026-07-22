@@ -105,13 +105,14 @@ const validateCondition = (condition: unknown, factTypes: ReadonlyMap<string, Fa
 
 const upstreamNodeIds = (definition: HypagraphDefinition, nodeId: string): Set<string> => {
   const byId = new Map(definition.nodes.map((node) => [node.id, node]));
+  const dependencies = (targetId: string): string[] => (byId.get(targetId)?.requires ?? [])
   const result = new Set<string>();
-  const queue = [...(byId.get(nodeId)?.requires ?? [])];
+  const queue = [...dependencies(nodeId)];
   while (queue.length > 0) {
     const current = queue.shift()!;
     if (result.has(current)) continue;
     result.add(current);
-    queue.push(...(byId.get(current)?.requires ?? []));
+    queue.push(...dependencies(current));
   }
   return result;
 };
@@ -177,7 +178,7 @@ const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => 
   return diagnostics;
 };
 
-const isLegacyPredicate = (value: LoopDefinition["successWhen"]): value is string | LegacyLoopPredicate => typeof value === "string" || "text" in value;
+const isLegacyPredicate = (value: unknown): value is string | LegacyLoopPredicate => typeof value === "string" || (isRecord(value) && value.kind === "legacy-text" && typeof value.text === "string");
 
 const feedbackKey = (from: string, to: string): string => `${from}\u0000${to}`;
 
@@ -330,7 +331,10 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       }
     }
 
+    const feedbackEdges = new Set<string>();
     for (const edge of loop.feedbackEdges) {
+      const key = feedbackKey(edge.from, edge.to);
+      feedbackEdges.add(key);
       const target = definition.nodes.find((node) => node.id === edge.to);
       if (!loopNodes.has(edge.from) || !loopNodes.has(edge.to) || !target?.requires.includes(edge.from)) diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
       if (edge.from !== loop.evaluateAfter || edge.to !== loop.entry) diagnostics.push({ code: "invalid_feedback_boundary", message: `Feedback in loop '${loop.id}' must go from '${loop.evaluateAfter}' to '${loop.entry}'.`, location: `${location}.feedbackEdges` });

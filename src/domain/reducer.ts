@@ -54,7 +54,7 @@ const appendReadyEvents = (state: HypagraphState, events: DomainEvent[], command
   return next;
 };
 
-const allLoopsCompleted = (state: HypagraphState): boolean => Object.values(state.runtime.loops).every((loop) => loop.status === "completed");
+const allLoopsCompleted = (state: HypagraphState): boolean => Object.values(state.runtime.loops).every((loop) => loop.status === "succeeded");
 const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => Object.values(state.runtime.nodes).every((item) => item.status === "succeeded" || item.status === "skipped") && allLoopsCompleted(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;
 
 export function createWorkflow(definition: HypagraphDefinition, at: string, workflowId: string = randomUUID()): ReducerResult {
@@ -79,7 +79,12 @@ const invalidatedNodes = (previous: HypagraphDefinition, next: HypagraphDefiniti
 };
 
 const loopForNode = (state: HypagraphState, nodeId: string): LoopDefinition | undefined => state.definition.loops.find((loop) => loop.nodes.includes(nodeId));
-const isLegacyPredicate = (value: LoopDefinition["successWhen"]): value is string | LegacyLoopPredicate => typeof value === "string" || value.kind === "legacy-text";
+const isLegacyPredicate = (value: unknown): value is string | LegacyLoopPredicate => {
+  if (typeof value === "string") return true;
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<LegacyLoopPredicate>;
+  return candidate.kind === "legacy-text" && typeof candidate.text === "string";
+};
 
 interface PreparedLoopStart { state: HypagraphState; loopId?: string; iteration?: number }
 const prepareLoopStart = (
@@ -93,8 +98,8 @@ const prepareLoopStart = (
   const runtime = state.runtime.loops[definition.id];
   if (!runtime) return reject("loop_runtime_missing", `Loop '${definition.id}' has no runtime state.`);
   if (runtime.status === "requires_revision") return reject("loop_predicate_revision_required", `Loop '${definition.id}' requires a typed success condition before it can run.`, `loops.${definition.id}.successWhen`);
-  if (runtime.status === "completed") return reject("loop_already_completed", `Loop '${definition.id}' is complete.`);
-  if (runtime.status === "inactive") {
+  if (runtime.status === "succeeded") return reject("loop_already_completed", `Loop '${definition.id}' is complete.`);
+  if (runtime.status === "pending") {
     if (nodeId !== definition.entry) return reject("loop_entry_required", `Start loop '${definition.id}' at entry node '${definition.entry}'.`);
     const next = append(state, events, command, {
       type: "hypagraph.loop.iteration-started",

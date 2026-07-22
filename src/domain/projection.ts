@@ -22,8 +22,12 @@ const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState 
 
 const emptyNode = (): NodeRuntime => ({ status: "pending", attemptCount: 0, attempts: {}, evidence: [] });
 
-const isLegacyPredicate = (value: LoopDefinition["successWhen"]): value is string | LegacyLoopPredicate =>
-  typeof value === "string" || value.kind === "legacy-text";
+const isLegacyPredicate = (value: unknown): value is string | LegacyLoopPredicate => {
+  if (typeof value === "string") return true;
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<LegacyLoopPredicate>;
+  return candidate.kind === "legacy-text" && typeof candidate.text === "string";
+};
 
 const normaliseDefinition = (definition: HypagraphDefinition): HypagraphDefinition => ({
   ...structuredClone(definition),
@@ -37,10 +41,10 @@ const normaliseDefinition = (definition: HypagraphDefinition): HypagraphDefiniti
 
 const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
   const legacy = isLegacyPredicate(loop.successWhen);
-  const legacyText = typeof loop.successWhen === "string" ? loop.successWhen : loop.successWhen.kind === "legacy-text" ? loop.successWhen.text : undefined;
+  const legacyText = typeof loop.successWhen === "string" ? loop.successWhen : isLegacyPredicate(loop.successWhen) ? loop.successWhen.text : undefined;
   return {
     loopId: loop.id,
-    status: legacy ? "requires_revision" : "inactive",
+    status: legacy ? "requires_revision" : "pending",
     currentIteration: 0,
     maxIterations: loop.maxIterations,
     iterations: [],
@@ -50,7 +54,7 @@ const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
 };
 
 const allLoopsCompleted = (state: Omit<HypagraphState, "snapshotHash">): boolean =>
-  Object.values(state.runtime.loops).every((loop) => loop.status === "completed");
+  Object.values(state.runtime.loops).every((loop) => loop.status === "succeeded");
 
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
@@ -276,6 +280,8 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         const decision = event.data.decision === "complete" ? "complete" : "pending";
         if (record) {
           record.evaluatedAt = event.timestamp;
+          record.evaluationEventId = event.eventId;
+          record.evaluationSequence = event.sequence;
           record.success = success;
           record.factsUsed = structuredClone(factsUsed);
           record.semanticsVersion = semanticsVersion;
@@ -291,7 +297,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       const loopId = event.loopId ?? String(event.data.loopId ?? "");
       const runtime = next.runtime.loops[loopId];
       if (runtime) {
-        runtime.status = "completed";
+        runtime.status = "succeeded";
         runtime.completedAt = event.timestamp;
         runtime.exitReason = "success";
       }

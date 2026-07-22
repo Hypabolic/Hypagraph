@@ -106,7 +106,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         evaluationNodeId: loop.evaluateAfter,
         feedbackEdges,
         maxIterations: loop.maxIterations,
-        status: runtime?.status ?? "inactive",
+        status: runtime?.status ?? "pending",
         currentIteration: runtime?.currentIteration ?? 0,
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
         ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),

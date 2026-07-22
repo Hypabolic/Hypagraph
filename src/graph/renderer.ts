@@ -136,7 +136,7 @@ const drawLoop = (canvas: CharacterCanvas, loop: GraphLayout["loops"][number], v
   }
   const viewLoop = view.loops.find((candidate) => candidate.id === loop.id);
   const iteration = viewLoop?.currentIteration ?? 0;
-  const suffix = viewLoop?.status === "completed" ? " complete" : viewLoop?.status === "requires_revision" ? " revise" : "";
+  const suffix = viewLoop?.status === "succeeded" ? " complete" : viewLoop?.status === "requires_revision" ? " revise" : "";
   canvas.text(loop.x + 2, loop.y, `loop ${loop.id} [${iteration}/${loop.maxIterations}]${suffix}`, Math.max(0, loop.width - 4));
 };
 

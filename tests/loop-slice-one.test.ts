@@ -66,13 +66,12 @@ describe("M4 Slice 1 loop execution", () => {
     const events = [...created.events];
 
     expect(created.state.schemaVersion).toBe(3);
-    expect(created.state.runtime.loops.repair).toMatchObject({ status: "inactive", currentIteration: 0 });
+    expect(created.state.runtime.loops.repair).toMatchObject({ status: "pending", currentIteration: 0 });
     expect(created.state.runtime.nodes.implement?.status).toBe("ready");
     expect(created.state.runtime.nodes.document?.status).toBe("pending");
 
     let state = completeTask(created.state, events, "implement", "attempt-implement", "implement");
     expect(state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1 });
-    expect(state.runtime.nodes.attempts).toBeUndefined();
     expect(state.runtime.nodes.implement?.attempts["attempt-implement"]).toMatchObject({ loopId: "repair", iteration: 1 });
     expect(state.runtime.nodes.test?.status).toBe("ready");
     expect(state.runtime.nodes.document?.status).toBe("pending");
@@ -80,14 +79,14 @@ describe("M4 Slice 1 loop execution", () => {
     state = completeTask(state, events, "test", "attempt-test", "test", [{ name: "tests.passed", type: "boolean", value: true }]);
     expect(state.runtime.facts["tests.passed"]).toMatchObject({ loopId: "repair", iteration: 1, attemptId: "attempt-test" });
     expect(state.runtime.loops.repair).toMatchObject({
-      status: "completed",
+      status: "succeeded",
       currentIteration: 1,
       lastSuccess: true,
       exitReason: "success",
       factsUsed: ["tests.passed"],
     });
     expect(state.runtime.loops.repair?.iterations).toEqual([
-      expect.objectContaining({ iteration: 1, success: true, decision: "complete", factsUsed: ["tests.passed"] }),
+      expect.objectContaining({ iteration: 1, success: true, decision: "complete", factsUsed: ["tests.passed"], evaluationEventId: expect.any(String), evaluationSequence: expect.any(Number) }),
     ]);
     expect(state.runtime.nodes.document?.status).toBe("ready");
 

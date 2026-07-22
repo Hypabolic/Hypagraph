@@ -18,6 +18,9 @@ The current implementation includes:
 - a deterministic layered terminal graph layout;
 - dependency, selected-route, skipped-route, and loop-feedback edges;
 - declared loop boundaries;
+- typed loop success conditions;
+- schema version 3 canonical loop runtime;
+- one successful loop iteration with a downstream completion barrier;
 - a responsive Pi graph pane;
 - a passive right-side pane on wide terminals;
 - a full-screen graph view on narrow terminals;

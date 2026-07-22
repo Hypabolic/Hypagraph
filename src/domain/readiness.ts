@@ -25,7 +25,7 @@ const loopBarriersAreSatisfied = (state: HypagraphState, nodeId: string): boolea
   for (const required of node.requires) {
     const sourceLoop = loopForNode(state, required);
     if (!sourceLoop || sourceLoop.id === targetLoop?.id) continue;
-    if (state.runtime.loops[sourceLoop.id]?.status !== "completed") return false;
+    if (state.runtime.loops[sourceLoop.id]?.status !== "succeeded") return false;
   }
   return true;
 };
