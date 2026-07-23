@@ -151,7 +151,7 @@ export function layoutGraph(view: GraphViewModel, options: GraphLayoutOptions = 
     nodesByRank.set(nodeRank, current);
   }
 
-  const componentByNode = new Map(view.nodes.map((node) => [node.id, node.componentId ?? `component:${node.id}`]));
+  const componentByNode = new Map(view.nodes.map((node) => [node.id, node.componentId ?? "component:default"]));
   const componentIds = [...new Set(visibleNodes.map((node) => componentByNode.get(node.id)!).filter(Boolean))].sort();
   const maxRowsByComponent = new Map(componentIds.map((componentId) => [componentId, 1]));
   for (const ids of nodesByRank.values()) {
