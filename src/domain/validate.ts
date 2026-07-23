@@ -24,6 +24,7 @@ const MAX_CHECK_ATTEMPTS = 20;
 const MAX_RETRY_BACKOFF_MS = 86_400_000;
 const MAX_REPORT_BYTES = 16_777_216;
 const MAX_ASSERTION_BYTES = 16_777_216;
+const MAX_INVALID_EVALUATIONS = 1_000;
 const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 const REPORT_PARSERS = {
   "test-report": "vitest-json",
@@ -460,6 +461,7 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       if (!loop.progress) diagnostics.push({ code: "patience_requires_progress", message: `Loop '${loop.id}' can use patience only with a progress definition.`, location: `${location}.patience` });
       if (!Number.isInteger(loop.patience) || loop.patience < 1) diagnostics.push({ code: "invalid_loop_patience", message: `Loop '${loop.id}' patience must be a positive integer.`, location: `${location}.patience` });
     }
+    if (loop.evaluation && (!Number.isInteger(loop.evaluation.maximumInvalidEvaluations) || loop.evaluation.maximumInvalidEvaluations < 1 || loop.evaluation.maximumInvalidEvaluations > MAX_INVALID_EVALUATIONS)) diagnostics.push({ code: "invalid_evaluation_limit", message: `Loop '${loop.id}' invalid-evaluation limit must be between 1 and ${MAX_INVALID_EVALUATIONS}.`, location: `${location}.evaluation.maximumInvalidEvaluations` });
     if (loop.failurePolicy !== undefined && !["fail-workflow", "block-dependants", "record-and-continue"].includes(loop.failurePolicy)) diagnostics.push({ code: "invalid_loop_failure_policy", message: `Loop '${loop.id}' has an invalid failure policy.`, location: `${location}.failurePolicy` });
     for (const node of loop.nodes) {
       if (!ids.has(node)) diagnostics.push({ code: "dangling_loop_node", message: `Loop '${loop.id}' refers to node '${node}', but that node does not exist.`, location: `${location}.nodes` });
@@ -496,12 +498,11 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       for (const nodeId of loop.nodes) if (!fromEntry.has(nodeId)) diagnostics.push({ code: "loop_node_not_reachable_from_entry", message: `Node '${nodeId}' is not reachable from loop entry '${loop.entry}'.`, location: `${location}.nodes` });
       for (const nodeId of loop.nodes) if (!reachableFrom(nodeId, iteration).has(loop.evaluateAfter)) diagnostics.push({ code: "loop_node_cannot_reach_evaluator", message: `Node '${nodeId}' cannot reach loop evaluator '${loop.evaluateAfter}'.`, location: `${location}.nodes` });
     }
+    const allowedOwners = new Set([...upstreamNodeIds(definition, loop.entry), ...loop.nodes]);
+    const availableFacts = new Set([...factOwners].filter(([, owner]) => allowedOwners.has(owner)).map(([name]) => name));
+    if (loop.evaluation) diagnostics.push(...validateCondition(loop.evaluation.validWhen, factTypes, availableFacts, `${location}.evaluation.validWhen`));
     if (isLegacyPredicate(loop.successWhen)) diagnostics.push({ code: typeof loop.successWhen === "string" ? "loop_predicate_must_be_typed" : "loop_predicate_revision_required", message: `Loop '${loop.id}' requires a typed success condition.`, location: `${location}.successWhen` });
-    else {
-      const allowedOwners = new Set([...upstreamNodeIds(definition, loop.entry), ...loop.nodes]);
-      const availableFacts = new Set([...factOwners].filter(([, owner]) => allowedOwners.has(owner)).map(([name]) => name));
-      diagnostics.push(...validateCondition(loop.successWhen, factTypes, availableFacts, `${location}.successWhen`));
-    }
+    else diagnostics.push(...validateCondition(loop.successWhen, factTypes, availableFacts, `${location}.successWhen`));
   });
   for (const component of cyclic) {
     const matches = definition.loops.filter((loop) => sameSet(loop.nodes, component));

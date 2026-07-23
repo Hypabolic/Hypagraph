@@ -332,28 +332,37 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       if (runtime) {
         const iteration = Number(event.data.iteration);
         const record = runtime.iterations.find((item) => item.iteration === iteration);
+        const valid = event.data.valid !== false;
         const success = event.data.success === true;
+        const validityFactsUsed = Array.isArray(event.data.validityFactsUsed) ? event.data.validityFactsUsed.filter((item): item is string => typeof item === "string") : [];
         const factsUsed = Array.isArray(event.data.factsUsed) ? event.data.factsUsed.filter((item): item is string => typeof item === "string") : [];
         const semanticsVersion = Number(event.data.semanticsVersion ?? CONDITION_SEMANTICS_VERSION);
+        const invalidEvaluationCount = typeof event.data.invalidEvaluationCount === "number" ? event.data.invalidEvaluationCount : runtime.invalidEvaluationCount ?? 0;
         const decision = event.data.decision === "complete" ? "complete" : event.data.decision === "continue" ? "continue" : event.data.decision === "fail" ? "fail" : "pending";
         if (record) {
           record.evaluatedAt = event.timestamp;
           record.evaluationEventId = event.eventId;
           record.evaluationSequence = event.sequence;
+          record.valid = valid;
           record.success = success;
+          record.validityFactsUsed = structuredClone(validityFactsUsed);
           record.factsUsed = structuredClone(factsUsed);
           record.semanticsVersion = semanticsVersion;
           record.decision = decision;
+          record.invalidEvaluationCount = invalidEvaluationCount;
           if (typeof event.data.metric === "number") record.metric = event.data.metric;
           if (typeof event.data.improved === "boolean") record.improved = event.data.improved;
           if (typeof event.data.bestMetric === "number") record.bestMetric = event.data.bestMetric;
           if (typeof event.data.bestIteration === "number") record.bestIteration = event.data.bestIteration;
           if (typeof event.data.noProgressCount === "number") record.noProgressCount = event.data.noProgressCount;
         }
+        runtime.lastValid = valid;
         runtime.lastSuccess = success;
+        runtime.validityFactsUsed = structuredClone(validityFactsUsed);
         runtime.factsUsed = structuredClone(factsUsed);
         runtime.semanticsVersion = semanticsVersion;
-        if (typeof event.data.metric === "number") runtime.currentMetric = event.data.metric;
+        runtime.invalidEvaluationCount = invalidEvaluationCount;
+        if (valid && typeof event.data.metric === "number") runtime.currentMetric = event.data.metric;
         if (typeof event.data.bestMetric === "number") runtime.bestMetric = event.data.bestMetric;
         if (typeof event.data.bestIteration === "number") runtime.bestIteration = event.data.bestIteration;
         if (typeof event.data.noProgressCount === "number") runtime.noProgressCount = event.data.noProgressCount;
@@ -377,7 +386,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         runtime.status = "failed";
         runtime.completedAt = event.timestamp;
         const reason = event.data.exitReason;
-        runtime.exitReason = reason === "no_progress" || reason === "evaluation_error" ? reason : "max_iterations";
+        runtime.exitReason = reason === "no_progress" || reason === "invalid_evaluations" || reason === "evaluation_error" ? reason : "max_iterations";
         const policy = event.data.failurePolicy;
         if (policy === "fail-workflow" || policy === "block-dependants" || policy === "record-and-continue") runtime.failurePolicy = policy;
       }

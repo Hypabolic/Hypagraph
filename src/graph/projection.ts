@@ -57,6 +57,7 @@ export interface GraphViewLoop {
   maxIterations: number;
   status: LoopStatus;
   currentIteration: number;
+  lastValid?: boolean;
   lastSuccess?: boolean;
   exitReason?: string;
   currentMetric?: number;
@@ -65,6 +66,9 @@ export interface GraphViewLoop {
   noProgressCount?: number;
   patience?: number;
   remainingPatience?: number;
+  invalidEvaluationCount?: number;
+  maximumInvalidEvaluations?: number;
+  remainingInvalidEvaluations?: number;
   componentId?: string;
   failurePolicy?: "fail-workflow" | "block-dependants" | "record-and-continue";
 }
@@ -150,6 +154,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         .sort((left, right) => left.source.localeCompare(right.source) || left.target.localeCompare(right.target));
       for (const edge of feedbackEdges) feedbackKeys.add(`${edge.source}\u0000${edge.target}`);
       const runtime = state.runtime.loops[loop.id];
+      const invalidEvaluationCount = runtime?.invalidEvaluationCount ?? 0;
       return {
         id: loop.id,
         nodeIds: [...loop.nodes].sort(),
@@ -163,11 +168,17 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         ...(componentByNode.get(loop.entry) === undefined ? {} : { componentId: componentByNode.get(loop.entry)! }),
         noProgressCount: runtime?.noProgressCount ?? 0,
         ...(loop.patience === undefined ? {} : { patience: loop.patience, remainingPatience: Math.max(0, loop.patience - (runtime?.noProgressCount ?? 0)) }),
+        ...(runtime?.lastValid === undefined ? {} : { lastValid: runtime.lastValid }),
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
         ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
         ...(runtime?.currentMetric === undefined ? {} : { currentMetric: runtime.currentMetric }),
         ...(runtime?.bestMetric === undefined ? {} : { bestMetric: runtime.bestMetric }),
         ...(runtime?.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
+        ...(loop.evaluation === undefined ? {} : {
+          invalidEvaluationCount,
+          maximumInvalidEvaluations: loop.evaluation.maximumInvalidEvaluations,
+          remainingInvalidEvaluations: Math.max(0, loop.evaluation.maximumInvalidEvaluations - invalidEvaluationCount),
+        }),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
