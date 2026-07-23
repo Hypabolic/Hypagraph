@@ -116,6 +116,10 @@ const nodeSchema = Type.Object({
 
 const feedbackEdgeSchema = Type.Object({ from: Type.String(), to: Type.String() });
 const loopProgressSchema = Type.Object({ fact: Type.String(), direction: StringEnum(["minimize", "maximize"] as const), minDelta: Type.Optional(Type.Number({ minimum: 0 })) });
+const loopEvaluationSchema = Type.Object({
+  validWhen: conditionSchema,
+  maximumInvalidEvaluations: Type.Integer({ minimum: 1, maximum: 1000 }),
+});
 const loopSchema = Type.Object({
   id: Type.String(),
   nodes: Type.Array(Type.String()),
@@ -126,6 +130,7 @@ const loopSchema = Type.Object({
   maxIterations: Type.Integer({ minimum: 1 }),
   progress: Type.Optional(loopProgressSchema),
   patience: Type.Optional(Type.Integer({ minimum: 1 })),
+  evaluation: Type.Optional(loopEvaluationSchema),
   failurePolicy: Type.Optional(StringEnum(["fail-workflow", "block-dependants", "record-and-continue"] as const)),
 });
 
@@ -237,6 +242,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       maxIterations: loop.maxIterations,
       ...(loop.progress === undefined ? {} : { progress: { ...loop.progress } }),
       ...(loop.patience === undefined ? {} : { patience: loop.patience }),
+      ...(loop.evaluation === undefined ? {} : { evaluation: { validWhen: structuredClone(loop.evaluation.validWhen), maximumInvalidEvaluations: loop.evaluation.maximumInvalidEvaluations } }),
       ...(loop.failurePolicy === undefined ? {} : { failurePolicy: loop.failurePolicy }),
     })),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
