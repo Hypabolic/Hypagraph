@@ -7,10 +7,17 @@ const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String()
 const conditionSchema = Type.Any({ description: "A Hypagraph typed condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const checkFactSourceSchema = StringEnum(["passed", "status", "exitCode", "durationMs", "timedOut", "cancelled"] as const);
 const retryStatusSchema = StringEnum(["failed", "timed_out", "error"] as const);
+const metricScalarTypeSchema = StringEnum(["boolean", "integer", "number", "string"] as const);
 
 const factContractSchema = Type.Object({ name: Type.String(), type: factTypeSchema, required: Type.Optional(Type.Boolean()) });
 const gateSchema = Type.Object({ condition: conditionSchema, onTrue: Type.Array(Type.String(), { minItems: 1 }), onFalse: Type.Array(Type.String(), { minItems: 1 }) });
 const factMappingSchema = Type.Object({ source: checkFactSourceSchema, fact: Type.String() });
+const metricMappingSchema = Type.Object({
+  source: Type.String({ pattern: "^[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*$" }),
+  fact: Type.String(),
+  type: metricScalarTypeSchema,
+  required: Type.Optional(Type.Boolean()),
+});
 const retrySchema = Type.Object({
   maxAttempts: Type.Integer({ minimum: 2, maximum: 20 }),
   retryOn: Type.Array(retryStatusSchema, { minItems: 1, uniqueItems: true }),
@@ -34,6 +41,14 @@ const reportCheckSchema = (kind: ReportCheckDefinition["kind"], parserName: Repo
   reportPath: Type.String(),
   parser: Type.Object({ name: Type.Literal(parserName), version: Type.Literal(1) }),
   namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
+  maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+});
+const metricReportCheckSchema = Type.Object({
+  kind: Type.Literal("metric-report"),
+  ...commandFields,
+  reportPath: Type.String(),
+  parser: Type.Object({ name: Type.Literal("metric-json"), version: Type.Literal(1) }),
+  mappings: Type.Array(metricMappingSchema, { minItems: 1 }),
   maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
 });
 
@@ -76,6 +91,7 @@ const checkSchema = Type.Union([
   reportCheckSchema("test-report", "vitest-json"),
   reportCheckSchema("lint-report", "eslint-json"),
   reportCheckSchema("coverage-report", "istanbul-coverage-summary"),
+  metricReportCheckSchema,
   fileAssertionCheckSchema,
   gitAssertionCheckSchema,
 ]);
@@ -174,20 +190,35 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                 namespace: node.check.namespace,
                 ...normalizeRetry(node.check.retry),
               }
-              : {
-                kind: node.check.kind,
-                command: node.check.command,
-                ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
-                ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
-                timeoutMs: node.check.timeoutMs,
-                ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
-                ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
-                ...normalizeRetry(node.check.retry),
-                reportPath: node.check.reportPath,
-                parser: { ...node.check.parser },
-                namespace: node.check.namespace,
-                ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
-              },
+              : node.check.kind === "metric-report"
+                ? {
+                  kind: "metric-report" as const,
+                  command: node.check.command,
+                  ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+                  ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+                  timeoutMs: node.check.timeoutMs,
+                  ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+                  ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+                  ...normalizeRetry(node.check.retry),
+                  reportPath: node.check.reportPath,
+                  parser: { name: "metric-json" as const, version: 1 as const },
+                  mappings: node.check.mappings.map((mapping) => ({ ...mapping })),
+                  ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+                }
+                : {
+                  kind: node.check.kind,
+                  command: node.check.command,
+                  ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+                  ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+                  timeoutMs: node.check.timeoutMs,
+                  ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+                  ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+                  ...normalizeRetry(node.check.retry),
+                  reportPath: node.check.reportPath,
+                  parser: { ...node.check.parser },
+                  namespace: node.check.namespace,
+                  ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+                },
       }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
