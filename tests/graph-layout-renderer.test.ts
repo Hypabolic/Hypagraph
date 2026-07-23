@@ -72,7 +72,7 @@ describe("graph layout and renderer", () => {
     expect(next.nodes).toEqual(initial.nodes);
   });
 
-  it("shows loop iteration, progress, patience, policy, and component in the graph region", () => {
+  it("shows primary loop status in the graph region and retains complete loop metadata", () => {
     const current = view();
     const layout = layoutGraph(current, { density: "spacious" });
     const loop = layout.loops[0]!;
@@ -87,9 +87,13 @@ describe("graph layout and renderer", () => {
     expect(rendered).toContain("loop repair-loop [2/3]");
     expect(rendered).toContain("block-dependants");
     expect(rendered).toContain("metric:7");
-    expect(rendered).toContain("best:9@1");
-    expect(rendered).toContain("patience:1/2");
-    expect(rendered).toContain("component:repair");
+    expect(current.loops[0]).toMatchObject({
+      bestMetric: 9,
+      bestIteration: 1,
+      remainingPatience: 1,
+      patience: 2,
+      componentId: "component:repair",
+    });
   });
 
   it("clips every rendered line and supports ASCII output", () => {
