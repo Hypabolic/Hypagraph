@@ -34,6 +34,7 @@ jobs:
           {
             python3 scripts/fix-m4-slice6-anchors.py
             python3 scripts/apply-m4-slice6.py
+            python3 scripts/fix-m4-slice6-layout.py
             python3 - <<'PY'
           from pathlib import Path
 
@@ -60,82 +61,6 @@ jobs:
               "src/ui/format.ts",
               '      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations} - policy ${loopFailurePolicy(loop)}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}${progress}`);\n',
               '      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""} - policy ${loopFailurePolicy(loop)}${progress}`);\n',
-          )
-          replace_once(
-              "src/graph/layout.ts",
-              '''  const layoutNodes: GraphLayoutNode[] = [];
-          for (const [nodeRank, ids] of [...nodesByRank.entries()].sort((left, right) => left[0] - right[0])) {
-            ids.sort((left, right) => {
-              const leftComponent = view.nodes.find((node) => node.id === left)?.componentId ?? "";
-              const rightComponent = view.nodes.find((node) => node.id === right)?.componentId ?? "";
-              const componentOrder = leftComponent.localeCompare(rightComponent);
-              if (componentOrder !== 0) return componentOrder;
-              const previousLeft = previousById.get(left);
-              const previousRight = previousById.get(right);
-              if (previousLeft && previousRight && previousLeft.rank === previousRight.rank) {
-                return previousLeft.order - previousRight.order || left.localeCompare(right);
-              }
-              if (previousLeft && !previousRight) return -1;
-              if (!previousLeft && previousRight) return 1;
-              return left.localeCompare(right);
-            });
-            ids.forEach((id, order) => {
-              layoutNodes.push({
-                id,
-                x: metrics.margin + nodeRank * (metrics.nodeWidth + metrics.horizontalGap),
-                y: metrics.margin + order * (metrics.nodeHeight + metrics.verticalGap),
-                width: metrics.nodeWidth,
-                height: metrics.nodeHeight,
-                rank: nodeRank,
-                order,
-              });
-            });
-          }
-          layoutNodes.sort((left, right) => left.id.localeCompare(right.id));
-          ''',
-              '''  const componentByNode = new Map(view.nodes.map((node) => [node.id, node.componentId ?? `component:${node.id}`]));
-          const componentIds = [...new Set(visibleNodes.map((node) => componentByNode.get(node.id)!))].sort();
-          const maxRowsByComponent = new Map(componentIds.map((componentId) => [componentId, 1]));
-          for (const ids of nodesByRank.values()) {
-            for (const componentId of componentIds) {
-              const count = ids.filter((id) => componentByNode.get(id) === componentId).length;
-              maxRowsByComponent.set(componentId, Math.max(maxRowsByComponent.get(componentId) ?? 1, count));
-            }
-          }
-          const componentBaseY = new Map<string, number>();
-          let nextComponentY = metrics.margin;
-          for (const componentId of componentIds) {
-            componentBaseY.set(componentId, nextComponentY);
-            nextComponentY += (maxRowsByComponent.get(componentId) ?? 1) * (metrics.nodeHeight + metrics.verticalGap) + metrics.verticalGap + 4;
-          }
-
-          const layoutNodes: GraphLayoutNode[] = [];
-          for (const [nodeRank, ids] of [...nodesByRank.entries()].sort((left, right) => left[0] - right[0])) {
-            for (const componentId of componentIds) {
-              const componentIdsAtRank = ids.filter((id) => componentByNode.get(id) === componentId);
-              componentIdsAtRank.sort((left, right) => {
-                const previousLeft = previousById.get(left);
-                const previousRight = previousById.get(right);
-                if (previousLeft && previousRight && previousLeft.rank === previousRight.rank) return previousLeft.order - previousRight.order || left.localeCompare(right);
-                if (previousLeft && !previousRight) return -1;
-                if (!previousLeft && previousRight) return 1;
-                return left.localeCompare(right);
-              });
-              componentIdsAtRank.forEach((id, order) => {
-                layoutNodes.push({
-                  id,
-                  x: metrics.margin + nodeRank * (metrics.nodeWidth + metrics.horizontalGap),
-                  y: (componentBaseY.get(componentId) ?? metrics.margin) + order * (metrics.nodeHeight + metrics.verticalGap),
-                  width: metrics.nodeWidth,
-                  height: metrics.nodeHeight,
-                  rank: nodeRank,
-                  order,
-                });
-              });
-            }
-          }
-          layoutNodes.sort((left, right) => left.id.localeCompare(right.id));
-          ''',
           )
           PY
           } > apply.log 2>&1
