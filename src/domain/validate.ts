@@ -1,15 +1,26 @@
 import { measureCondition, type Condition, type ValueExpression } from "./conditions.js";
 import type { FactType, FactValue } from "./facts.js";
-import type { CheckFactSource, Diagnostic, HypagraphDefinition, LegacyLoopPredicate, LoopDefinition, NodeDefinition } from "./model.js";
+import type {
+  CheckFactSource,
+  CheckRetryPolicy,
+  Diagnostic,
+  FileAssertionCheckDefinition,
+  GitAssertionCheckDefinition,
+  HypagraphDefinition,
+  LegacyLoopPredicate,
+  LoopDefinition,
+  NodeDefinition,
+} from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FACT_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 const ENVIRONMENT_VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const REPORT_NAMESPACE_PATTERN = /^[a-z][A-Za-z0-9]*(?:[._-][a-zA-Z0-9]+)*$/;
+const CHECK_NAMESPACE_PATTERN = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/;
 const MAX_CHECK_ATTEMPTS = 20;
 const MAX_RETRY_BACKOFF_MS = 86_400_000;
 const MAX_REPORT_BYTES = 16_777_216;
+const MAX_ASSERTION_BYTES = 16_777_216;
 const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 const REPORT_PARSERS = {
   "test-report": "vitest-json",
@@ -133,43 +144,138 @@ const sourceType = (source: CheckFactSource): FactType => {
   }
 };
 
-const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
+const validateRetry = (nodeId: string, retry: CheckRetryPolicy | undefined, location: string): Diagnostic[] => {
+  if (!retry) return [];
   const diagnostics: Diagnostic[] = [];
-  if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
-  const check = node.check;
-  if (!check.command.trim()) diagnostics.push({ code: "check_command_required", message: `Check node '${node.id}' requires a command.`, location: `${location}.check.command` });
-  if (!Number.isInteger(check.timeoutMs) || check.timeoutMs <= 0) diagnostics.push({ code: "invalid_check_timeout", message: `Check node '${node.id}' requires a positive integer timeout.`, location: `${location}.check.timeoutMs` });
+  if (!Number.isInteger(retry.maxAttempts) || retry.maxAttempts < 2 || retry.maxAttempts > MAX_CHECK_ATTEMPTS) diagnostics.push({ code: "invalid_check_attempt_limit", message: `Check node '${nodeId}' retry attempts must be between 2 and ${MAX_CHECK_ATTEMPTS}.`, location: `${location}.maxAttempts` });
+  if (retry.retryOn.length === 0) diagnostics.push({ code: "retry_status_required", message: `Check node '${nodeId}' must identify at least one retry status.`, location: `${location}.retryOn` });
+  const statuses = new Set<string>();
+  retry.retryOn.forEach((status, index) => {
+    const itemLocation = `${location}.retryOn[${index}]`;
+    if (!RETRY_STATUSES.has(status)) diagnostics.push({ code: "invalid_retry_status", message: `Retry status '${status}' is not supported.`, location: itemLocation });
+    if (statuses.has(status)) diagnostics.push({ code: "duplicate_retry_status", message: `Check node '${nodeId}' repeats retry status '${status}'.`, location: itemLocation });
+    statuses.add(status);
+  });
+  if (retry.backoffMs !== undefined && (!Number.isInteger(retry.backoffMs) || retry.backoffMs < 0 || retry.backoffMs > MAX_RETRY_BACKOFF_MS)) diagnostics.push({ code: "invalid_retry_backoff", message: `Check node '${nodeId}' retry backoff must be between 0 and ${MAX_RETRY_BACKOFF_MS} milliseconds.`, location: `${location}.backoffMs` });
+  return diagnostics;
+};
+
+const validateCommandFields = (nodeId: string, check: Extract<NodeDefinition["check"], { command: string }>, location: string): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  if (!check.command.trim()) diagnostics.push({ code: "check_command_required", message: `Check node '${nodeId}' requires a command.`, location: `${location}.command` });
+  if (!Number.isInteger(check.timeoutMs) || check.timeoutMs <= 0) diagnostics.push({ code: "invalid_check_timeout", message: `Check node '${nodeId}' requires a positive integer timeout.`, location: `${location}.timeoutMs` });
   if (check.expectedExitCodes) {
-    if (check.expectedExitCodes.length === 0 || check.expectedExitCodes.some((value) => !Number.isInteger(value))) diagnostics.push({ code: "invalid_expected_exit_codes", message: `Check node '${node.id}' requires integer expected exit codes.`, location: `${location}.check.expectedExitCodes` });
-    if (new Set(check.expectedExitCodes).size !== check.expectedExitCodes.length) diagnostics.push({ code: "duplicate_expected_exit_code", message: `Check node '${node.id}' repeats an expected exit code.`, location: `${location}.check.expectedExitCodes` });
+    if (check.expectedExitCodes.length === 0 || check.expectedExitCodes.some((value) => !Number.isInteger(value))) diagnostics.push({ code: "invalid_expected_exit_codes", message: `Check node '${nodeId}' requires integer expected exit codes.`, location: `${location}.expectedExitCodes` });
+    if (new Set(check.expectedExitCodes).size !== check.expectedExitCodes.length) diagnostics.push({ code: "duplicate_expected_exit_code", message: `Check node '${nodeId}' repeats an expected exit code.`, location: `${location}.expectedExitCodes` });
   }
   if (check.environmentVariables) {
     const names = new Set<string>();
     check.environmentVariables.forEach((name, index) => {
-      const itemLocation = `${location}.check.environmentVariables[${index}]`;
+      const itemLocation = `${location}.environmentVariables[${index}]`;
       if (!ENVIRONMENT_VARIABLE_PATTERN.test(name)) diagnostics.push({ code: "invalid_environment_variable", message: `Environment variable '${name}' is not valid.`, location: itemLocation });
       const key = name.toUpperCase();
-      if (names.has(key)) diagnostics.push({ code: "duplicate_environment_variable", message: `Check node '${node.id}' repeats environment variable '${name}'.`, location: itemLocation });
+      if (names.has(key)) diagnostics.push({ code: "duplicate_environment_variable", message: `Check node '${nodeId}' repeats environment variable '${name}'.`, location: itemLocation });
       names.add(key);
     });
   }
-  if (check.retry) {
-    if (!Number.isInteger(check.retry.maxAttempts) || check.retry.maxAttempts < 2 || check.retry.maxAttempts > MAX_CHECK_ATTEMPTS) diagnostics.push({ code: "invalid_check_attempt_limit", message: `Check node '${node.id}' retry attempts must be between 2 and ${MAX_CHECK_ATTEMPTS}.`, location: `${location}.check.retry.maxAttempts` });
-    if (check.retry.retryOn.length === 0) diagnostics.push({ code: "retry_status_required", message: `Check node '${node.id}' must identify at least one retry status.`, location: `${location}.check.retry.retryOn` });
-    const statuses = new Set<string>();
-    check.retry.retryOn.forEach((status, index) => {
-      const itemLocation = `${location}.check.retry.retryOn[${index}]`;
-      if (!RETRY_STATUSES.has(status)) diagnostics.push({ code: "invalid_retry_status", message: `Retry status '${status}' is not supported.`, location: itemLocation });
-      if (statuses.has(status)) diagnostics.push({ code: "duplicate_retry_status", message: `Check node '${node.id}' repeats retry status '${status}'.`, location: itemLocation });
-      statuses.add(status);
-    });
-    if (check.retry.backoffMs !== undefined && (!Number.isInteger(check.retry.backoffMs) || check.retry.backoffMs < 0 || check.retry.backoffMs > MAX_RETRY_BACKOFF_MS)) diagnostics.push({ code: "invalid_retry_backoff", message: `Check node '${node.id}' retry backoff must be between 0 and ${MAX_RETRY_BACKOFF_MS} milliseconds.`, location: `${location}.check.retry.backoffMs` });
+  return diagnostics;
+};
+
+interface ExpectedAssertionFact { type: FactType; required: boolean }
+
+const assertionFacts = (check: FileAssertionCheckDefinition | GitAssertionCheckDefinition): Map<string, ExpectedAssertionFact> => {
+  const facts = new Map<string, ExpectedAssertionFact>([
+    [`${check.namespace}.success`, { type: "boolean", required: true }],
+    [`${check.namespace}.kind`, { type: "string", required: true }],
+  ]);
+  if (check.kind === "file-assertion") {
+    facts.set(`${check.namespace}.path`, { type: "string", required: true });
+    facts.set(`${check.namespace}.exists`, { type: "boolean", required: false });
+    facts.set(`${check.namespace}.size-bytes`, { type: "integer", required: false });
+    if (check.assertion.kind === "size") facts.set(`${check.namespace}.expected-size-bytes`, { type: "integer", required: false });
+    if (check.assertion.kind === "sha256") facts.set(`${check.namespace}.sha256`, { type: "string", required: false });
+    if (check.assertion.kind === "text-contains") facts.set(`${check.namespace}.text-contains`, { type: "boolean", required: false });
+  } else if (check.assertion.kind === "clean") {
+    facts.set(`${check.namespace}.clean`, { type: "boolean", required: false });
+    facts.set(`${check.namespace}.changed-paths`, { type: "string-list", required: false });
+  } else if (check.assertion.kind === "branch") {
+    facts.set(`${check.namespace}.branch`, { type: "string", required: false });
+    facts.set(`${check.namespace}.expected-branch`, { type: "string", required: false });
+  } else if (check.assertion.kind === "revision") {
+    facts.set(`${check.namespace}.revision`, { type: "string", required: false });
+    facts.set(`${check.namespace}.expected-revision`, { type: "string", required: false });
+  } else {
+    facts.set(`${check.namespace}.changed-paths`, { type: "string-list", required: false });
+    facts.set(`${check.namespace}.expected-changed-paths`, { type: "string-list", required: false });
+    facts.set(`${check.namespace}.changed-path-mode`, { type: "string", required: false });
   }
+  return facts;
+};
+
+const validateAssertionContracts = (node: NodeDefinition, check: FileAssertionCheckDefinition | GitAssertionCheckDefinition, location: string): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  const actual = new Map((node.produces ?? []).map((fact) => [fact.name, fact]));
+  const expected = assertionFacts(check);
+  for (const [name, specification] of expected) {
+    const contract = actual.get(name);
+    if (!contract) diagnostics.push({ code: "assertion_fact_contract_missing", message: `Assertion check '${node.id}' must declare fact '${name}'.`, location: `${location}.produces` });
+    else {
+      if (contract.type !== specification.type) diagnostics.push({ code: "assertion_fact_type_mismatch", message: `Assertion fact '${name}' must use type '${specification.type}'.`, location: `${location}.produces` });
+      if (specification.required && !contract.required) diagnostics.push({ code: "assertion_fact_must_be_required", message: `Assertion fact '${name}' must be required.`, location: `${location}.produces` });
+    }
+  }
+  for (const name of actual.keys()) if (!expected.has(name)) diagnostics.push({ code: "assertion_fact_not_produced", message: `Assertion check '${node.id}' cannot produce declared fact '${name}'.`, location: `${location}.produces` });
+  return diagnostics;
+};
+
+const relativePathInvalid = (path: string): boolean => !path.trim() || /^(?:[A-Za-z]:[\\/]|[\\/])/.test(path) || path.split(/[\\/]+/).includes("..");
+
+const validateAssertion = (node: NodeDefinition, check: FileAssertionCheckDefinition | GitAssertionCheckDefinition, location: string): Diagnostic[] => {
+  const diagnostics = [...validateRetry(node.id, check.retry, `${location}.retry`)];
+  if (check.version !== 1) diagnostics.push({ code: "unsupported_assertion_version", message: `Assertion check '${node.id}' requires version 1.`, location: `${location}.version` });
+  if (!CHECK_NAMESPACE_PATTERN.test(check.namespace)) diagnostics.push({ code: "invalid_assertion_namespace", message: `Assertion namespace '${check.namespace}' is invalid.`, location: `${location}.namespace` });
+  if (check.kind === "file-assertion") {
+    const assertion = check.assertion;
+    if (relativePathInvalid(assertion.path)) diagnostics.push({ code: "file_assertion_path_outside_workspace", message: `File assertion path '${assertion.path}' must remain inside the workspace.`, location: `${location}.assertion.path` });
+    if (assertion.kind === "size" && (!Number.isInteger(assertion.bytes) || assertion.bytes < 0)) diagnostics.push({ code: "invalid_file_assertion_size", message: "The expected file size must be a non-negative integer.", location: `${location}.assertion.bytes` });
+    if (assertion.kind === "sha256") {
+      if (!/^[a-f0-9]{64}$/i.test(assertion.hash)) diagnostics.push({ code: "invalid_file_assertion_hash", message: "The expected SHA-256 value must contain 64 hexadecimal characters.", location: `${location}.assertion.hash` });
+      if (assertion.maxBytes !== undefined && (!Number.isInteger(assertion.maxBytes) || assertion.maxBytes < 1 || assertion.maxBytes > MAX_ASSERTION_BYTES)) diagnostics.push({ code: "invalid_file_assertion_limit", message: `The hash read limit must be between 1 and ${MAX_ASSERTION_BYTES} bytes.`, location: `${location}.assertion.maxBytes` });
+    }
+    if (assertion.kind === "text-contains") {
+      if (!assertion.text.length) diagnostics.push({ code: "file_assertion_text_required", message: "A text assertion requires non-empty expected text.", location: `${location}.assertion.text` });
+      if (assertion.maxBytes !== undefined && (!Number.isInteger(assertion.maxBytes) || assertion.maxBytes < 1 || assertion.maxBytes > MAX_ASSERTION_BYTES)) diagnostics.push({ code: "invalid_file_assertion_limit", message: `The text read limit must be between 1 and ${MAX_ASSERTION_BYTES} bytes.`, location: `${location}.assertion.maxBytes` });
+    }
+  } else {
+    const assertion = check.assertion;
+    if (assertion.kind === "branch" && !assertion.name.trim()) diagnostics.push({ code: "git_assertion_branch_required", message: "A branch assertion requires a branch name.", location: `${location}.assertion.name` });
+    if (assertion.kind === "revision" && !/^[a-f0-9]{7,64}$/i.test(assertion.sha)) diagnostics.push({ code: "invalid_git_revision", message: "The expected revision must be a hexadecimal Git object ID.", location: `${location}.assertion.sha` });
+    if (assertion.kind === "changed-paths") {
+      if (new Set(assertion.paths).size !== assertion.paths.length) diagnostics.push({ code: "duplicate_git_changed_path", message: "A changed-path assertion must not repeat paths.", location: `${location}.assertion.paths` });
+      assertion.paths.forEach((path, index) => {
+        if (relativePathInvalid(path)) diagnostics.push({ code: "invalid_git_changed_path", message: `Changed path '${path}' must be workspace-relative.`, location: `${location}.assertion.paths[${index}]` });
+      });
+    }
+  }
+  diagnostics.push(...validateAssertionContracts(node, check, location));
+  return diagnostics;
+};
+
+const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
+  if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
+  const check = node.check;
+  const checkLocation = `${location}.check`;
+  if (check.kind === "file-assertion" || check.kind === "git-assertion") return validateAssertion(node, check, checkLocation);
+
+  const diagnostics: Diagnostic[] = [
+    ...validateCommandFields(node.id, check, checkLocation),
+    ...validateRetry(node.id, check.retry, `${checkLocation}.retry`),
+  ];
   const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
   if (check.kind === "command") {
     const mappings = new Set<string>();
     check.publish.forEach((mapping, index) => {
-      const mappingLocation = `${location}.check.publish[${index}]`;
+      const mappingLocation = `${checkLocation}.publish[${index}]`;
       if (mappings.has(mapping.fact)) diagnostics.push({ code: "duplicate_check_fact_mapping", message: `Check node '${node.id}' maps fact '${mapping.fact}' more than one time.`, location: mappingLocation });
       mappings.add(mapping.fact);
       const contractType = contracts.get(mapping.fact);
@@ -178,17 +284,16 @@ const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => 
     });
     return diagnostics;
   }
-  if (!(check.kind in REPORT_PARSERS)) return [...diagnostics, { code: "unsupported_check_kind", message: `Check kind '${String(check.kind)}' is not executable in this release.`, location: `${location}.check.kind` }];
-  const report = check as Exclude<typeof check, { kind: "command" }>;
-  const expectedParser = REPORT_PARSERS[report.kind as keyof typeof REPORT_PARSERS];
-  if (report.parser.name !== expectedParser || report.parser.version !== 1) diagnostics.push({ code: "report_parser_kind_mismatch", message: `Check kind '${report.kind}' requires parser '${expectedParser}' version 1.`, location: `${location}.check.parser` });
-  if (!report.reportPath.trim()) diagnostics.push({ code: "report_path_required", message: `Report check '${node.id}' requires a report path.`, location: `${location}.check.reportPath` });
-  if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(report.reportPath) || report.reportPath.split(/[\\/]+/).includes("..")) diagnostics.push({ code: "report_path_outside_workspace", message: `Report path '${report.reportPath}' must remain inside the workspace.`, location: `${location}.check.reportPath` });
-  if (!REPORT_NAMESPACE_PATTERN.test(report.namespace)) diagnostics.push({ code: "invalid_report_namespace", message: `Report namespace '${report.namespace}' is invalid.`, location: `${location}.check.namespace` });
-  if (report.maxReportBytes !== undefined && (!Number.isInteger(report.maxReportBytes) || report.maxReportBytes < 1 || report.maxReportBytes > MAX_REPORT_BYTES)) diagnostics.push({ code: "invalid_report_size_limit", message: `Report check '${node.id}' maximum report size must be between 1 and ${MAX_REPORT_BYTES} bytes.`, location: `${location}.check.maxReportBytes` });
-  if ((report.publish ?? []).length > 0) diagnostics.push({ code: "report_check_publish_not_allowed", message: `Report check '${node.id}' publishes parser facts and must not define command fact mappings.`, location: `${location}.check.publish` });
+
+  const expectedParser = REPORT_PARSERS[check.kind];
+  if (check.parser.name !== expectedParser || check.parser.version !== 1) diagnostics.push({ code: "report_parser_kind_mismatch", message: `Check kind '${check.kind}' requires parser '${expectedParser}' version 1.`, location: `${checkLocation}.parser` });
+  if (!check.reportPath.trim()) diagnostics.push({ code: "report_path_required", message: `Report check '${node.id}' requires a report path.`, location: `${checkLocation}.reportPath` });
+  if (relativePathInvalid(check.reportPath)) diagnostics.push({ code: "report_path_outside_workspace", message: `Report path '${check.reportPath}' must remain inside the workspace.`, location: `${checkLocation}.reportPath` });
+  if (!CHECK_NAMESPACE_PATTERN.test(check.namespace)) diagnostics.push({ code: "invalid_report_namespace", message: `Report namespace '${check.namespace}' is invalid.`, location: `${checkLocation}.namespace` });
+  if (check.maxReportBytes !== undefined && (!Number.isInteger(check.maxReportBytes) || check.maxReportBytes < 1 || check.maxReportBytes > MAX_REPORT_BYTES)) diagnostics.push({ code: "invalid_report_size_limit", message: `Report check '${node.id}' maximum report size must be between 1 and ${MAX_REPORT_BYTES} bytes.`, location: `${checkLocation}.maxReportBytes` });
+  if ((check.publish ?? []).length > 0) diagnostics.push({ code: "report_check_publish_not_allowed", message: `Report check '${node.id}' publishes parser facts and must not define command fact mappings.`, location: `${checkLocation}.publish` });
   if (contracts.size === 0) diagnostics.push({ code: "report_fact_contract_required", message: `Report check '${node.id}' must declare its parser-produced facts.`, location: `${location}.produces` });
-  for (const name of contracts.keys()) if (!name.startsWith(`${report.namespace}.`)) diagnostics.push({ code: "report_fact_namespace_mismatch", message: `Report fact '${name}' must use namespace '${report.namespace}'.`, location: `${location}.produces` });
+  for (const name of contracts.keys()) if (!name.startsWith(`${check.namespace}.`)) diagnostics.push({ code: "report_fact_namespace_mismatch", message: `Report fact '${name}' must use namespace '${check.namespace}'.`, location: `${location}.produces` });
   return diagnostics;
 };
 
