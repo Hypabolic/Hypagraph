@@ -61,11 +61,12 @@ export class AssertionCheckExecutor implements CheckExecutor {
     if (request.definition.kind !== "file-assertion" && request.definition.kind !== "git-assertion") {
       throw new Error(`The assertion executor cannot run check kind '${request.definition.kind}'.`);
     }
+    const definition = request.definition;
 
     const startedAt = this.now().toISOString();
     if (signal.aborted) {
       return {
-        checkKind: request.definition.kind,
+        checkKind: definition.kind,
         attemptId: request.attemptId,
         startedAt,
         completedAt: this.now().toISOString(),
@@ -76,13 +77,13 @@ export class AssertionCheckExecutor implements CheckExecutor {
       };
     }
 
-    const evaluation = request.definition.kind === "file-assertion"
-      ? await evaluateFileAssertion(this.rootDirectory, request.definition.assertion)
-      : await evaluateGitAssertion(this.rootDirectory, request.definition.assertion);
+    const evaluation = definition.kind === "file-assertion"
+      ? await evaluateFileAssertion(this.rootDirectory, definition.assertion)
+      : await evaluateGitAssertion(this.rootDirectory, definition.assertion);
 
     if (signal.aborted) {
       return {
-        checkKind: request.definition.kind,
+        checkKind: definition.kind,
         attemptId: request.attemptId,
         startedAt,
         completedAt: this.now().toISOString(),
@@ -94,16 +95,16 @@ export class AssertionCheckExecutor implements CheckExecutor {
     }
 
     const record = new TextEncoder().encode(JSON.stringify({
-      checkKind: request.definition.kind,
-      version: request.definition.version,
-      assertion: request.definition.assertion,
+      checkKind: definition.kind,
+      version: definition.version,
+      assertion: definition.assertion,
       evaluation,
     }, null, 2));
     const recordRef = await this.artifactStore.write({
       workflowId: request.workflowId,
       nodeId: request.nodeId,
       attemptId: request.attemptId,
-      name: `${request.definition.kind}.json`,
+      name: `${definition.kind}.json`,
       mediaType: "application/json; charset=utf-8",
       content: record,
     });
@@ -112,20 +113,20 @@ export class AssertionCheckExecutor implements CheckExecutor {
       {
         ref: recordRef,
         kind: "file" as const,
-        summary: request.definition.kind === "file-assertion"
+        summary: definition.kind === "file-assertion"
           ? "Recorded file assertion evaluation."
           : "Recorded fixed-allowlist Git assertion evaluation.",
       },
     ];
     const facts = evaluation.facts.map((fact) => ({
       ...structuredClone(fact),
-      name: publicFactName(fact, request.definition),
+      name: publicFactName(fact, definition),
       evidence: structuredClone(evidence),
     }));
     const names = facts.map((fact) => fact.name);
     if (new Set(names).size !== names.length) {
       return {
-        checkKind: request.definition.kind,
+        checkKind: definition.kind,
         attemptId: request.attemptId,
         startedAt,
         completedAt: this.now().toISOString(),
@@ -138,7 +139,7 @@ export class AssertionCheckExecutor implements CheckExecutor {
 
     const error = diagnosticText(evaluation.diagnostics);
     return {
-      checkKind: request.definition.kind,
+      checkKind: definition.kind,
       attemptId: request.attemptId,
       startedAt,
       completedAt: this.now().toISOString(),
