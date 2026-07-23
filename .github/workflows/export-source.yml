@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/m5a-slice-3-feedback-budgets
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
