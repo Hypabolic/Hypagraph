@@ -1,6 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import type { HypagraphDefinition } from "../domain/model.js";
+import type { HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
 
 const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
@@ -31,8 +31,7 @@ const retrySchema = Type.Object({
   backoffMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 86_400_000 })),
 });
 
-const commandCheckSchema = Type.Object({
-  kind: StringEnum(["command"] as const),
+const commandFields = {
   command: Type.String(),
   arguments: Type.Optional(Type.Array(Type.String())),
   workingDirectory: Type.Optional(Type.String()),
@@ -40,8 +39,35 @@ const commandCheckSchema = Type.Object({
   expectedExitCodes: Type.Optional(Type.Array(Type.Integer())),
   environmentVariables: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }), { uniqueItems: true })),
   retry: Type.Optional(retrySchema),
+};
+
+const commandCheckSchema = Type.Object({
+  kind: StringEnum(["command"] as const),
+  ...commandFields,
   publish: Type.Array(factMappingSchema),
 });
+
+const reportCheckSchema = (
+  kind: ReportCheckDefinition["kind"],
+  parserName: ReportCheckDefinition["parser"]["name"],
+) => Type.Object({
+  kind: StringEnum([kind] as const),
+  ...commandFields,
+  reportPath: Type.String(),
+  parser: Type.Object({
+    name: StringEnum([parserName] as const),
+    version: Type.Literal(1),
+  }),
+  namespace: Type.String({ pattern: "^[a-z][A-Za-z0-9]*(?:\\.[a-z][A-Za-z0-9]*)*$" }),
+  maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+});
+
+const checkSchema = Type.Union([
+  commandCheckSchema,
+  reportCheckSchema("test-report", "vitest-json"),
+  reportCheckSchema("lint-report", "eslint-json"),
+  reportCheckSchema("coverage-report", "istanbul-coverage-summary"),
+]);
 
 const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
@@ -52,7 +78,7 @@ const nodeSchema = Type.Object({
   acceptance: Type.Optional(Type.Array(Type.String())),
   produces: Type.Optional(Type.Array(factContractSchema)),
   gate: Type.Optional(gateSchema),
-  check: Type.Optional(commandCheckSchema),
+  check: Type.Optional(checkSchema),
   scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
 });
 
@@ -101,6 +127,16 @@ export const factInputSchema = Type.Object({
 
 export type HypagraphDefineInput = Static<typeof definitionSchema>;
 
+const normalizeRetry = (retry: HypagraphDefineInput["nodes"][number]["check"] extends infer Check
+  ? Check extends { retry?: infer Retry } ? Retry : never
+  : never) => retry === undefined ? {} : {
+  retry: {
+    maxAttempts: retry.maxAttempts,
+    retryOn: [...retry.retryOn],
+    ...(retry.backoffMs === undefined ? {} : { backoffMs: retry.backoffMs }),
+  },
+};
+
 export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefinition {
   return {
     title: input.title.trim(),
@@ -115,23 +151,32 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       ...(node.produces === undefined ? {} : { produces: node.produces.map((fact) => ({ ...fact })) }),
       ...(node.gate === undefined ? {} : { gate: structuredClone(node.gate) }),
       ...(node.check === undefined ? {} : {
-        check: {
-          kind: "command" as const,
-          command: node.check.command,
-          ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
-          ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
-          timeoutMs: node.check.timeoutMs,
-          ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
-          ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
-          ...(node.check.retry === undefined ? {} : {
-            retry: {
-              maxAttempts: node.check.retry.maxAttempts,
-              retryOn: [...node.check.retry.retryOn],
-              ...(node.check.retry.backoffMs === undefined ? {} : { backoffMs: node.check.retry.backoffMs }),
-            },
-          }),
-          publish: node.check.publish.map((mapping) => ({ ...mapping })),
-        },
+        check: node.check.kind === "command"
+          ? {
+            kind: "command" as const,
+            command: node.check.command,
+            ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+            ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+            timeoutMs: node.check.timeoutMs,
+            ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+            ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+            ...normalizeRetry(node.check.retry),
+            publish: node.check.publish.map((mapping) => ({ ...mapping })),
+          }
+          : {
+            kind: node.check.kind,
+            command: node.check.command,
+            ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+            ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+            timeoutMs: node.check.timeoutMs,
+            ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+            ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+            ...normalizeRetry(node.check.retry),
+            reportPath: node.check.reportPath,
+            parser: { ...node.check.parser },
+            namespace: node.check.namespace,
+            ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+          },
       }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
