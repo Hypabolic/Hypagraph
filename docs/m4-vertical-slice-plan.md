@@ -607,6 +607,8 @@ A loop can stop safely on hard bounds and on lack of progress.
 
 ### Slice 6 - Add independent loop regions and outcome policy
 
+- Status: implemented
+
 #### User result
 
 A workflow can contain two disconnected loop regions. Each region keeps independent state, and one region can fail without terminating unrelated work when its policy permits that result.

@@ -72,6 +72,7 @@ const loopSchema = Type.Object({
   maxIterations: Type.Integer({ minimum: 1 }),
   progress: Type.Optional(loopProgressSchema),
   patience: Type.Optional(Type.Integer({ minimum: 1 })),
+  failurePolicy: Type.Optional(StringEnum(["fail-workflow", "block-dependants", "record-and-continue"] as const)),
 });
 
 export const definitionSchema = Type.Object({
@@ -144,6 +145,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       maxIterations: loop.maxIterations,
       ...(loop.progress === undefined ? {} : { progress: { ...loop.progress } }),
       ...(loop.patience === undefined ? {} : { patience: loop.patience }),
+      ...(loop.failurePolicy === undefined ? {} : { failurePolicy: loop.failurePolicy }),
     })),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };

@@ -215,6 +215,14 @@ M4 Slices 1 to 5 support successful task and check iterations, deterministic fee
 
 Progress decisions are stored in `hypagraph.loop.evaluated`. The event contains the metric, improvement result, best metric, best iteration, and no-progress count. Replay does not recalculate them. A missing or invalid current-iteration metric fails the loop with `evaluation_error`. Hard-limit failure has priority over patience failure.
 
+## Independent region outcomes
+
+A loop definition can set `failurePolicy` to `fail-workflow`, `block-dependants`, or `record-and-continue`. An omitted policy means `fail-workflow` and does not change the initial schema-3 snapshot shape.
+
+A terminal failure stores the selected policy in `hypagraph.loop.failed`. `block-dependants` stores node-block events for the affected path. `record-and-continue` keeps unrelated work executable but does not release a dependant that requires loop success. The workflow completes only after every loop region is terminal. An independent recorded failure can coexist with a completed workflow.
+
+Disconnected regions have separate attempts, facts, routes, progress values, resets, and graph-component IDs. M4 dispatch remains sequential, but region outcomes do not share runtime state.
+
 It does not yet support:
 
 - loop cancellation and revision hardening;
