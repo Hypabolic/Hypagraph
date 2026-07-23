@@ -21,17 +21,26 @@ export interface ReportCheckExecutorOptions {
   now?: () => Date;
 }
 
+const publicSegment = (segment: string): string => segment
+  .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+  .replace(/_/g, "-")
+  .toLowerCase();
+
+const publicPath = (path: string): string => path.split(".").map(publicSegment).join(".");
+
 const reportFactName = (fact: FactInput, definition: ReportCheckDefinition): string => {
   const namespace = definition.namespace;
   if (fact.name === "passed") return `${namespace}.success`;
   if (definition.kind === "test-report" && fact.name.startsWith("tests.")) {
-    return `${namespace}.${fact.name.slice("tests.".length)}`;
+    return `${namespace}.${publicPath(fact.name.slice("tests.".length))}`;
   }
   if (definition.kind === "test-report" && fact.name.startsWith("testSuites.")) {
-    return `${namespace}.suites.${fact.name.slice("testSuites.".length)}`;
+    return `${namespace}.suites.${publicPath(fact.name.slice("testSuites.".length))}`;
   }
-  if (fact.name.startsWith(`${namespace}.`)) return fact.name;
-  return `${namespace}.${fact.name}`;
+  if (fact.name.startsWith(`${namespace}.`)) {
+    return `${namespace}.${publicPath(fact.name.slice(namespace.length + 1))}`;
+  }
+  return `${namespace}.${publicPath(fact.name)}`;
 };
 
 const resolveReportPath = (rootDirectory: string, definition: ReportCheckDefinition): string => {
