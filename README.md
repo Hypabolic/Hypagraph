@@ -153,7 +153,7 @@ If the start cannot be stored, Hypagraph does not run the command. Restore does 
 
 Cancellation is terminal for the current attempt. Hypagraph passes the Pi abort signal to the executor. A cancellation tool can also abort the registered execution. If an executor ignores cancellation and returns a later success result, Hypagraph records a cancelled result and does not publish success facts.
 
-Retries are explicit. Hypagraph does not retry automatically. A retry must use a new attempt ID. The prior result and artifacts remain in attempt history. Facts from the prior attempt are removed when the retry starts. The definition can restrict retry statuses, the total attempt count, and the retry backoff.
+Retries are explicit. Hypagraph does not retry automatically. A retry must use a new attempt ID. The prior result and artifacts remain in attempt history. Facts from the prior attempt are removed when a retry starts. The definition can restrict retry statuses, the total attempt count, and the retry backoff.
 
 A command check stores environment-variable names only. It does not store environment values. The executor inherits a small safe launch environment by default. A definition can replace that default with an explicit list of names.
 
@@ -164,6 +164,7 @@ Hypagraph stores check artifacts under `.hypagraph/check-artifacts`. v0.4 does n
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [M4 executable bounded loops vertical-slice plan](docs/m4-vertical-slice-plan.md)
+- [Trusted evaluation contracts and loss functions](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal vertical-slice plan](docs/hypagoal-vertical-slice-plan.md)
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
