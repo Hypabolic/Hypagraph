@@ -1,27 +1,30 @@
-name: Export source
+name: Apply Slice 3 patch
 
 on:
   push:
     branches:
       - agent/m5a-slice-3-feedback-budgets
-  pull_request:
-    branches:
-      - main
+    paths:
+      - .github/slice3.patch
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  export:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out branch
         uses: actions/checkout@v4
-      - name: Create source archive
-        run: tar --exclude=.git -czf "$RUNNER_TEMP/source.tgz" .
-      - name: Upload source archive
-        uses: actions/upload-artifact@v4
         with:
-          name: hypagraph-source
-          path: ${{ runner.temp }}/source.tgz
-          if-no-files-found: error
+          ref: agent/m5a-slice-3-feedback-budgets
+          fetch-depth: 0
+      - name: Apply product patch
+        run: |
+          git apply .github/slice3.patch
+          rm .github/slice3.patch .github/workflows/export-source.yml
+          git config user.name "Hypagraph automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add --all
+          git commit -m "Implement evaluation feedback and budgets"
+          git push origin HEAD:agent/m5a-slice-3-feedback-budgets
