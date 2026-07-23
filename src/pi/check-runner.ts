@@ -62,22 +62,34 @@ export async function runPiCheck(input: PiCheckRunInput): Promise<AutomaticCheck
 
 const formatValue = (value: unknown): string => Array.isArray(value) ? value.join(", ") : String(value);
 
+const definitionLines = (definition: CheckDefinition | undefined): string[] => {
+  if (!definition) return ["Kind: unknown"];
+  const lines = [`Kind: ${definition.kind}`];
+  if (definition.kind === "command") {
+    lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
+  } else if (definition.kind === "test-report" || definition.kind === "lint-report" || definition.kind === "coverage-report") {
+    lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
+    lines.push(`Report: ${definition.reportPath}`);
+    lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
+    lines.push(`Namespace: ${definition.namespace}`);
+  } else {
+    lines.push(`Assertion version: ${definition.version}`);
+    lines.push(`Assertion: ${definition.assertion.kind}`);
+    lines.push(`Namespace: ${definition.namespace}`);
+  }
+  return lines;
+};
+
 export function formatPiCheckResult(state: HypagraphState, nodeId: string, result: CheckResult): string {
   const node = state.definition.nodes.find((item) => item.id === nodeId);
   const runtime = state.runtime.nodes[nodeId];
   const definition = node?.check;
-  const command = definition ? [definition.command, ...(definition.arguments ?? [])].join(" ") : "unknown";
   const elapsedMs = Date.parse(result.completedAt) - Date.parse(result.startedAt);
   const facts = Object.values(state.runtime.facts)
     .filter((fact) => fact.producerNodeId === nodeId && fact.attemptId === result.attemptId)
     .sort((left, right) => left.name.localeCompare(right.name));
   const attemptNumber = runtime?.attempts[result.attemptId]?.number;
-  const lines = [`Check: ${nodeId}`, `Kind: ${definition?.kind ?? result.checkKind}`, `Command: ${command}`];
-  if (definition && definition.kind !== "command") {
-    lines.push(`Report: ${definition.reportPath}`);
-    lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
-    lines.push(`Namespace: ${definition.namespace}`);
-  }
+  const lines = [`Check: ${nodeId}`, ...definitionLines(definition)];
   lines.push(
     `Attempt: ${attemptNumber ?? "unknown"}`,
     `Node state: ${runtime?.status ?? "unknown"}`,
@@ -90,7 +102,7 @@ export function formatPiCheckResult(state: HypagraphState, nodeId: string, resul
   else for (const fact of facts) lines.push(`- ${fact.name} = ${formatValue(fact.value)}`);
   lines.push(`Stdout: ${result.stdoutRef ?? "none"}`);
   lines.push(`Stderr: ${result.stderrRef ?? "none"}`);
-  if (result.error) lines.push(`Error: ${result.error}`);
+  if (result.error) lines.push(`${result.status === "failed" ? "Assertion/check failure" : "Error"}: ${result.error}`);
   const failureReason = runtime?.attempts[result.attemptId]?.failureReason;
   if (failureReason && failureReason !== result.error) lines.push(`Failure reason: ${failureReason}`);
   return lines.join("\n");
