@@ -54,3 +54,18 @@ replace(
     expect(validateDefinition(noProgress).map((item) => item.code)).toContain("patience_requires_progress");
 ''',
 )
+replace(
+    "tests/pi-loop-progress.test.ts",
+    '''import type { PersistedHypagraph } from "../src/domain/model.js";
+''',
+    '''import type { PersistedHypagraph } from "../src/domain/model.js";
+import { projectGraphView } from "../src/graph/projection.js";
+''',
+)
+replace(
+    "tests/pi-loop-progress.test.ts",
+    '''    expect(result.details.graph.loops[0]).toMatchObject({ bestMetric: 10, bestIteration: 1, remainingPatience: 2 });
+''',
+    '''    expect(projectGraphView(persisted.snapshot).loops[0]).toMatchObject({ bestMetric: 10, bestIteration: 1, remainingPatience: 2 });
+''',
+)
