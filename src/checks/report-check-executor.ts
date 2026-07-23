@@ -4,6 +4,8 @@ import type {
   CheckExecutionRequest,
   CheckExecutor,
   CheckResult,
+  EvaluationDiagnostic,
+  EvidenceReference,
   FactInput,
   MetricReportCheckDefinition,
   ReportCheckDefinition,
@@ -58,6 +60,49 @@ const resolveReportPath = (rootDirectory: string, definition: ExecutableReportCh
   return target;
 };
 
+const protectsOutput = (definition: ExecutableReportCheckDefinition): boolean => (
+  definition.kind === "metric-report"
+  && definition.evaluation !== undefined
+  && definition.evaluation.feedback.exposeRawReport !== true
+);
+
+const evaluationSummary = (
+  definition: ExecutableReportCheckDefinition,
+  diagnostics: readonly EvaluationDiagnostic[] = [],
+  diagnosticsTruncated = false,
+): CheckResult["evaluation"] => definition.kind === "metric-report" && definition.evaluation
+  ? {
+      kind: definition.evaluation.kind,
+      feedbackMode: definition.evaluation.feedback.mode,
+      diagnostics: diagnostics.map((item) => ({ ...item })),
+      diagnosticsTruncated,
+    }
+  : undefined;
+
+const protectEvidence = (evidence: readonly EvidenceReference[], protectedOutput: boolean): EvidenceReference[] => evidence.map((item) => ({
+  ...structuredClone(item),
+  ...(protectedOutput ? { visibility: "protected" as const } : {}),
+}));
+
+const filteredSource = (
+  source: CheckResult,
+  definition: ExecutableReportCheckDefinition,
+): CheckResult => {
+  const protectedOutput = protectsOutput(definition);
+  const result: CheckResult = {
+    ...structuredClone(source),
+    checkKind: definition.kind,
+    facts: [],
+    evidence: protectEvidence(source.evidence, protectedOutput),
+    ...(evaluationSummary(definition) === undefined ? {} : { evaluation: evaluationSummary(definition)! }),
+  };
+  if (protectedOutput) {
+    delete result.stdoutRef;
+    delete result.stderrRef;
+  }
+  return result;
+};
+
 const errorResult = (
   definition: ExecutableReportCheckDefinition,
   request: CheckExecutionRequest,
@@ -65,16 +110,11 @@ const errorResult = (
   completedAt: string,
   message: string,
 ): CheckResult => ({
-  checkKind: definition.kind,
+  ...filteredSource(source, definition),
   attemptId: request.attemptId,
   startedAt: source.startedAt,
   completedAt,
   status: "error",
-  facts: [],
-  evidence: structuredClone(source.evidence),
-  ...(source.exitCode === undefined ? {} : { exitCode: source.exitCode }),
-  ...(source.stdoutRef === undefined ? {} : { stdoutRef: source.stdoutRef }),
-  ...(source.stderrRef === undefined ? {} : { stderrRef: source.stderrRef }),
   error: message,
 });
 
@@ -137,11 +177,7 @@ export class ReportCheckExecutor implements CheckExecutor {
 
     const producer = await this.producerExecutor.execute(producerRequest, signal);
     if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
-      return {
-        ...structuredClone(producer),
-        checkKind: definition.kind,
-        facts: [],
-      };
+      return filteredSource(producer, definition);
     }
 
     let reportPath: string;
@@ -169,6 +205,7 @@ export class ReportCheckExecutor implements CheckExecutor {
       return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
     }
 
+    const protectedOutput = protectsOutput(definition);
     const reportRef = await this.artifactStore.write({
       workflowId: request.workflowId,
       nodeId: request.nodeId,
@@ -177,16 +214,23 @@ export class ReportCheckExecutor implements CheckExecutor {
       mediaType: "application/json; charset=utf-8",
       content: reportBytes,
     });
-    const evidence = [
-      ...structuredClone(producer.evidence),
-      { ref: reportRef, kind: "file" as const, summary: `${definition.parser.name} report.` },
+    const evidence: EvidenceReference[] = [
+      ...protectEvidence(producer.evidence, protectedOutput),
+      {
+        ref: reportRef,
+        kind: "file",
+        summary: `${definition.parser.name} report.`,
+        ...(protectedOutput ? { visibility: "protected" as const } : {}),
+      },
     ];
 
     const parsed = parseReport(
       definition.parser.name,
       definition.parser.version,
       reportText,
-      definition.kind === "metric-report" ? { metricMappings: definition.mappings } : {},
+      definition.kind === "metric-report"
+        ? { metricMappings: definition.mappings, ...(definition.evaluation === undefined ? {} : { metricFeedback: definition.evaluation.feedback }) }
+        : {},
     );
     if (!parsed.ok) {
       return errorResult(
@@ -198,21 +242,30 @@ export class ReportCheckExecutor implements CheckExecutor {
       );
     }
 
+    const publicEvidence = evidence.filter((item) => item.visibility !== "protected");
     const facts = parsed.value.facts.map((fact) => ({
       ...structuredClone(fact),
       name: reportFactName(fact, definition),
-      evidence: structuredClone(evidence),
+      evidence: structuredClone(publicEvidence),
     }));
     const names = facts.map((fact) => fact.name);
     if (new Set(names).size !== names.length) {
       return errorResult(definition, request, { ...producer, evidence }, this.now().toISOString(), "The report parser produced duplicate public fact names.");
     }
 
-    return {
+    const result: CheckResult = {
       ...structuredClone(producer),
       checkKind: definition.kind,
       facts,
       evidence,
+      ...(evaluationSummary(definition, parsed.value.diagnostics, parsed.value.diagnosticsTruncated) === undefined
+        ? {}
+        : { evaluation: evaluationSummary(definition, parsed.value.diagnostics, parsed.value.diagnosticsTruncated)! }),
     };
+    if (protectedOutput) {
+      delete result.stdoutRef;
+      delete result.stderrRef;
+    }
+    return result;
   }
 }

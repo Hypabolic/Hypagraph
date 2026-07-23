@@ -48,6 +48,14 @@ const reportCheckSchema = (kind: ReportCheckDefinition["kind"], parserName: Repo
   namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
   maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
 });
+const evaluationFeedbackSchema = Type.Union([
+  Type.Object({ mode: Type.Literal("aggregate"), exposeRawReport: Type.Optional(Type.Boolean()) }),
+  Type.Object({ mode: Type.Literal("bounded-diagnostics"), maximumDiagnosticItems: Type.Integer({ minimum: 1, maximum: 100 }), exposeRawReport: Type.Optional(Type.Boolean()) }),
+]);
+const metricEvaluationSchema = Type.Object({
+  kind: StringEnum(["development", "probe", "holdout"] as const),
+  feedback: evaluationFeedbackSchema,
+});
 const metricReportCheckSchema = Type.Object({
   kind: Type.Literal("metric-report"),
   ...commandFields,
@@ -55,6 +63,7 @@ const metricReportCheckSchema = Type.Object({
   parser: Type.Object({ name: Type.Literal("metric-json"), version: Type.Literal(1) }),
   mappings: Type.Array(metricMappingSchema, { minItems: 1 }),
   maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  evaluation: Type.Optional(metricEvaluationSchema),
 });
 
 const fileAssertionSchema = Type.Union([
@@ -134,11 +143,20 @@ const loopSchema = Type.Object({
   failurePolicy: Type.Optional(StringEnum(["fail-workflow", "block-dependants", "record-and-continue"] as const)),
 });
 
+const evaluationBudgetSchema = Type.Object({
+  maximumEvaluations: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+  maximumDevelopmentEvaluations: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+  maximumProbeEvaluations: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+  maximumHoldoutEvaluations: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+});
+const workflowEvaluationSchema = Type.Object({ budget: evaluationBudgetSchema });
+
 export const definitionSchema = Type.Object({
   title: Type.String(),
   goal: Type.String(),
   nodes: Type.Array(nodeSchema, { minItems: 1 }),
   loops: Type.Optional(Type.Array(loopSchema)),
+  evaluation: Type.Optional(workflowEvaluationSchema),
   policy: Type.Optional(Type.Object({ mode: Type.Optional(StringEnum(["guided", "strict"] as const)), requireEvidence: Type.Optional(Type.Boolean()) })),
 });
 
@@ -146,6 +164,7 @@ export const evidenceSchema = Type.Object({
   ref: Type.String({ description: "Tool call, command, file, approval, or event reference" }),
   kind: Type.Optional(StringEnum(["tool", "command", "file", "approval", "note"] as const)),
   summary: Type.Optional(Type.String()),
+  visibility: Type.Optional(StringEnum(["public", "protected"] as const)),
 });
 export const factInputSchema = Type.Object({ name: Type.String(), type: factTypeSchema, value: factValueSchema, evidence: Type.Optional(Type.Array(evidenceSchema)) });
 export type HypagraphDefineInput = Static<typeof definitionSchema>;
@@ -214,6 +233,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                   parser: { name: "metric-json" as const, version: 1 as const },
                   mappings: node.check.mappings.map((mapping) => ({ ...mapping })),
                   ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+                  ...(node.check.evaluation === undefined ? {} : { evaluation: structuredClone(node.check.evaluation) }),
                 }
                 : {
                   kind: node.check.kind,
@@ -245,6 +265,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       ...(loop.evaluation === undefined ? {} : { evaluation: { validWhen: structuredClone(loop.evaluation.validWhen), maximumInvalidEvaluations: loop.evaluation.maximumInvalidEvaluations } }),
       ...(loop.failurePolicy === undefined ? {} : { failurePolicy: loop.failurePolicy }),
     })),
+    ...(input.evaluation === undefined ? {} : { evaluation: { budget: { ...input.evaluation.budget } } }),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };
 }

@@ -1,4 +1,4 @@
-import type { Diagnostic, FactInput } from "../domain/model.js";
+import type { Diagnostic, EvaluationDiagnostic, EvaluationFeedbackPolicy, FactInput } from "../domain/model.js";
 import { parseIstanbulCoverageSummary } from "./coverage-report-parser.js";
 import { parseEslintJsonReport } from "./lint-report-parser.js";
 import { parseMetricJsonReport, type MetricReportMapping } from "./metric-report-parser.js";
@@ -17,10 +17,13 @@ export interface ParsedReport {
   parser: ReportParserName;
   parserVersion: 1;
   facts: FactInput[];
+  diagnostics?: EvaluationDiagnostic[];
+  diagnosticsTruncated?: boolean;
 }
 
 export interface ReportParseOptions {
   metricMappings?: readonly MetricReportMapping[];
+  metricFeedback?: EvaluationFeedbackPolicy;
 }
 
 export type ReportParserResult =
@@ -91,7 +94,7 @@ export function parseReport(
           }],
         };
       }
-      return parseMetricJsonReport(input, options.metricMappings);
+      return parseMetricJsonReport(input, options.metricMappings, options.metricFeedback);
     }
   }
 }

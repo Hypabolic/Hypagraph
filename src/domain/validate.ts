@@ -25,6 +25,8 @@ const MAX_RETRY_BACKOFF_MS = 86_400_000;
 const MAX_REPORT_BYTES = 16_777_216;
 const MAX_ASSERTION_BYTES = 16_777_216;
 const MAX_INVALID_EVALUATIONS = 1_000;
+const MAX_EVALUATIONS = 1_000_000;
+const MAX_DIAGNOSTIC_ITEMS = 100;
 const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 const REPORT_PARSERS = {
   "test-report": "vitest-json",
@@ -272,6 +274,18 @@ const validateMetricReport = (node: NodeDefinition, check: MetricReportCheckDefi
   if (relativePathInvalid(check.reportPath)) diagnostics.push({ code: "report_path_outside_workspace", message: `Report path '${check.reportPath}' must remain inside the workspace.`, location: `${location}.reportPath` });
   if (check.maxReportBytes !== undefined && (!Number.isInteger(check.maxReportBytes) || check.maxReportBytes < 1 || check.maxReportBytes > MAX_REPORT_BYTES)) diagnostics.push({ code: "invalid_report_size_limit", message: `Report check '${node.id}' maximum report size must be between 1 and ${MAX_REPORT_BYTES} bytes.`, location: `${location}.maxReportBytes` });
   if (check.mappings.length === 0) diagnostics.push({ code: "metric_report_mapping_required", message: `Metric report check '${node.id}' requires at least one scalar mapping.`, location: `${location}.mappings` });
+  if (check.evaluation) {
+    const evaluationLocation = `${location}.evaluation`;
+    if (!["development", "probe", "holdout"].includes(check.evaluation.kind)) diagnostics.push({ code: "invalid_evaluation_kind", message: `Metric report check '${node.id}' has an invalid evaluation kind.`, location: `${evaluationLocation}.kind` });
+    const feedback = check.evaluation.feedback;
+    if (feedback.mode === "aggregate") {
+      if (feedback.maximumDiagnosticItems !== undefined) diagnostics.push({ code: "aggregate_diagnostics_not_allowed", message: "Aggregate feedback must not set a diagnostic item limit.", location: `${evaluationLocation}.feedback.maximumDiagnosticItems` });
+    } else if (feedback.mode === "bounded-diagnostics") {
+      if (!Number.isInteger(feedback.maximumDiagnosticItems) || feedback.maximumDiagnosticItems! < 1 || feedback.maximumDiagnosticItems! > MAX_DIAGNOSTIC_ITEMS) diagnostics.push({ code: "invalid_diagnostic_limit", message: `Bounded diagnostic feedback requires a limit between 1 and ${MAX_DIAGNOSTIC_ITEMS}.`, location: `${evaluationLocation}.feedback.maximumDiagnosticItems` });
+    } else diagnostics.push({ code: "invalid_feedback_mode", message: `Metric report check '${node.id}' has an invalid feedback mode.`, location: `${evaluationLocation}.feedback.mode` });
+    if (check.evaluation.kind === "holdout" && feedback.mode !== "aggregate") diagnostics.push({ code: "holdout_feedback_must_be_aggregate", message: "A holdout evaluation must use aggregate feedback.", location: `${evaluationLocation}.feedback.mode` });
+    if (check.evaluation.kind === "holdout" && feedback.exposeRawReport === true) diagnostics.push({ code: "holdout_raw_report_not_allowed", message: "A holdout evaluation must not expose the raw report.", location: `${evaluationLocation}.feedback.exposeRawReport` });
+  }
 
   const sources = new Set<string>();
   const mappedFacts = new Set<string>();
@@ -383,6 +397,13 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
   const factTypes = new Map<string, FactType>();
   if (!definition.title.trim()) diagnostics.push({ code: "empty_title", message: "The workflow title must not be empty.", location: "title" });
   if (!definition.goal.trim()) diagnostics.push({ code: "empty_goal", message: "The workflow goal must not be empty.", location: "goal" });
+  if (definition.evaluation) {
+    const entries = Object.entries(definition.evaluation.budget);
+    if (entries.length === 0) diagnostics.push({ code: "evaluation_budget_limit_required", message: "An evaluation budget must set at least one limit.", location: "evaluation.budget" });
+    for (const [name, value] of entries) {
+      if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > MAX_EVALUATIONS) diagnostics.push({ code: "invalid_evaluation_budget_limit", message: `Evaluation budget '${name}' must be between 1 and ${MAX_EVALUATIONS}.`, location: `evaluation.budget.${name}` });
+    }
+  }
   if (definition.nodes.length === 0) diagnostics.push({ code: "empty_graph", message: "The workflow must have at least one node.", location: "nodes" });
   definition.nodes.forEach((node, index) => {
     const location = `nodes[${index}]`;

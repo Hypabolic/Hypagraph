@@ -22,10 +22,13 @@ export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" 
 export type EnforcementMode = "guided" | "strict";
 export type NodeKind = "task" | "gate" | "check";
 
+export type EvidenceVisibility = "public" | "protected";
+
 export interface EvidenceReference {
   ref: string;
   kind?: "tool" | "command" | "file" | "approval" | "note";
   summary?: string;
+  visibility?: EvidenceVisibility;
 }
 
 export interface GateDefinition {
@@ -81,6 +84,24 @@ export interface ReportCheckDefinition extends CommandExecutionDefinition {
 }
 
 export type MetricScalarType = "boolean" | "integer" | "number" | "string";
+export type EvaluationKind = "development" | "probe" | "holdout";
+export type EvaluationFeedbackMode = "aggregate" | "bounded-diagnostics";
+
+export interface EvaluationFeedbackPolicy {
+  mode: EvaluationFeedbackMode;
+  maximumDiagnosticItems?: number;
+  exposeRawReport?: boolean;
+}
+
+export interface MetricEvaluationDefinition {
+  kind: EvaluationKind;
+  feedback: EvaluationFeedbackPolicy;
+}
+
+export interface EvaluationDiagnostic {
+  code: string;
+  message: string;
+}
 
 export interface MetricReportMapping {
   source: string;
@@ -95,6 +116,7 @@ export interface MetricReportCheckDefinition extends CommandExecutionDefinition 
   parser: { name: "metric-json"; version: 1 };
   mappings: MetricReportMapping[];
   maxReportBytes?: number;
+  evaluation?: MetricEvaluationDefinition;
 }
 
 export type FileAssertionDefinition =
@@ -144,6 +166,12 @@ export interface CheckResult {
   evidence: EvidenceReference[];
   stdoutRef?: string;
   stderrRef?: string;
+  evaluation?: {
+    kind: EvaluationKind;
+    feedbackMode: EvaluationFeedbackMode;
+    diagnostics: EvaluationDiagnostic[];
+    diagnosticsTruncated: boolean;
+  };
   error?: string;
 }
 
@@ -193,6 +221,27 @@ export interface LoopEvaluationDefinition {
   maximumInvalidEvaluations: number;
 }
 
+export interface EvaluationBudgetDefinition {
+  maximumEvaluations?: number;
+  maximumDevelopmentEvaluations?: number;
+  maximumProbeEvaluations?: number;
+  maximumHoldoutEvaluations?: number;
+}
+
+export interface WorkflowEvaluationDefinition {
+  budget: EvaluationBudgetDefinition;
+}
+
+export interface EvaluationRuntime {
+  total: number;
+  development: number;
+  probe: number;
+  holdout: number;
+  lastKind?: EvaluationKind;
+  lastNodeId?: string;
+  lastAttemptId?: string;
+}
+
 export type LoopFailurePolicy = "fail-workflow" | "block-dependants" | "record-and-continue";
 
 export interface LoopDefinition {
@@ -211,7 +260,7 @@ export interface LoopDefinition {
 
 export type LoopStatus = "pending" | "running" | "blocked" | "succeeded" | "failed" | "requires_revision";
 export type LoopDecision = "complete" | "continue" | "fail" | "pending";
-export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "invalid_evaluations" | "evaluation_error";
+export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "invalid_evaluations" | "evaluation_budget" | "evaluation_error";
 
 export interface LoopIterationRuntime {
   iteration: number;
@@ -269,6 +318,7 @@ export interface HypagraphDefinition {
   goal: string;
   nodes: NodeDefinition[];
   loops: LoopDefinition[];
+  evaluation?: WorkflowEvaluationDefinition;
   policy: WorkflowPolicy;
 }
 
@@ -317,6 +367,7 @@ export interface HypagraphState {
     facts: Record<string, FactRecord>;
     routes: Record<string, RouteSelection>;
     loops: Record<string, LoopRuntime>;
+    evaluations?: EvaluationRuntime;
   };
   createdAt: string;
   updatedAt: string;
@@ -345,6 +396,7 @@ export type EventType =
   | "hypagraph.attempt.started"
   | "hypagraph.attempt.result-submitted"
   | "hypagraph.check.started"
+  | "hypagraph.evaluation.started"
   | "hypagraph.check.result-recorded"
   | "hypagraph.fact.published"
   | "hypagraph.route.selected"

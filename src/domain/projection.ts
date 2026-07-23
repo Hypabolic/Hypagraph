@@ -174,6 +174,19 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.attempt.started":
       if (node && event.attemptId) startAttempt(node, event.attemptId, event.timestamp, event.data);
       break;
+    case "hypagraph.evaluation.started": {
+      const kind = event.data.kind;
+      if (kind === "development" || kind === "probe" || kind === "holdout") {
+        const evaluations = next.runtime.evaluations ?? { total: 0, development: 0, probe: 0, holdout: 0 };
+        evaluations.total += 1;
+        evaluations[kind] += 1;
+        evaluations.lastKind = kind;
+        if (event.nodeId) evaluations.lastNodeId = event.nodeId;
+        if (event.attemptId) evaluations.lastAttemptId = event.attemptId;
+        next.runtime.evaluations = evaluations;
+      }
+      break;
+    }
     case "hypagraph.check.started":
       if (node && event.attemptId) {
         if (event.data.retry === true && event.nodeId) {
@@ -386,7 +399,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         runtime.status = "failed";
         runtime.completedAt = event.timestamp;
         const reason = event.data.exitReason;
-        runtime.exitReason = reason === "no_progress" || reason === "invalid_evaluations" || reason === "evaluation_error" ? reason : "max_iterations";
+        runtime.exitReason = reason === "no_progress" || reason === "invalid_evaluations" || reason === "evaluation_budget" || reason === "evaluation_error" ? reason : "max_iterations";
         const policy = event.data.failurePolicy;
         if (policy === "fail-workflow" || policy === "block-dependants" || policy === "record-and-continue") runtime.failurePolicy = policy;
       }

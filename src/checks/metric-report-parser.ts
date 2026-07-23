@@ -1,5 +1,7 @@
 import type {
   Diagnostic,
+  EvaluationDiagnostic,
+  EvaluationFeedbackPolicy,
   FactInput,
   MetricReportMapping,
   MetricScalarType,
@@ -13,6 +15,8 @@ export interface ParsedMetricReport {
   parser: "metric-json";
   parserVersion: typeof METRIC_JSON_PARSER_VERSION;
   facts: FactInput[];
+  diagnostics: EvaluationDiagnostic[];
+  diagnosticsTruncated: boolean;
 }
 
 export type MetricReportParseResult =
@@ -21,6 +25,8 @@ export type MetricReportParseResult =
 
 const SOURCE_PATH_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/;
 const FORBIDDEN_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+const DIAGNOSTIC_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const MAX_DIAGNOSTIC_MESSAGE_LENGTH = 1_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -47,6 +53,7 @@ const validScalar = (value: unknown, type: MetricScalarType): boolean => {
 export function parseMetricJsonReport(
   input: string,
   mappings: readonly MetricReportMapping[],
+  feedback?: EvaluationFeedbackPolicy,
 ): MetricReportParseResult {
   let report: Record<string, unknown>;
   try {
@@ -84,6 +91,40 @@ export function parseMetricJsonReport(
   const sources = new Set<string>();
   const facts = new Set<string>();
   const output: FactInput[] = [];
+
+
+  const publicDiagnostics: EvaluationDiagnostic[] = [];
+  let diagnosticsTruncated = false;
+  if (feedback?.mode === "bounded-diagnostics") {
+    const source = report.diagnostics;
+    if (source !== undefined && !Array.isArray(source)) {
+      diagnostics.push({
+        code: "invalid_evaluation_diagnostics",
+        message: "The metric report diagnostics value must be an array.",
+        location: "report.diagnostics",
+      });
+    } else if (Array.isArray(source)) {
+      const limit = feedback.maximumDiagnosticItems ?? 0;
+      diagnosticsTruncated = source.length > limit;
+      source.slice(0, limit).forEach((item, index) => {
+        const location = `report.diagnostics[${index}]`;
+        if (!isRecord(item)
+          || typeof item.code !== "string"
+          || !DIAGNOSTIC_CODE_PATTERN.test(item.code)
+          || typeof item.message !== "string"
+          || item.message.length < 1
+          || item.message.length > MAX_DIAGNOSTIC_MESSAGE_LENGTH) {
+          diagnostics.push({
+            code: "invalid_evaluation_diagnostic",
+            message: "Each public evaluation diagnostic must contain a stable code and a bounded message.",
+            location,
+          });
+          return;
+        }
+        publicDiagnostics.push({ code: item.code, message: item.message });
+      });
+    }
+  }
 
   mappings.forEach((mapping, index) => {
     const location = `check.mappings[${index}]`;
@@ -136,6 +177,8 @@ export function parseMetricJsonReport(
       parser: "metric-json",
       parserVersion: METRIC_JSON_PARSER_VERSION,
       facts: output,
+      diagnostics: publicDiagnostics,
+      diagnosticsTruncated,
     },
   };
 }

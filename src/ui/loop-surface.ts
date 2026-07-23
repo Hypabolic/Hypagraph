@@ -15,6 +15,15 @@ export interface LoopSurfaceSummary {
     maximumInvalid: number;
     remainingInvalid: number;
   };
+  evaluationBudget?: {
+    kind: "development" | "probe" | "holdout";
+    count: number;
+    maximum?: number;
+    remaining?: number;
+    totalCount: number;
+    totalMaximum?: number;
+    totalRemaining?: number;
+  };
   progress?: {
     fact: string;
     direction: "minimize" | "maximize";
@@ -50,6 +59,7 @@ const loopWarning = (loop: LoopDefinition, runtime: LoopRuntime | undefined): Lo
   }
   if (runtime?.exitReason === "max_iterations") return { code: "loop_max_iterations_exhausted", message: "The loop reached its hard iteration limit without satisfying its success condition." };
   if (runtime?.exitReason === "invalid_evaluations") return { code: "loop_invalid_evaluations_exhausted", message: "The loop reached its invalid-evaluation limit without a trustworthy observation." };
+  if (runtime?.exitReason === "evaluation_budget") return { code: "loop_evaluation_budget_exhausted", message: "The loop used its available evaluation budget before it satisfied the success condition." };
   if (runtime?.exitReason === "evaluation_error") return { code: "loop_evaluation_error", message: "The evaluation boundary could not produce a valid deterministic loop decision." };
   return undefined;
 };
@@ -63,6 +73,15 @@ export function loopSurfaceSummaries(state: HypagraphState): LoopSurfaceSummary[
     const selectedFeedback = runtime?.status === "running" && runtime.currentIteration > 1;
     const warning = loopWarning(loop, runtime);
     const invalidCount = runtime?.invalidEvaluationCount ?? 0;
+    const evaluatorCheck = state.definition.nodes.find((node) => node.id === loop.evaluateAfter)?.check;
+    const evaluatorKind = evaluatorCheck?.kind === "metric-report" ? evaluatorCheck.evaluation?.kind ?? "development" : undefined;
+    const budget = view.evaluationBudget;
+    const kindMaximum = evaluatorKind === "development" ? budget?.limits.maximumDevelopmentEvaluations
+      : evaluatorKind === "probe" ? budget?.limits.maximumProbeEvaluations
+        : evaluatorKind === "holdout" ? budget?.limits.maximumHoldoutEvaluations
+          : undefined;
+    const kindCount = evaluatorKind === undefined ? undefined : budget?.counts[evaluatorKind];
+    const kindRemaining = evaluatorKind === undefined ? undefined : budget?.remaining[evaluatorKind];
     return {
       id: loop.id,
       status: runtime?.status ?? "pending",
@@ -76,6 +95,17 @@ export function loopSurfaceSummaries(state: HypagraphState): LoopSurfaceSummary[
           invalidCount,
           maximumInvalid: loop.evaluation.maximumInvalidEvaluations,
           remainingInvalid: Math.max(0, loop.evaluation.maximumInvalidEvaluations - invalidCount),
+        },
+      }),
+      ...(evaluatorKind === undefined || budget === undefined ? {} : {
+        evaluationBudget: {
+          kind: evaluatorKind,
+          count: kindCount ?? 0,
+          ...(kindMaximum === undefined ? {} : { maximum: kindMaximum }),
+          ...(kindRemaining === undefined ? {} : { remaining: kindRemaining }),
+          totalCount: budget.counts.total,
+          ...(budget.limits.maximumEvaluations === undefined ? {} : { totalMaximum: budget.limits.maximumEvaluations }),
+          ...(budget.remaining.total === undefined ? {} : { totalRemaining: budget.remaining.total }),
         },
       }),
       ...(loop.progress === undefined ? {} : {
@@ -112,10 +142,13 @@ export function renderLoopStatus(state: HypagraphState): string {
     const validity = loop.evaluation === undefined
       ? ""
       : ` | valid ${loop.evaluation.lastValid ?? "none"}, invalid ${loop.evaluation.invalidCount}/${loop.evaluation.maximumInvalid}`;
+    const budget = loop.evaluationBudget === undefined
+      ? ""
+      : ` | budget ${loop.evaluationBudget.kind} ${loop.evaluationBudget.count}${loop.evaluationBudget.maximum === undefined ? "" : `/${loop.evaluationBudget.maximum}`}, total ${loop.evaluationBudget.totalCount}${loop.evaluationBudget.totalMaximum === undefined ? "" : `/${loop.evaluationBudget.totalMaximum}`}`;
     const metric = loop.progress === undefined
       ? ""
       : ` | metric ${loop.progress.currentMetric ?? "none"}, best ${loop.progress.bestMetric ?? "none"}${loop.progress.bestIteration === undefined ? "" : ` at ${loop.progress.bestIteration}`}, no-progress ${loop.progress.noProgressCount}${loop.progress.patience === undefined ? "" : `/${loop.progress.patience}`}`;
     const warning = loop.warning ? `\n  warning ${loop.warning.code}: ${loop.warning.message}` : "";
-    return `${loop.id}: ${loop.status} | iteration ${loop.iteration.current}/${loop.iteration.limit} | evaluate ${loop.evaluationNodeId} | feedback ${feedback} | policy ${loop.failurePolicy} | component ${loop.componentId ?? "none"} | outcome ${loop.localOutcome} | workflow ${loop.workflowEffect}${loop.exitReason ? ` | exit ${loop.exitReason}` : ""}${validity}${metric}${warning}`;
+    return `${loop.id}: ${loop.status} | iteration ${loop.iteration.current}/${loop.iteration.limit} | evaluate ${loop.evaluationNodeId} | feedback ${feedback} | policy ${loop.failurePolicy} | component ${loop.componentId ?? "none"} | outcome ${loop.localOutcome} | workflow ${loop.workflowEffect}${loop.exitReason ? ` | exit ${loop.exitReason}` : ""}${validity}${budget}${metric}${warning}`;
   }).join("\n");
 }
