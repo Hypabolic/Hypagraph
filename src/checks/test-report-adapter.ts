@@ -11,9 +11,14 @@ export type TestReportAdapterResult =
 
 const validNamespace = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)*$/;
 
+const publicFactName = (name: string, namespace: string): string => {
+  if (name.startsWith("tests.")) return `${namespace}.${name.slice("tests.".length)}`;
+  return `${namespace}.${name}`;
+};
+
 const namespaceFacts = (facts: FactInput[], namespace: string, evidence: CheckResult["evidence"]): FactInput[] => facts.map((fact) => ({
   ...fact,
-  name: `${namespace}.${fact.name}`,
+  name: publicFactName(fact.name, namespace),
   evidence: structuredClone(evidence),
 }));
 
