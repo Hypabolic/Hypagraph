@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe("M4 Slice 4 Pi hard limit", () => {
-  it("shows a terminal failed loop and rejects another entry attempt", async () => {
+  it("shows a terminal failed loop and rejects another entry or check attempt", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "hypagraph-loop-limit-"));
     workspaces.push(workspace);
     const tools = new Map<string, RegisteredTool>();
@@ -93,5 +93,6 @@ describe("M4 Slice 4 Pi hard limit", () => {
     expect(result.details.graph.loops[0]).toMatchObject({ status: "failed", exitReason: "max_iterations" });
     expect(result.content[0].text).toContain("repair-loop: failed - iteration 1/1 - max_iterations");
     await expect(transition.execute("repair-again", { action: "start", nodeId: "repair" }, signal, undefined, ctx)).rejects.toThrow(/loop_exhausted/);
+    await expect(runCheck.execute("test-again", { nodeId: "test" }, signal, undefined, ctx)).rejects.toThrow(/loop_exhausted/);
   });
 });
