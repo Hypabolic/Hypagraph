@@ -30,20 +30,24 @@ Hypagraph is useful for repository changes that have dependencies, conditional p
 
 ## Install
 
-You need Pi and Node.js 22 or later.
+Install Hypagraph directly from GitHub:
 
-From Pi, install Hypagraph directly from GitHub:
-
-```text
+```bash
 pi install git:github.com/Hypabolic/Hypagraph
 ```
 
 Restart Pi after installation. Hypagraph loads its extension and bundled skill automatically.
 
-To update an existing installation:
+Update an existing installation:
 
-```text
-pi update hypagraph
+```bash
+pi update git:github.com/Hypabolic/Hypagraph
+```
+
+Install it only for the current project with Pi's `-l` option:
+
+```bash
+pi install -l git:github.com/Hypabolic/Hypagraph
 ```
 
 ## Start your first workflow
@@ -199,6 +203,8 @@ The v0.4 release was dogfooded through the real Pi product path with a graph tha
 M4 is in progress. It extends executable bounded loops with multi-iteration repair behavior, progress rules, recovery hardening, and the complete Pi loop surface.
 
 ## Develop locally
+
+Development requires Node.js 22 or later.
 
 ```bash
 git clone https://github.com/Hypabolic/Hypagraph.git
