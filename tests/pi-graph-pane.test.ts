@@ -158,7 +158,7 @@ describe("graph pane controller", () => {
     changed.sequence += 1;
     changed.runtime.nodes.plan!.status = "running";
     changed.runtime.nodes.plan!.attemptCount = 1;
-    fakeTui.requestRender.mockClear();
+    vi.mocked(fakeTui.requestRender).mockClear();
 
     controller.update(changed);
 
