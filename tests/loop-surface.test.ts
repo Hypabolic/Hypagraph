@@ -17,7 +17,7 @@ const definition = (overrides: Partial<HypagraphDefinition["loops"][number]> = {
       acceptance: [],
       produces: [
         { name: "quality.passed", type: "boolean", required: true },
-        { name: "quality.score", type: "number", required: true },
+        { name: "quality.score", type: "number", required: false },
       ],
     },
     { id: "publish", title: "Publish", requires: ["evaluate"], acceptance: [] },
