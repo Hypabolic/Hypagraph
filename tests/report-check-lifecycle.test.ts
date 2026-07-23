@@ -33,7 +33,7 @@ const definition = (): HypagraphDefinition => ({
       { name: "tests.passed", type: "integer", required: true },
       { name: "tests.failed", type: "integer", required: true },
       { name: "tests.skipped", type: "integer", required: true },
-      { name: "tests.durationMs", type: "number", required: false },
+      { name: "tests.duration-ms", type: "number", required: false },
     ],
     check: {
       kind: "test-report",
