@@ -164,6 +164,7 @@ Hypagraph stores check artifacts under `.hypagraph/check-artifacts`. v0.4 does n
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [M4 executable bounded loops vertical-slice plan](docs/m4-vertical-slice-plan.md)
+- [Hypagoal vertical-slice plan](docs/hypagoal-vertical-slice-plan.md)
 - [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
 - [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
