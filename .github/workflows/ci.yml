@@ -1,83 +1,16 @@
 name: CI
 
-# Temporary Slice 7 preparation runs before the normal matrix.
 on:
   workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
-      - agent/m4-slice-7-recovery-hardening-current
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  prepare-slice-7:
-    if: (github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening-current') || (github.event_name == 'push' && github.ref == 'refs/heads/agent/m4-slice-7-recovery-hardening-current')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the Slice 7 branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/m4-slice-7-recovery-hardening-current
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Apply Slice 7
-        shell: bash
-        run: |
-          set +e
-          {
-            python3 scripts/fix-m4-slice7-anchor.py
-            python3 scripts/apply-m4-slice7.py
-          } > apply.log 2>&1
-          status=$?
-          cat apply.log
-          exit $status
-
-      - name: Upload preparation diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: m4-slice7-prepare-log
-          path: apply.log
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run type checks and tests
-        shell: bash
-        run: |
-          set +e
-          npm run check > slice7-check.log 2>&1
-          status=$?
-          cat slice7-check.log
-          exit $status
-
-      - name: Upload Slice 7 check log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: m4-slice7-check-log
-          path: slice7-check.log
-
-      - name: Commit Slice 7 product files
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs skills src tests
-          if git diff --cached --quiet; then
-            echo "Slice 7 product files are already current."
-          else
-            git commit -m "Implement M4 Slice 7 recovery hardening"
-            git push origin HEAD:agent/m4-slice-7-recovery-hardening-current
-          fi
-
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
