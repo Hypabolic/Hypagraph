@@ -80,7 +80,40 @@ export interface ReportCheckDefinition extends CommandExecutionDefinition {
   maxReportBytes?: number;
 }
 
-export type CheckDefinition = CommandCheckDefinition | ReportCheckDefinition;
+export type FileAssertionDefinition =
+  | { kind: "exists"; path: string }
+  | { kind: "absent"; path: string }
+  | { kind: "size"; path: string; bytes: number }
+  | { kind: "sha256"; path: string; hash: string; maxBytes?: number }
+  | { kind: "text-contains"; path: string; text: string; maxBytes?: number };
+
+export type GitAssertionDefinition =
+  | { kind: "clean" }
+  | { kind: "branch"; name: string }
+  | { kind: "revision"; sha: string }
+  | { kind: "changed-paths"; paths: string[]; mode?: "exact" | "contains" };
+
+export interface FileAssertionCheckDefinition {
+  kind: "file-assertion";
+  version: 1;
+  assertion: FileAssertionDefinition;
+  namespace: string;
+  retry?: CheckRetryPolicy;
+}
+
+export interface GitAssertionCheckDefinition {
+  kind: "git-assertion";
+  version: 1;
+  assertion: GitAssertionDefinition;
+  namespace: string;
+  retry?: CheckRetryPolicy;
+}
+
+export type CheckDefinition =
+  | CommandCheckDefinition
+  | ReportCheckDefinition
+  | FileAssertionCheckDefinition
+  | GitAssertionCheckDefinition;
 
 export interface CheckResult {
   checkKind: CheckKind;
