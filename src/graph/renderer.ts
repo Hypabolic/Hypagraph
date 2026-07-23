@@ -136,9 +136,24 @@ const drawLoop = (canvas: CharacterCanvas, loop: GraphLayout["loops"][number], v
   }
   const viewLoop = view.loops.find((candidate) => candidate.id === loop.id);
   const iteration = viewLoop?.currentIteration ?? 0;
-  const suffix = viewLoop?.status === "succeeded" ? " complete" : viewLoop?.status === "failed" ? ` failed:${viewLoop.exitReason ?? "unknown"}` : viewLoop?.status === "requires_revision" ? " revise" : "";
+  const suffix = viewLoop?.status === "succeeded"
+    ? " complete"
+    : viewLoop?.status === "failed"
+      ? ` failed:${viewLoop.exitReason ?? "unknown"}`
+      : viewLoop?.status === "requires_revision"
+        ? " revise"
+        : "";
   const policy = viewLoop?.failurePolicy ?? "fail-workflow";
-  canvas.text(loop.x + 2, loop.y, `loop ${loop.id} [${iteration}/${loop.maxIterations}] ${policy}${suffix}`, Math.max(0, loop.width - 4));
+  const metric = viewLoop?.currentMetric === undefined ? "" : ` metric:${viewLoop.currentMetric}`;
+  const best = viewLoop?.bestMetric === undefined ? "" : ` best:${viewLoop.bestMetric}@${viewLoop.bestIteration ?? "?"}`;
+  const patience = viewLoop?.patience === undefined ? "" : ` patience:${viewLoop.remainingPatience ?? viewLoop.patience}/${viewLoop.patience}`;
+  const component = viewLoop?.componentId === undefined ? "" : ` ${viewLoop.componentId}`;
+  canvas.text(
+    loop.x + 2,
+    loop.y,
+    `loop ${loop.id} [${iteration}/${loop.maxIterations}] ${policy}${metric}${best}${patience}${component}${suffix}`,
+    Math.max(0, loop.width - 4),
+  );
 };
 
 const segmentGlyphs = (edge: GraphLayoutEdge, unicode: boolean): { horizontal: string; vertical: string } => {
