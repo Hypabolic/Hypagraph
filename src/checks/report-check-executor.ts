@@ -5,6 +5,7 @@ import type {
   CheckExecutor,
   CheckResult,
   FactInput,
+  MetricReportCheckDefinition,
   ReportCheckDefinition,
 } from "../domain/model.js";
 import type { CheckArtifactStore } from "./artifacts.js";
@@ -13,6 +14,8 @@ import { parseReport } from "./report-parser-registry.js";
 
 const DEFAULT_MAX_REPORT_BYTES = 1_048_576;
 const validNamespace = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)*$/;
+
+type ExecutableReportCheckDefinition = ReportCheckDefinition | MetricReportCheckDefinition;
 
 export interface ReportCheckExecutorOptions {
   rootDirectory: string;
@@ -28,7 +31,8 @@ const publicSegment = (segment: string): string => segment
 
 const publicPath = (path: string): string => path.split(".").map(publicSegment).join(".");
 
-const reportFactName = (fact: FactInput, definition: ReportCheckDefinition): string => {
+const reportFactName = (fact: FactInput, definition: ExecutableReportCheckDefinition): string => {
+  if (definition.kind === "metric-report") return fact.name;
   const namespace = definition.namespace;
   if (fact.name === "passed") return `${namespace}.success`;
   if (definition.kind === "test-report" && fact.name.startsWith("tests.")) {
@@ -43,7 +47,7 @@ const reportFactName = (fact: FactInput, definition: ReportCheckDefinition): str
   return `${namespace}.${publicPath(fact.name)}`;
 };
 
-const resolveReportPath = (rootDirectory: string, definition: ReportCheckDefinition): string => {
+const resolveReportPath = (rootDirectory: string, definition: ExecutableReportCheckDefinition): string => {
   const root = resolve(rootDirectory);
   const workingDirectory = resolve(root, definition.workingDirectory ?? ".");
   const target = resolve(workingDirectory, definition.reportPath);
@@ -55,7 +59,7 @@ const resolveReportPath = (rootDirectory: string, definition: ReportCheckDefinit
 };
 
 const errorResult = (
-  definition: ReportCheckDefinition,
+  definition: ExecutableReportCheckDefinition,
   request: CheckExecutionRequest,
   source: CheckResult,
   completedAt: string,
@@ -97,12 +101,13 @@ export class ReportCheckExecutor implements CheckExecutor {
     }
     if (request.definition.kind !== "test-report"
       && request.definition.kind !== "lint-report"
-      && request.definition.kind !== "coverage-report") {
+      && request.definition.kind !== "coverage-report"
+      && request.definition.kind !== "metric-report") {
       throw new Error(`The report executor cannot run check kind '${request.definition.kind}'.`);
     }
 
     const definition = request.definition;
-    if (!validNamespace.test(definition.namespace)) {
+    if (definition.kind !== "metric-report" && !validNamespace.test(definition.namespace)) {
       return {
         checkKind: definition.kind,
         attemptId: request.attemptId,
@@ -177,7 +182,12 @@ export class ReportCheckExecutor implements CheckExecutor {
       { ref: reportRef, kind: "file" as const, summary: `${definition.parser.name} report.` },
     ];
 
-    const parsed = parseReport(definition.parser.name, definition.parser.version, reportText);
+    const parsed = parseReport(
+      definition.parser.name,
+      definition.parser.version,
+      reportText,
+      definition.kind === "metric-report" ? { metricMappings: definition.mappings } : {},
+    );
     if (!parsed.ok) {
       return errorResult(
         definition,
