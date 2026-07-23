@@ -1,0 +1,24 @@
+name: Export source
+
+on:
+  push:
+    branches:
+      - agent/m5a-slice-3-feedback-budgets
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Create source archive
+        run: tar --exclude=.git --exclude=source.tgz -czf source.tgz .
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: hypagraph-source
+          path: source.tgz
+          if-no-files-found: error
