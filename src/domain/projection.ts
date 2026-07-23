@@ -122,6 +122,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
 
   switch (event.type) {
     case "hypagraph.workflow.revised": {
+      next.phase = "running";
       next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);
       const retainedNodes = next.runtime.nodes;
       const retainedLoops = next.runtime.loops;
