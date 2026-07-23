@@ -35,6 +35,17 @@ replace_once(
 )
 
 replace_once(
+    "src/ui/format.ts",
+    "loop.patience - runtime.noProgressCount",
+    "loop.patience - (runtime.noProgressCount ?? 0)",
+)
+replace_once(
+    "src/ui/format.ts",
+    "definition.patience - shownLoop.noProgressCount",
+    "definition.patience - (shownLoop.noProgressCount ?? 0)",
+)
+
+replace_once(
     "tests/loop-progress.test.ts",
     'import { replayEvents } from "../src/domain/projection.js";\n',
     'import { replayEvents } from "../src/domain/projection.js";\nimport { restoreLatestSession } from "../src/persistence/session-rebuild.js";\n',
