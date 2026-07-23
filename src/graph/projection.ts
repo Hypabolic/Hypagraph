@@ -27,6 +27,7 @@ export interface GraphViewNode {
   ready: boolean;
   factCount: number;
   evidenceCount: number;
+  componentId?: string;
   loopId?: string;
   iteration?: number;
   check?: GraphViewCheckSummary;
@@ -64,6 +65,14 @@ export interface GraphViewLoop {
   noProgressCount?: number;
   patience?: number;
   remainingPatience?: number;
+  componentId?: string;
+  failurePolicy?: "fail-workflow" | "block-dependants" | "record-and-continue";
+}
+
+export interface GraphViewComponent {
+  id: string;
+  nodeIds: string[];
+  loopIds: string[];
 }
 
 export interface GraphViewModel {
@@ -75,6 +84,7 @@ export interface GraphViewModel {
   nodes: GraphViewNode[];
   edges: GraphViewEdge[];
   loops: GraphViewLoop[];
+  components?: GraphViewComponent[];
   readyNodeIds: string[];
   activeNodeId?: string;
 }
@@ -94,7 +104,42 @@ const edgeSort = (left: GraphViewEdge, right: GraphViewEdge): number =>
   || left.kind.localeCompare(right.kind)
   || (left.outcome ?? "").localeCompare(right.outcome ?? "");
 
+const graphComponents = (state: HypagraphState): { componentByNode: Map<string, string>; components: GraphViewComponent[] } => {
+  const adjacency = new Map(state.definition.nodes.map((node) => [node.id, new Set<string>()]));
+  for (const node of state.definition.nodes) {
+    for (const required of node.requires) {
+      adjacency.get(node.id)?.add(required);
+      adjacency.get(required)?.add(node.id);
+    }
+  }
+  const componentByNode = new Map<string, string>();
+  const components: GraphViewComponent[] = [];
+  for (const start of state.definition.nodes.map((node) => node.id).sort()) {
+    if (componentByNode.has(start)) continue;
+    const members: string[] = [];
+    const queue = [start];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      if (seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      members.push(nodeId);
+      for (const neighbour of [...(adjacency.get(nodeId) ?? [])].sort()) if (!seen.has(neighbour)) queue.push(neighbour);
+    }
+    members.sort();
+    const id = `component:${members[0]}`;
+    for (const nodeId of members) componentByNode.set(nodeId, id);
+    components.push({
+      id,
+      nodeIds: members,
+      loopIds: state.definition.loops.filter((loop) => loop.nodes.some((nodeId) => members.includes(nodeId))).map((loop) => loop.id).sort(),
+    });
+  }
+  return { componentByNode, components: components.sort((left, right) => left.id.localeCompare(right.id)) };
+};
+
 export function projectGraphView(state: HypagraphState): GraphViewModel {
+  const { componentByNode, components } = graphComponents(state);
   const loopByNode = new Map<string, string>();
   const feedbackKeys = new Set<string>();
   const loops: GraphViewLoop[] = state.definition.loops
@@ -114,6 +159,8 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         maxIterations: loop.maxIterations,
         status: runtime?.status ?? "pending",
         currentIteration: runtime?.currentIteration ?? 0,
+        failurePolicy: loop.failurePolicy ?? "fail-workflow",
+        ...(componentByNode.get(loop.entry) === undefined ? {} : { componentId: componentByNode.get(loop.entry)! }),
         noProgressCount: runtime?.noProgressCount ?? 0,
         ...(loop.patience === undefined ? {} : { patience: loop.patience, remainingPatience: Math.max(0, loop.patience - (runtime?.noProgressCount ?? 0)) }),
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
@@ -149,6 +196,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         ready: runtime.status === "ready",
         factCount: factCountByNode.get(definition.id) ?? 0,
         evidenceCount: runtime.evidence.length,
+        ...(componentByNode.get(definition.id) === undefined ? {} : { componentId: componentByNode.get(definition.id)! }),
         ...(loopByNode.get(definition.id) === undefined ? {} : { loopId: loopByNode.get(definition.id)! }),
         ...(attempt?.iteration === undefined ? {} : { iteration: attempt.iteration }),
         ...(checkResult === undefined
@@ -227,6 +275,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
     nodes,
     edges: edges.sort(edgeSort),
     loops,
+    components,
     readyNodeIds,
     ...(activeNodeId === undefined ? {} : { activeNodeId }),
   };
@@ -235,8 +284,8 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
 export function graphLayoutKey(view: GraphViewModel): string {
   return JSON.stringify({
     revision: view.revision,
-    nodes: view.nodes.map((node) => [node.id, node.title, node.kind, node.loopId ?? null]),
+    nodes: view.nodes.map((node) => [node.id, node.title, node.kind, node.componentId ?? null, node.loopId ?? null]),
     edges: view.edges.map((edge) => [edge.source, edge.target, edge.kind, edge.outcome ?? null]),
-    loops: view.loops.map((loop) => [loop.id, loop.nodeIds, loop.entryNodeId, loop.evaluationNodeId, loop.maxIterations]),
+    loops: view.loops.map((loop) => [loop.id, loop.componentId ?? null, loop.nodeIds, loop.entryNodeId, loop.evaluationNodeId, loop.maxIterations, loop.failurePolicy]),
   });
 }

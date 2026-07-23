@@ -14,6 +14,7 @@ import type {
   RouteSelection,
 } from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
+import { workflowBlockedByFailedLoop, workflowCanComplete } from "./workflow-outcome.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
   ...state,
@@ -53,15 +54,16 @@ const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
   };
 };
 
-const allLoopsCompleted = (state: Omit<HypagraphState, "snapshotHash">): boolean =>
-  Object.values(state.runtime.loops).every((loop) => loop.status === "succeeded");
-
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
+  const completeState = state as HypagraphState;
+  const runnable = nodes.some((node) => ["ready", "starting", "running", "verifying", "awaiting_evidence"].includes(node.status));
   let phase = state.phase;
-  if (nodes.length > 0 && nodes.every((node) => node.status === "succeeded" || node.status === "skipped") && allLoopsCompleted(state)) phase = "completed";
-  else if (nodes.some((node) => node.status === "blocked") && !nodes.some((node) => ["ready", "running", "verifying", "awaiting_evidence"].includes(node.status))) phase = "blocked";
-  else if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") phase = "running";
+  if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") {
+    if (workflowCanComplete(completeState)) phase = "completed";
+    else if (!runnable && (nodes.some((node) => node.status === "blocked") || workflowBlockedByFailedLoop(completeState))) phase = "blocked";
+    else phase = "running";
+  }
   return hashState({ ...state, phase });
 };
 
@@ -338,6 +340,8 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         runtime.completedAt = event.timestamp;
         const reason = event.data.exitReason;
         runtime.exitReason = reason === "no_progress" || reason === "evaluation_error" ? reason : "max_iterations";
+        const policy = event.data.failurePolicy;
+        if (policy === "fail-workflow" || policy === "block-dependants" || policy === "record-and-continue") runtime.failurePolicy = policy;
       }
       break;
     }

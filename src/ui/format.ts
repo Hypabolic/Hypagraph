@@ -1,5 +1,6 @@
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
+import { loopFailurePolicy } from "../domain/workflow-outcome.js";
 
 const activeNodeId = (state: HypagraphState): string | null => state.definition.nodes.find((node) => {
   const status = state.runtime.nodes[node.id]?.status;
@@ -34,6 +35,8 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
         maxIterations: loop.maxIterations,
         status: runtime?.status ?? "pending",
         currentIteration: runtime?.currentIteration ?? 0,
+        failurePolicy: loopFailurePolicy(loop),
+        localOutcome: runtime?.status ?? "pending",
         noProgressCount: runtime?.noProgressCount ?? 0,
         ...(loop.patience === undefined ? {} : { patience: loop.patience, remainingPatience: Math.max(0, loop.patience - (runtime?.noProgressCount ?? 0)) }),
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
@@ -60,7 +63,7 @@ export function renderWorkflow(state: HypagraphState): string {
     for (const loop of state.definition.loops) {
       const runtime = state.runtime.loops[loop.id];
       const progress = runtime?.currentMetric === undefined ? "" : ` - metric ${runtime.currentMetric}${runtime.bestMetric === undefined ? "" : `, best ${runtime.bestMetric} at ${runtime.bestIteration}`}${loop.patience === undefined ? "" : `, patience ${Math.max(0, loop.patience - (runtime.noProgressCount ?? 0))}/${loop.patience}`}`;
-      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}${progress}`);
+      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""} - policy ${loopFailurePolicy(loop)}${progress}`);
     }
   }
   lines.push("Nodes:");
@@ -77,8 +80,10 @@ export function renderWidget(state: HypagraphState): string[] {
   const shownLoop = Object.values(state.runtime.loops).find((loop) => loop.status === "running") ?? Object.values(state.runtime.loops).find((loop) => loop.status === "failed" || loop.status === "succeeded");
   const definition = shownLoop ? state.definition.loops.find((loop) => loop.id === shownLoop.loopId) : undefined;
   const progress = shownLoop?.bestMetric === undefined ? "" : ` best ${shownLoop.bestMetric} at ${shownLoop.bestIteration}${definition?.patience === undefined ? "" : ` patience ${Math.max(0, definition.patience - (shownLoop.noProgressCount ?? 0))}/${definition.patience}`}`;
+  const policy = definition ? ` ${loopFailurePolicy(definition)}` : "";
+  const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]`,
-    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.loopId}: ${shownLoop.currentIteration}/${shownLoop.maxIterations}${progress}` : ""}`,
+    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.loopId}: ${shownLoop.currentIteration}/${shownLoop.maxIterations}${policy}${outcome}${progress}` : ""}`,
   ];
 }

@@ -21,6 +21,7 @@ import { dependenciesAreSatisfied, dependenciesSelectSkip } from "./readiness.js
 import { buildOutgoing } from "./scc.js";
 import { sha256 } from "./hash.js";
 import { validateDefinition } from "./validate.js";
+import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./workflow-outcome.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -54,8 +55,7 @@ const appendReadyEvents = (state: HypagraphState, events: DomainEvent[], command
   return next;
 };
 
-const allLoopsCompleted = (state: HypagraphState): boolean => Object.values(state.runtime.loops).every((loop) => loop.status === "succeeded");
-const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => Object.values(state.runtime.nodes).every((item) => item.status === "succeeded" || item.status === "skipped") && allLoopsCompleted(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;
+const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => workflowCanComplete(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;
 
 export function createWorkflow(definition: HypagraphDefinition, at: string, workflowId: string = randomUUID()): ReducerResult {
   const diagnostics = validateDefinition(definition);
@@ -379,6 +379,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           });
           next = appendReadyEvents(next, events, command);
         } else if (exitReason) {
+          const failurePolicy = loopFailurePolicy(loopDefinition);
           next = append(next, events, command, {
             type: "hypagraph.loop.failed",
             loopId: evaluation.loopId,
@@ -387,20 +388,40 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
               iteration: evaluation.iteration,
               maxIterations: loopRuntime?.maxIterations ?? loopDefinition.maxIterations,
               exitReason,
+              failurePolicy,
               ...(evaluation.evaluationError === undefined ? {} : { error: evaluation.evaluationError }),
             },
           });
-          next = append(next, events, command, {
-            type: "hypagraph.workflow.failed",
-            data: {
-              reason: "loop_failed",
-              loopId: evaluation.loopId,
-              exitReason,
-            },
-          });
+          if (failurePolicy === "fail-workflow") {
+            next = append(next, events, command, {
+              type: "hypagraph.workflow.failed",
+              data: {
+                reason: "loop_failed",
+                loopId: evaluation.loopId,
+                exitReason,
+                failurePolicy,
+              },
+            });
+          } else if (failurePolicy === "block-dependants") {
+            for (const nodeId of affectedDependants(next.definition, evaluation.loopId)) {
+              const dependent = next.runtime.nodes[nodeId];
+              if (dependent && ["pending", "ready", "stale"].includes(dependent.status)) {
+                next = append(next, events, command, {
+                  type: "hypagraph.node.blocked",
+                  nodeId,
+                  loopId: evaluation.loopId,
+                  data: {
+                    reason: `Loop '${evaluation.loopId}' failed with '${exitReason}'.`,
+                    loopId: evaluation.loopId,
+                    failurePolicy,
+                  },
+                });
+              }
+            }
+          }
         }
       }
-      if (command.passed && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
+      if ((command.passed || evaluation !== undefined) && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
     }
     case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim() } }); break; }

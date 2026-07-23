@@ -119,6 +119,8 @@ export interface LoopProgressDefinition {
   minDelta?: number;
 }
 
+export type LoopFailurePolicy = "fail-workflow" | "block-dependants" | "record-and-continue";
+
 export interface LoopDefinition {
   id: string;
   nodes: string[];
@@ -129,6 +131,7 @@ export interface LoopDefinition {
   maxIterations: number;
   progress?: LoopProgressDefinition;
   patience?: number;
+  failurePolicy?: LoopFailurePolicy;
 }
 
 export type LoopStatus = "pending" | "running" | "succeeded" | "failed" | "requires_revision";
@@ -168,6 +171,7 @@ export interface LoopRuntime {
   startedAt?: string;
   completedAt?: string;
   exitReason?: LoopExitReason;
+  failurePolicy?: LoopFailurePolicy;
   legacyPredicate?: string;
 }
 

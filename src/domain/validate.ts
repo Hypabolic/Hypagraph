@@ -319,6 +319,7 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       if (!loop.progress) diagnostics.push({ code: "patience_requires_progress", message: `Loop '${loop.id}' can use patience only with a progress definition.`, location: `${location}.patience` });
       if (!Number.isInteger(loop.patience) || loop.patience < 1) diagnostics.push({ code: "invalid_loop_patience", message: `Loop '${loop.id}' patience must be a positive integer.`, location: `${location}.patience` });
     }
+    if (loop.failurePolicy !== undefined && !["fail-workflow", "block-dependants", "record-and-continue"].includes(loop.failurePolicy)) diagnostics.push({ code: "invalid_loop_failure_policy", message: `Loop '${loop.id}' has an invalid failure policy.`, location: `${location}.failurePolicy` });
     for (const node of loop.nodes) {
       if (!ids.has(node)) diagnostics.push({ code: "dangling_loop_node", message: `Loop '${loop.id}' refers to node '${node}', but that node does not exist.`, location: `${location}.nodes` });
       const owner = claimedNodes.get(node);
