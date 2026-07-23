@@ -50,16 +50,14 @@ const apply = (state: HypagraphState, events: DomainEvent[], command: HypagraphC
   return result.state;
 };
 
-const runIteration = (state: HypagraphState, events: DomainEvent[], number: number, score: number, passed = false): HypagraphState => {
+const runIteration = (state: HypagraphState, events: DomainEvent[], number: number, score: number | undefined, passed = false): HypagraphState => {
   let next = apply(state, events, { type: "start-node", nodeId: "improve", attemptId: `improve-${number}`, commandId: `improve-${number}-start`, at });
   next = apply(next, events, { type: "submit-result", nodeId: "improve", attemptId: `improve-${number}`, evidence: [], commandId: `improve-${number}-submit`, at });
   next = apply(next, events, { type: "begin-verification", nodeId: "improve", attemptId: `improve-${number}`, commandId: `improve-${number}-begin`, at });
   next = apply(next, events, { type: "complete-verification", nodeId: "improve", attemptId: `improve-${number}`, passed: true, commandId: `improve-${number}-verify`, at });
   next = apply(next, events, { type: "start-node", nodeId: "evaluate", attemptId: `evaluate-${number}`, commandId: `evaluate-${number}-start`, at });
-  const facts: FactInput[] = [
-    { name: "quality.passed", type: "boolean", value: passed },
-    { name: "quality.score", type: "number", value: score },
-  ];
+  const facts: FactInput[] = [{ name: "quality.passed", type: "boolean", value: passed }];
+  if (score !== undefined) facts.push({ name: "quality.score", type: "number", value: score });
   next = apply(next, events, { type: "publish-facts", nodeId: "evaluate", attemptId: `evaluate-${number}`, facts, commandId: `evaluate-${number}-facts`, at });
   next = apply(next, events, { type: "submit-result", nodeId: "evaluate", attemptId: `evaluate-${number}`, evidence: [], commandId: `evaluate-${number}-submit`, at });
   next = apply(next, events, { type: "begin-verification", nodeId: "evaluate", attemptId: `evaluate-${number}`, commandId: `evaluate-${number}-begin`, at });
@@ -140,6 +138,20 @@ describe("M4 Slice 8 loop product surface", () => {
       warning: { code: "loop_max_iterations_exhausted" },
     });
     expect(renderLoopStatus(state)).toContain("loop_max_iterations_exhausted");
+  });
+
+  it("explains evaluation errors when required metric facts are missing", () => {
+    const created = createWorkflow(definition(), at, "workflow-loop-surface-evaluation-error");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    const events = [...created.events];
+    const state = runIteration(created.state, events, 1, undefined);
+
+    expect(loopSurfaceSummaries(state)[0]).toMatchObject({
+      status: "failed",
+      exitReason: "evaluation_error",
+      warning: { code: "loop_evaluation_error" },
+    });
+    expect(renderLoopStatus(state)).toContain("loop_evaluation_error");
   });
 
   it("warns when a legacy predicate requires typed revision", () => {
