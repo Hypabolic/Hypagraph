@@ -1,16 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import type { Diagnostic, EvidenceReference, FactInput } from "../domain/model.js";
+import type { Diagnostic, EvidenceReference, FactInput, FileAssertionDefinition } from "../domain/model.js";
 
 export const FILE_ASSERTION_VERSION = 1 as const;
-
-export type FileAssertionDefinition =
-  | { kind: "exists"; path: string }
-  | { kind: "absent"; path: string }
-  | { kind: "size"; path: string; bytes: number }
-  | { kind: "sha256"; path: string; hash: string }
-  | { kind: "text-contains"; path: string; text: string; maxBytes?: number };
+export type { FileAssertionDefinition } from "../domain/model.js";
 
 export interface FileAssertionResult {
   assertionVersion: typeof FILE_ASSERTION_VERSION;
@@ -21,6 +15,7 @@ export interface FileAssertionResult {
 }
 
 const DEFAULT_MAX_TEXT_BYTES = 1_048_576;
+const DEFAULT_MAX_HASH_BYTES = 16_777_216;
 
 const insideRoot = (rootDirectory: string, path: string): string => {
   const root = resolve(rootDirectory);
@@ -105,6 +100,9 @@ export async function evaluateFileAssertion(
     if (!passed) diagnostics.push({ code: "file_size_mismatch", message: `Expected ${definition.bytes} bytes but found ${metadata.size}.`, location: "assertion.bytes" });
   } else if (definition.kind === "sha256") {
     if (!/^[a-f0-9]{64}$/i.test(definition.hash)) return failure(definition, "invalid_file_assertion_hash", "The expected SHA-256 value must contain 64 hexadecimal characters.");
+    const maxBytes = definition.maxBytes ?? DEFAULT_MAX_HASH_BYTES;
+    if (!Number.isInteger(maxBytes) || maxBytes < 1) return failure(definition, "invalid_file_assertion_limit", "The maximum hash input size must be a positive integer.");
+    if (metadata.size > maxBytes) return failure(definition, "file_assertion_too_large", `The file is ${metadata.size} bytes and exceeds the ${maxBytes} byte hash assertion limit.`);
     const content = await readFile(target);
     const actual = createHash("sha256").update(content).digest("hex");
     passed = actual.toLowerCase() === definition.hash.toLowerCase();
