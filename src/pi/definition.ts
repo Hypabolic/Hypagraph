@@ -8,23 +8,9 @@ const conditionSchema = Type.Any({ description: "A Hypagraph typed condition AST
 const checkFactSourceSchema = StringEnum(["passed", "status", "exitCode", "durationMs", "timedOut", "cancelled"] as const);
 const retryStatusSchema = StringEnum(["failed", "timed_out", "error"] as const);
 
-const factContractSchema = Type.Object({
-  name: Type.String(),
-  type: factTypeSchema,
-  required: Type.Optional(Type.Boolean()),
-});
-
-const gateSchema = Type.Object({
-  condition: conditionSchema,
-  onTrue: Type.Array(Type.String(), { minItems: 1 }),
-  onFalse: Type.Array(Type.String(), { minItems: 1 }),
-});
-
-const factMappingSchema = Type.Object({
-  source: checkFactSourceSchema,
-  fact: Type.String(),
-});
-
+const factContractSchema = Type.Object({ name: Type.String(), type: factTypeSchema, required: Type.Optional(Type.Boolean()) });
+const gateSchema = Type.Object({ condition: conditionSchema, onTrue: Type.Array(Type.String(), { minItems: 1 }), onFalse: Type.Array(Type.String(), { minItems: 1 }) });
+const factMappingSchema = Type.Object({ source: checkFactSourceSchema, fact: Type.String() });
 const retrySchema = Type.Object({
   maxAttempts: Type.Integer({ minimum: 2, maximum: 20 }),
   retryOn: Type.Array(retryStatusSchema, { minItems: 1, uniqueItems: true }),
@@ -41,79 +27,57 @@ const commandFields = {
   retry: Type.Optional(retrySchema),
 };
 
-const commandCheckSchema = Type.Object({
-  kind: StringEnum(["command"] as const),
-  ...commandFields,
-  publish: Type.Array(factMappingSchema),
-});
-
-const reportCheckSchema = (
-  kind: ReportCheckDefinition["kind"],
-  parserName: ReportCheckDefinition["parser"]["name"],
-) => Type.Object({
-  kind: StringEnum([kind] as const),
+const commandCheckSchema = Type.Object({ kind: Type.Literal("command"), ...commandFields, publish: Type.Array(factMappingSchema) });
+const reportCheckSchema = (kind: ReportCheckDefinition["kind"], parserName: ReportCheckDefinition["parser"]["name"]) => Type.Object({
+  kind: Type.Literal(kind),
   ...commandFields,
   reportPath: Type.String(),
-  parser: Type.Object({
-    name: StringEnum([parserName] as const),
-    version: Type.Literal(1),
-  }),
+  parser: Type.Object({ name: Type.Literal(parserName), version: Type.Literal(1) }),
   namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
   maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
 });
 
 const fileAssertionSchema = Type.Union([
-  Type.Object({ kind: StringEnum(["exists"] as const), path: Type.String() }),
-  Type.Object({ kind: StringEnum(["absent"] as const), path: Type.String() }),
-  Type.Object({ kind: StringEnum(["size"] as const), path: Type.String(), bytes: Type.Integer({ minimum: 0 }) }),
-  Type.Object({
-    kind: StringEnum(["sha256"] as const),
-    path: Type.String(),
-    hash: Type.String({ pattern: "^[A-Fa-f0-9]{64}$" }),
-    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
-  }),
-  Type.Object({
-    kind: StringEnum(["text-contains"] as const),
-    path: Type.String(),
-    text: Type.String({ minLength: 1 }),
-    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
-  }),
+  Type.Object({ kind: Type.Literal("exists"), path: Type.String() }),
+  Type.Object({ kind: Type.Literal("absent"), path: Type.String() }),
+  Type.Object({ kind: Type.Literal("size"), path: Type.String(), bytes: Type.Integer({ minimum: 0 }) }),
+  Type.Object({ kind: Type.Literal("sha256"), path: Type.String(), hash: Type.String({ pattern: "^[A-Fa-f0-9]{64}$" }), maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })) }),
+  Type.Object({ kind: Type.Literal("text-contains"), path: Type.String(), text: Type.String({ minLength: 1 }), maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })) }),
 ]);
 
 const gitAssertionSchema = Type.Union([
-  Type.Object({ kind: StringEnum(["clean"] as const) }),
-  Type.Object({ kind: StringEnum(["branch"] as const), name: Type.String({ minLength: 1 }) }),
-  Type.Object({ kind: StringEnum(["revision"] as const), sha: Type.String({ pattern: "^[A-Fa-f0-9]{7,64}$" }) }),
+  Type.Object({ kind: Type.Literal("clean") }),
+  Type.Object({ kind: Type.Literal("branch"), name: Type.String({ minLength: 1 }) }),
+  Type.Object({ kind: Type.Literal("revision"), sha: Type.String({ pattern: "^[A-Fa-f0-9]{7,64}$" }) }),
   Type.Object({
-    kind: StringEnum(["changed-paths"] as const),
+    kind: Type.Literal("changed-paths"),
     paths: Type.Array(Type.String(), { uniqueItems: true }),
-    mode: Type.Optional(StringEnum(["exact", "contains"] as const)),
+    mode: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("contains")])),
   }),
 ]);
 
-const assertionCheckSchema = Type.Union([
-  Type.Object({
-    kind: StringEnum(["file-assertion"] as const),
-    version: Type.Literal(1),
-    assertion: fileAssertionSchema,
-    namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
-    retry: Type.Optional(retrySchema),
-  }),
-  Type.Object({
-    kind: StringEnum(["git-assertion"] as const),
-    version: Type.Literal(1),
-    assertion: gitAssertionSchema,
-    namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
-    retry: Type.Optional(retrySchema),
-  }),
-]);
+const fileAssertionCheckSchema = Type.Object({
+  kind: Type.Literal("file-assertion"),
+  version: Type.Literal(1),
+  assertion: fileAssertionSchema,
+  namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
+  retry: Type.Optional(retrySchema),
+});
+const gitAssertionCheckSchema = Type.Object({
+  kind: Type.Literal("git-assertion"),
+  version: Type.Literal(1),
+  assertion: gitAssertionSchema,
+  namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
+  retry: Type.Optional(retrySchema),
+});
 
 const checkSchema = Type.Union([
   commandCheckSchema,
   reportCheckSchema("test-report", "vitest-json"),
   reportCheckSchema("lint-report", "eslint-json"),
   reportCheckSchema("coverage-report", "istanbul-coverage-summary"),
-  assertionCheckSchema,
+  fileAssertionCheckSchema,
+  gitAssertionCheckSchema,
 ]);
 
 const nodeSchema = Type.Object({
@@ -130,11 +94,7 @@ const nodeSchema = Type.Object({
 });
 
 const feedbackEdgeSchema = Type.Object({ from: Type.String(), to: Type.String() });
-const loopProgressSchema = Type.Object({
-  fact: Type.String(),
-  direction: StringEnum(["minimize", "maximize"] as const),
-  minDelta: Type.Optional(Type.Number({ minimum: 0 })),
-});
+const loopProgressSchema = Type.Object({ fact: Type.String(), direction: StringEnum(["minimize", "maximize"] as const), minDelta: Type.Optional(Type.Number({ minimum: 0 })) });
 const loopSchema = Type.Object({
   id: Type.String(),
   nodes: Type.Array(Type.String()),
@@ -153,10 +113,7 @@ export const definitionSchema = Type.Object({
   goal: Type.String(),
   nodes: Type.Array(nodeSchema, { minItems: 1 }),
   loops: Type.Optional(Type.Array(loopSchema)),
-  policy: Type.Optional(Type.Object({
-    mode: Type.Optional(StringEnum(["guided", "strict"] as const)),
-    requireEvidence: Type.Optional(Type.Boolean()),
-  })),
+  policy: Type.Optional(Type.Object({ mode: Type.Optional(StringEnum(["guided", "strict"] as const)), requireEvidence: Type.Optional(Type.Boolean()) })),
 });
 
 export const evidenceSchema = Type.Object({
@@ -164,14 +121,7 @@ export const evidenceSchema = Type.Object({
   kind: Type.Optional(StringEnum(["tool", "command", "file", "approval", "note"] as const)),
   summary: Type.Optional(Type.String()),
 });
-
-export const factInputSchema = Type.Object({
-  name: Type.String(),
-  type: factTypeSchema,
-  value: factValueSchema,
-  evidence: Type.Optional(Type.Array(evidenceSchema)),
-});
-
+export const factInputSchema = Type.Object({ name: Type.String(), type: factTypeSchema, value: factValueSchema, evidence: Type.Optional(Type.Array(evidenceSchema)) });
 export type HypagraphDefineInput = Static<typeof definitionSchema>;
 
 const normalizeRetry = (retry: CheckRetryPolicy | undefined) => retry === undefined ? {} : {
@@ -208,28 +158,36 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
             ...normalizeRetry(node.check.retry),
             publish: node.check.publish.map((mapping) => ({ ...mapping })),
           }
-          : node.check.kind === "file-assertion" || node.check.kind === "git-assertion"
+          : node.check.kind === "file-assertion"
             ? {
-              kind: node.check.kind,
-              version: node.check.version,
+              kind: "file-assertion" as const,
+              version: 1 as const,
               assertion: structuredClone(node.check.assertion),
               namespace: node.check.namespace,
               ...normalizeRetry(node.check.retry),
             }
-            : {
-              kind: node.check.kind,
-              command: node.check.command,
-              ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
-              ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
-              timeoutMs: node.check.timeoutMs,
-              ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
-              ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
-              ...normalizeRetry(node.check.retry),
-              reportPath: node.check.reportPath,
-              parser: { ...node.check.parser },
-              namespace: node.check.namespace,
-              ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
-            },
+            : node.check.kind === "git-assertion"
+              ? {
+                kind: "git-assertion" as const,
+                version: 1 as const,
+                assertion: structuredClone(node.check.assertion),
+                namespace: node.check.namespace,
+                ...normalizeRetry(node.check.retry),
+              }
+              : {
+                kind: node.check.kind,
+                command: node.check.command,
+                ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+                ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+                timeoutMs: node.check.timeoutMs,
+                ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+                ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+                ...normalizeRetry(node.check.retry),
+                reportPath: node.check.reportPath,
+                parser: { ...node.check.parser },
+                namespace: node.check.namespace,
+                ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+              },
       }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
