@@ -70,7 +70,7 @@ describe("M3.1 assertion check executor", () => {
 
   it("returns failed for a false assertion and error for invalid input", async () => {
     const root = await workspace();
-    await writeFile(join(root, "output.txt"), "incomplete\n", "utf8");
+    await writeFile(join(root, "output.txt"), "pending\n", "utf8");
     const executor = new AssertionCheckExecutor({
       rootDirectory: root,
       artifactStore: new MemoryCheckArtifactStore(),
