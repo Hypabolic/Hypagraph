@@ -49,6 +49,39 @@ const activeNode = (state: HypagraphState) => state.definition.nodes.find((node)
   return status === "starting" || status === "running" || status === "awaiting_evidence" || status === "verifying";
 });
 
+const renderLoopCommand = (state: HypagraphState): string => {
+  const loops = workflowSummary(state).loops as Array<{
+    id: string;
+    status: string;
+    iteration: { current: number; limit: number };
+    evaluationNodeId: string;
+    feedbackEdges: Array<{ source: string; target: string; selected: boolean }>;
+    failurePolicy: string;
+    workflowEffect: string;
+    exitReason?: string;
+    warning?: { code: string; message: string };
+    progress?: {
+      currentMetric?: number;
+      bestMetric?: number;
+      bestIteration?: number;
+      noProgressCount: number;
+      patience?: number;
+      remainingPatience?: number;
+    };
+  }>;
+  if (loops.length === 0) return "This Hypagraph has no bounded iteration regions.";
+  return loops.map((loop) => {
+    const feedback = loop.feedbackEdges
+      .map((edge) => `${edge.source}->${edge.target}${edge.selected ? " (selected)" : ""}`)
+      .join(", ") || "none";
+    const metric = loop.progress === undefined
+      ? ""
+      : ` | metric ${loop.progress.currentMetric ?? "none"}, best ${loop.progress.bestMetric ?? "none"}${loop.progress.bestIteration === undefined ? "" : ` at ${loop.progress.bestIteration}`}, no-progress ${loop.progress.noProgressCount}${loop.progress.patience === undefined ? "" : `, patience ${loop.progress.remainingPatience}/${loop.progress.patience}`}`;
+    const warning = loop.warning ? `\n  warning ${loop.warning.code}: ${loop.warning.message}` : "";
+    return `${loop.id}: ${loop.status} | iteration ${loop.iteration.current}/${loop.iteration.limit} | evaluate ${loop.evaluationNodeId} | feedback ${feedback} | policy ${loop.failurePolicy} | workflow ${loop.workflowEffect}${loop.exitReason ? ` | exit ${loop.exitReason}` : ""}${metric}${warning}`;
+  }).join("\n");
+};
+
 function updateUi(
   state: HypagraphState | undefined,
   ctx: ExtensionContext,
@@ -398,7 +431,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("hypagraph", {
-    description: "Show Hypagraph status, cancel a check, or control the graph pane",
+    description: "Show Hypagraph status, loop status, cancel a check, or control the graph pane",
     handler: async (args, ctx) => {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words.map((word) => word.toLowerCase()).join(" ");
@@ -406,6 +439,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       else if (action === "graph close") graphPane.close();
       else if (action === "graph toggle") graphPane.toggle(ctx);
       else if (action === "graph focus") graphPane.focus();
+      else if (action === "loop") ctx.ui.notify(state ? renderLoopCommand(state) : "There is no active Hypagraph.", "info");
       else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "cancel") {
         const cancelled = cancelActiveChecks(words[2], "The user cancelled the check from Pi.");
         ctx.ui.notify(cancelled.length > 0 ? `Cancellation requested for: ${cancelled.join(", ")}.` : "There is no matching active check.", cancelled.length > 0 ? "warning" : "info");

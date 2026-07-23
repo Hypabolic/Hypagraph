@@ -1,6 +1,7 @@
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
+import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
 
 const activeNodeId = (state: HypagraphState): string | null => state.definition.nodes.find((node) => {
   const status = state.runtime.nodes[node.id]?.status;
@@ -27,26 +28,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     active: activeNodeId(state),
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
-    loops: state.definition.loops.map((loop) => {
-      const runtime = state.runtime.loops[loop.id];
-      return {
-        id: loop.id,
-        nodes: loop.nodes,
-        maxIterations: loop.maxIterations,
-        status: runtime?.status ?? "pending",
-        currentIteration: runtime?.currentIteration ?? 0,
-        failurePolicy: loopFailurePolicy(loop),
-        localOutcome: runtime?.status ?? "pending",
-        noProgressCount: runtime?.noProgressCount ?? 0,
-        ...(loop.patience === undefined ? {} : { patience: loop.patience, remainingPatience: Math.max(0, loop.patience - (runtime?.noProgressCount ?? 0)) }),
-        ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
-        ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
-        ...(runtime?.blockedReason === undefined ? {} : { blockedReason: runtime.blockedReason, blockedAttemptId: runtime.blockedAttemptId }),
-        ...(runtime?.currentMetric === undefined ? {} : { currentMetric: runtime.currentMetric }),
-        ...(runtime?.bestMetric === undefined ? {} : { bestMetric: runtime.bestMetric }),
-        ...(runtime?.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
-      };
-    }),
+    loops: loopSurfaceSummaries(state),
     snapshotHash: state.snapshotHash,
   };
 }
@@ -61,11 +43,7 @@ export function renderWorkflow(state: HypagraphState): string {
   ];
   if (state.definition.loops.length > 0) {
     lines.push("Loops:");
-    for (const loop of state.definition.loops) {
-      const runtime = state.runtime.loops[loop.id];
-      const progress = runtime?.currentMetric === undefined ? "" : ` - metric ${runtime.currentMetric}${runtime.bestMetric === undefined ? "" : `, best ${runtime.bestMetric} at ${runtime.bestIteration}`}${loop.patience === undefined ? "" : `, patience ${Math.max(0, loop.patience - (runtime.noProgressCount ?? 0))}/${loop.patience}`}`;
-      lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""} - policy ${loopFailurePolicy(loop)}${runtime?.blockedReason ? ` - ${runtime.blockedReason}` : ""}${progress}`);
-    }
+    for (const line of renderLoopStatus(state).split("\n")) lines.push(`- ${line}`);
   }
   lines.push("Nodes:");
   for (const node of state.definition.nodes) {
@@ -78,13 +56,17 @@ export function renderWorkflow(state: HypagraphState): string {
 
 export function renderWidget(state: HypagraphState): string[] {
   const ready = readyNodeIds(state);
-  const shownLoop = Object.values(state.runtime.loops).find((loop) => loop.status === "running") ?? Object.values(state.runtime.loops).find((loop) => loop.status === "failed" || loop.status === "succeeded");
-  const definition = shownLoop ? state.definition.loops.find((loop) => loop.id === shownLoop.loopId) : undefined;
-  const progress = shownLoop?.bestMetric === undefined ? "" : ` best ${shownLoop.bestMetric} at ${shownLoop.bestIteration}${definition?.patience === undefined ? "" : ` patience ${Math.max(0, definition.patience - (shownLoop.noProgressCount ?? 0))}/${definition.patience}`}`;
-  const policy = definition ? ` ${loopFailurePolicy(definition)}` : "";
+  const shownLoop = loopSurfaceSummaries(state).find((loop) => loop.status === "running")
+    ?? loopSurfaceSummaries(state).find((loop) => loop.status === "failed" || loop.status === "succeeded");
+  const progress = shownLoop?.progress?.bestMetric === undefined
+    ? ""
+    : ` best ${shownLoop.progress.bestMetric} at ${shownLoop.progress.bestIteration}${shownLoop.progress.patience === undefined ? "" : ` patience ${shownLoop.progress.remainingPatience}/${shownLoop.progress.patience}`}`;
+  const policy = shownLoop ? ` ${shownLoop.failurePolicy}` : "";
   const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]`,
-    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.loopId}: ${shownLoop.currentIteration}/${shownLoop.maxIterations}${policy}${outcome}${progress}` : ""}`,
+    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
   ];
 }
+
+export { loopFailurePolicy };

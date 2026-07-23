@@ -34,6 +34,6 @@ describe("M4 Slice 5 Pi progress surface", () => {
     const persisted = result.details.hypagraph as PersistedHypagraph;
     expect(persisted.snapshot.runtime.loops["quality-loop"]).toMatchObject({ bestMetric: 10, bestIteration: 1, noProgressCount: 0 });
     expect(projectGraphView(persisted.snapshot).loops[0]).toMatchObject({ bestMetric: 10, bestIteration: 1, remainingPatience: 2 });
-    expect(result.content[0].text).toContain("metric 10, best 10 at 1, patience 2/2");
+    expect(result.content[0].text).toContain("metric 10, best 10 at 1, no-progress 0/2");
   });
 });

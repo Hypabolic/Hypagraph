@@ -91,7 +91,8 @@ describe("M4 Slice 4 Pi hard limit", () => {
       exitReason: "max_iterations",
     });
     expect(result.details.graph.loops[0]).toMatchObject({ status: "failed", exitReason: "max_iterations" });
-    expect(result.content[0].text).toContain("repair-loop: failed - iteration 1/1 - max_iterations");
+    expect(result.content[0].text).toContain("repair-loop: failed | iteration 1/1");
+    expect(result.content[0].text).toContain("exit max_iterations");
     await expect(transition.execute("repair-again", { action: "start", nodeId: "repair" }, signal, undefined, ctx)).rejects.toThrow(/loop_exhausted/);
     await expect(runCheck.execute("test-again", { nodeId: "test" }, signal, undefined, ctx)).rejects.toThrow(/loop_exhausted/);
   });
