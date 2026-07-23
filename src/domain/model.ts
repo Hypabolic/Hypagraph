@@ -125,7 +125,7 @@ export interface LoopDefinition {
 }
 
 export type LoopStatus = "pending" | "running" | "succeeded" | "requires_revision";
-export type LoopDecision = "complete" | "pending";
+export type LoopDecision = "complete" | "continue" | "pending";
 
 export interface LoopIterationRuntime {
   iteration: number;

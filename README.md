@@ -75,7 +75,7 @@ The current implementation includes:
 - property tests for generated directed acyclic graphs;
 - replay, determinism, persistence, migration, lifecycle, recovery, cancellation, retry, environment, fact, routing, check, artifact, graph, and Pi adapter tests.
 
-M4 is the selected next milestone. Slice 1 adds typed loop success conditions, structured iteration-region validation, schema version 3, canonical loop runtime, and one successful iteration. Later slices add feedback continuation, hard iteration limits, progress and patience rules, recovery hardening, and the complete Pi loop surface. M3.1 parser adapters are deferred until after v0.5.
+M4 is the selected next milestone. Slices 1 and 2 add typed loop success conditions, structured iteration-region validation, schema version 3, canonical loop runtime, deterministic feedback continuation, and isolated multi-iteration task loops. Later slices add check-driven continuation, hard iteration limits, progress and patience rules, recovery hardening, and the complete Pi loop surface. M3.1 parser adapters are deferred until after v0.5.
 
 ## v0.4 dogfood result
 

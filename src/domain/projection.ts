@@ -259,12 +259,30 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.loop.iteration-started": {
       const loopId = event.loopId ?? String(event.data.loopId ?? "");
       const runtime = next.runtime.loops[loopId];
-      if (runtime) {
+      const definition = next.definition.loops.find((loop) => loop.id === loopId);
+      if (runtime && definition) {
         const iteration = Number(event.data.iteration);
+        if (iteration > 1) {
+          const loopNodes = new Set(definition.nodes);
+          for (const [name, fact] of Object.entries(next.runtime.facts)) {
+            if (loopNodes.has(fact.producerNodeId)) delete next.runtime.facts[name];
+          }
+          for (const nodeId of definition.nodes) {
+            const nodeRuntime = next.runtime.nodes[nodeId];
+            if (!nodeRuntime) continue;
+            nodeRuntime.status = "pending";
+            delete nodeRuntime.currentAttemptId;
+            nodeRuntime.evidence = [];
+            delete nodeRuntime.blockedReason;
+            delete next.runtime.routes[nodeId];
+          }
+        }
         runtime.status = "running";
         runtime.currentIteration = iteration;
         runtime.startedAt ??= event.timestamp;
-        runtime.iterations.push({ iteration, startedAt: event.timestamp, factsUsed: [] });
+        if (!runtime.iterations.some((item) => item.iteration === iteration)) {
+          runtime.iterations.push({ iteration, startedAt: event.timestamp, factsUsed: [] });
+        }
       }
       break;
     }
@@ -277,7 +295,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         const success = event.data.success === true;
         const factsUsed = Array.isArray(event.data.factsUsed) ? event.data.factsUsed.filter((item): item is string => typeof item === "string") : [];
         const semanticsVersion = Number(event.data.semanticsVersion ?? CONDITION_SEMANTICS_VERSION);
-        const decision = event.data.decision === "complete" ? "complete" : "pending";
+        const decision = event.data.decision === "complete" ? "complete" : event.data.decision === "continue" ? "continue" : "pending";
         if (record) {
           record.evaluatedAt = event.timestamp;
           record.evaluationEventId = event.eventId;
