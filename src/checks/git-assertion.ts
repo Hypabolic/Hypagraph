@@ -1,14 +1,9 @@
 import { spawn } from "node:child_process";
 import { relative, resolve } from "node:path";
-import type { Diagnostic, EvidenceReference, FactInput } from "../domain/model.js";
+import type { Diagnostic, EvidenceReference, FactInput, GitAssertionDefinition } from "../domain/model.js";
 
 export const GIT_ASSERTION_VERSION = 1 as const;
-
-export type GitAssertionDefinition =
-  | { kind: "clean" }
-  | { kind: "branch"; name: string }
-  | { kind: "revision"; sha: string }
-  | { kind: "changed-paths"; paths: string[]; mode?: "exact" | "contains" };
+export type { GitAssertionDefinition } from "../domain/model.js";
 
 export interface GitAssertionResult {
   assertionVersion: typeof GIT_ASSERTION_VERSION;
