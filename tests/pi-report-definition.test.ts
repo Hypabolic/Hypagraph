@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createWorkflow } from "../src/domain/reducer.js";
+import type { CheckDefinition } from "../src/domain/model.js";
 import { normalizeDefinition, type HypagraphDefineInput } from "../src/pi/definition.js";
 
 const at = "2026-07-23T11:30:00.000Z";
+
+const isReportCheck = (check: CheckDefinition | undefined): check is Extract<CheckDefinition, { kind: "test-report" | "lint-report" | "coverage-report" }> =>
+  check?.kind === "test-report" || check?.kind === "lint-report" || check?.kind === "coverage-report";
 
 const cases = [
   {
@@ -86,7 +90,8 @@ describe("Pi report check definitions", () => {
       const normalized = normalizeDefinition(input);
       const check = normalized.nodes[0]?.check;
       expect(check?.kind).toBe(reportCase.kind);
-      if (!check || check.kind === "command") return;
+      expect(isReportCheck(check)).toBe(true);
+      if (!isReportCheck(check)) return;
       expect(check.parser).toEqual({ name: reportCase.parser, version: 1 });
       expect(check.reportPath).toBe("artifacts/report.json");
       expect(check.namespace).toBe(reportCase.namespace);
@@ -121,13 +126,17 @@ describe("Pi report check definitions", () => {
     };
 
     const normalized = normalizeDefinition(input);
-    input.nodes[0]!.check!.arguments![0] = "changed";
-    input.nodes[0]!.check!.environmentVariables![0] = "SECRET";
-    input.nodes[0]!.check!.retry!.retryOn[0] = "error";
+    const inputCheck = input.nodes[0]!.check;
+    if (!inputCheck || (inputCheck.kind !== "test-report" && inputCheck.kind !== "lint-report" && inputCheck.kind !== "coverage-report")) return;
+    inputCheck.arguments![0] = "changed";
+    inputCheck.environmentVariables![0] = "CHANGED_ENV";
+    inputCheck.retry!.retryOn[0] = "error";
 
     const check = normalized.nodes[0]?.check;
-    expect(check?.arguments).toEqual(["test"]);
-    expect(check?.environmentVariables).toEqual(["PATH"]);
-    expect(check?.retry?.retryOn).toEqual(["failed"]);
+    expect(isReportCheck(check)).toBe(true);
+    if (!isReportCheck(check)) return;
+    expect(check.arguments).toEqual(["test"]);
+    expect(check.environmentVariables).toEqual(["PATH"]);
+    expect(check.retry?.retryOn).toEqual(["failed"]);
   });
 });
