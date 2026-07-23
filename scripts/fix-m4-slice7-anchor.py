@@ -16,17 +16,17 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 replace_once(
     "src/domain/projection.ts",
-    '''    case "hypagraph.workflow.revised": {
-      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);''',
-    '''    case "hypagraph.workflow.revised": {
+    """    case "hypagraph.workflow.revised": {
+      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);""",
+    """    case "hypagraph.workflow.revised": {
       next.phase = "running";
-      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);''',
+      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);""",
 )
 
 replace_once(
     "tests/loop-revision-recovery.test.ts",
-    '''  it("preserves an unchanged completed loop when unrelated work changes", () => {''',
-    '''  it("restarts a failed fail-workflow loop after a relevant revision", () => {
+    """  it("preserves an unchanged completed loop when unrelated work changes", () => {""",
+    """  it("restarts a failed fail-workflow loop after a relevant revision", () => {
     const created = createWorkflow(definition(), at, "workflow-failed-loop-revision");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const events = [...created.events];
@@ -46,6 +46,6 @@ replace_once(
     expect(restarted.state.runtime.loops.region).toMatchObject({ status: "running", currentIteration: 1 });
   });
 
-  it("preserves an unchanged completed loop when unrelated work changes", () => {''',
+  it("preserves an unchanged completed loop when unrelated work changes", () => {""",
 )
 ''')
