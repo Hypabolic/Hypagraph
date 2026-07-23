@@ -4,6 +4,7 @@ import {
   type PersistedEventBatch,
   type WorkflowEventAppend,
   type WorkflowEventStore,
+  WorkflowBranchChangedError,
   WorkflowSequenceConflictError,
   validateEventAppend,
 } from "./event-store.js";
@@ -14,12 +15,24 @@ export interface PiSessionEntryAppender {
 
 export class PiSessionWorkflowEventStore implements WorkflowEventStore {
   private readonly sequences = new Map<string, number>();
+  private generation = 0;
 
   constructor(private readonly appender: PiSessionEntryAppender) {}
 
   synchronize(value: PersistedHypagraph | undefined): void {
+    this.generation += 1;
     this.sequences.clear();
     if (value) this.sequences.set(value.snapshot.workflowId, value.snapshot.sequence);
+  }
+
+  lease(): WorkflowEventStore {
+    const generation = this.generation;
+    return {
+      append: async (input) => {
+        if (generation !== this.generation) throw new WorkflowBranchChangedError(input.workflowId);
+        await this.append(input);
+      },
+    };
   }
 
   async append(input: WorkflowEventAppend): Promise<void> {

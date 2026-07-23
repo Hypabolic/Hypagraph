@@ -135,8 +135,9 @@ describe("M4 Slice 3 loop check recovery", () => {
     const recovered = await recoverInterruptedChecks({ state, store, at: recoveredAt });
     expect(recovered.state.runtime.nodes.test?.status).toBe("failed");
     expect(recovered.state.runtime.nodes.test?.attempts["test-1"]?.checkResult?.status).toBe("interrupted");
-    expect(recovered.state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1 });
+    expect(recovered.state.runtime.loops.repair).toMatchObject({ status: "blocked", currentIteration: 1, blockedAttemptId: "test-1" });
     expect(recovered.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);
+    expect(recovered.events.some((event) => event.type === "hypagraph.loop.blocked")).toBe(true);
     expect(recovered.state.runtime.nodes.implement?.status).toBe("succeeded");
   });
 });

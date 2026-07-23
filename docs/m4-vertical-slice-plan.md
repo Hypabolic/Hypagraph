@@ -656,6 +656,8 @@ Loop regions are semantically independent when the graph does not connect them, 
 
 ### Slice 7 - Harden revision, cancellation, and recovery
 
+- Status: implemented
+
 #### User result
 
 A running loop remains correct across session restore, branch changes, cancellation, and graph revision.

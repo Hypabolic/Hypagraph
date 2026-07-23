@@ -43,6 +43,8 @@ export const workflowCanComplete = (state: HypagraphState): boolean =>
 
 export const workflowBlockedByFailedLoop = (state: HypagraphState): boolean =>
   state.definition.loops.some((loop) => {
-    if (state.runtime.loops[loop.id]?.status !== "failed" || loopFailurePolicy(loop) === "fail-workflow") return false;
+    const status = state.runtime.loops[loop.id]?.status;
+    if (status === "blocked") return true;
+    if (status !== "failed" || loopFailurePolicy(loop) === "fail-workflow") return false;
     return affectedDependants(state.definition, loop.id).some((nodeId) => !nodeIsSettledForWorkflow(state, nodeId));
   });

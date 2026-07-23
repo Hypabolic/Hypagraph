@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { ActiveCheckExecutionRegistry } from "./checks/active-executions.js";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
-import { recoverInterruptedChecks } from "./checks/recovery.js";
+import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow } from "./domain/reducer.js";
@@ -88,16 +88,26 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     state = session?.snapshot;
     events = session?.events ?? [];
     if (state) {
+      const recoveryStore = eventStore.lease();
       const recovery = await recoverInterruptedChecks({
         state,
-        store: eventStore,
+        store: recoveryStore,
         at: new Date().toISOString(),
         onCommit: (next) => graphPane.update(next),
       });
       state = recovery.state;
       events.push(...recovery.events);
-      if (recovery.recoveredAttemptIds.length > 0) {
-        ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovery.recoveredAttemptIds.join(", ")}.`, "warning");
+      const orphaned = await recoverOrphanedLoopAttempts({
+        state,
+        store: recoveryStore,
+        at: new Date().toISOString(),
+        onCommit: (next) => graphPane.update(next),
+      });
+      state = orphaned.state;
+      events.push(...orphaned.events);
+      const recovered = [...recovery.recoveredAttemptIds, ...orphaned.recoveredAttemptIds];
+      if (recovered.length > 0) {
+        ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
       }
     }
     updateUi(state, ctx, graphPane);
@@ -105,7 +115,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
 
   const runCommands = async (commands: readonly HypagraphCommand[]): Promise<void> => {
     if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
-    const result = await applyCommandsAndCommit(eventStore, state, commands);
+    const result = await applyCommandsAndCommit(eventStore.lease(), state, commands);
     if (!result.ok) return throwDiagnostics(result.diagnostics);
     state = result.value.state;
     events.push(...result.value.events);
@@ -172,7 +182,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
       const result = await commitCreatedWorkflow(
-        eventStore,
+        eventStore.lease(),
         createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID()),
       );
       if (!result.ok) return throwDiagnostics(result.diagnostics);
@@ -251,7 +261,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         const lifecycle = await runPiCommandCheck({
           state: runState,
           executor,
-          store: eventStore,
+          store: eventStore.lease(),
           nodeId,
           attemptId,
           requestedAt,

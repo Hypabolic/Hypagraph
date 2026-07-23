@@ -134,7 +134,7 @@ export interface LoopDefinition {
   failurePolicy?: LoopFailurePolicy;
 }
 
-export type LoopStatus = "pending" | "running" | "succeeded" | "failed" | "requires_revision";
+export type LoopStatus = "pending" | "running" | "blocked" | "succeeded" | "failed" | "requires_revision";
 export type LoopDecision = "complete" | "continue" | "fail" | "pending";
 export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "evaluation_error";
 
@@ -172,6 +172,9 @@ export interface LoopRuntime {
   completedAt?: string;
   exitReason?: LoopExitReason;
   failurePolicy?: LoopFailurePolicy;
+  blockedAt?: string;
+  blockedReason?: string;
+  blockedAttemptId?: string;
   legacyPredicate?: string;
 }
 
@@ -270,6 +273,8 @@ export type EventType =
   | "hypagraph.attempt.cancelled"
   | "hypagraph.loop.iteration-started"
   | "hypagraph.loop.evaluated"
+  | "hypagraph.loop.invalidated"
+  | "hypagraph.loop.blocked"
   | "hypagraph.loop.completed"
   | "hypagraph.loop.failed";
 

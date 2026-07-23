@@ -223,8 +223,15 @@ A terminal failure stores the selected policy in `hypagraph.loop.failed`. `block
 
 Disconnected regions have separate attempts, facts, routes, progress values, resets, and graph-component IDs. M4 dispatch remains sequential, but region outcomes do not share runtime state.
 
+## Revision, cancellation, and restore
+
+A revision is rejected while an attempt in the affected loop is active. A change to a loop definition or one of its nodes stores `hypagraph.loop.invalidated`, clears the current region projection, preserves attempt history, and makes the entry eligible to restart at iteration 1. An unchanged completed loop is retained.
+
+Cancellation and restored interruption store a blocked loop outcome. The region cannot start again until an explicit relevant revision invalidates it. Restore validates loop iteration, active-attempt, and fact ownership invariants. It never starts a node or reruns a command.
+
+Pi session branches use generation-bound event-store leases. A late result from an earlier branch fails with `event_store_branch_changed`. Optimistic sequence conflicts return `event_store_sequence_conflict` and do not store part of a loop reset batch.
+
 It does not yet support:
 
-- loop cancellation and revision hardening;
 - parallel iterations;
 - nested or overlapping loops.

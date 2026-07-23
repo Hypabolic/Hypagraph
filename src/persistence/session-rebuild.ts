@@ -169,8 +169,52 @@ const migrateVersionOne = (value: unknown): PersistedHypagraph | undefined => {
   return { events, snapshot };
 };
 
+export function validateRestoredLoopState(state: HypagraphState): void {
+  const active = new Set(["starting", "running", "awaiting_evidence", "verifying"]);
+  for (const definition of state.definition.loops) {
+    const runtime = state.runtime.loops[definition.id];
+    if (!runtime) throw new Error(`Restored loop '${definition.id}' has no runtime state.`);
+    if (runtime.maxIterations !== definition.maxIterations) throw new Error(`Restored loop '${definition.id}' has a different iteration limit from its definition.`);
+    if ((runtime.status === "pending" || runtime.status === "requires_revision") && runtime.currentIteration !== 0) {
+      throw new Error(`Restored loop '${definition.id}' has not started but records iteration ${runtime.currentIteration}.`);
+    }
+    if (["running", "blocked", "succeeded", "failed"].includes(runtime.status)) {
+      if (!Number.isInteger(runtime.currentIteration) || runtime.currentIteration < 1 || runtime.currentIteration > runtime.maxIterations) {
+        throw new Error(`Restored loop '${definition.id}' has invalid current iteration ${runtime.currentIteration}.`);
+      }
+      if (!runtime.iterations.some((item) => item.iteration === runtime.currentIteration)) {
+        throw new Error(`Restored loop '${definition.id}' has no record for iteration ${runtime.currentIteration}.`);
+      }
+    }
+    if (runtime.status === "blocked" && !runtime.blockedReason?.trim()) throw new Error(`Restored loop '${definition.id}' is blocked without a reason.`);
+
+    const loopNodes = new Set(definition.nodes);
+    for (const nodeId of definition.nodes) {
+      const node = state.runtime.nodes[nodeId];
+      if (!node) throw new Error(`Restored loop '${definition.id}' cannot find node '${nodeId}'.`);
+      const attemptId = node.currentAttemptId;
+      if (!attemptId) continue;
+      const attempt = node.attempts[attemptId];
+      if (!attempt) throw new Error(`Restored node '${nodeId}' points to missing attempt '${attemptId}'.`);
+      if (active.has(node.status)) {
+        if (attempt.loopId !== definition.id || attempt.iteration !== runtime.currentIteration) {
+          throw new Error(`Restored active attempt '${attemptId}' does not match loop '${definition.id}' iteration ${runtime.currentIteration}.`);
+        }
+        if (runtime.status === "blocked") throw new Error(`Restored blocked loop '${definition.id}' still has active attempt '${attemptId}'.`);
+      }
+    }
+    for (const fact of Object.values(state.runtime.facts)) {
+      if (!loopNodes.has(fact.producerNodeId)) continue;
+      if (fact.loopId !== definition.id || (runtime.currentIteration > 0 && fact.iteration !== runtime.currentIteration)) {
+        throw new Error(`Restored fact '${fact.name}' does not match loop '${definition.id}' iteration ${runtime.currentIteration}.`);
+      }
+    }
+  }
+}
+
 const acceptPersisted = (stored: StoredPersisted): PersistedHypagraph => {
   const snapshot = replayEvents(stored.events);
+  validateRestoredLoopState(snapshot);
   if (stored.snapshot.schemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== stored.snapshot.snapshotHash) throw new Error("The stored Hypagraph snapshot does not match its event stream.");
   return { events: structuredClone(stored.events), snapshot };
 };
@@ -188,6 +232,7 @@ const appendStoredBatch = (
 
   const events = [...(sameWorkflow ? latest.events : []), ...structuredClone(batch.events)];
   const snapshot = replayEvents(events);
+  validateRestoredLoopState(snapshot);
   const storedSchemaVersion = (batch.snapshot as unknown as StoredSnapshotShape).schemaVersion;
   if (storedSchemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== batch.snapshot.snapshotHash) {
     throw new Error("The stored Hypagraph event batch does not match its snapshot.");

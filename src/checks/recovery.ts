@@ -38,10 +38,13 @@ const missingRequiredFacts = (state: HypagraphState, nodeId: string, attemptId: 
     .filter((contract) => contract.required)
     .filter((contract) => {
       const fact = state.runtime.facts[contract.name];
+      const attempt = state.runtime.nodes[nodeId]?.attempts[attemptId];
       return !fact
         || fact.producerNodeId !== nodeId
         || fact.attemptId !== attemptId
-        || fact.revision !== state.revision;
+        || fact.revision !== state.revision
+        || fact.loopId !== attempt?.loopId
+        || fact.iteration !== attempt?.iteration;
     })
     .map((contract) => contract.name);
 };
@@ -131,6 +134,44 @@ export async function recoverInterruptedChecks(input: CheckRecoveryInput): Promi
     if (!committed.ok) {
       const message = committed.diagnostics.map((item) => item.message).join(" ");
       throw new Error(`Hypagraph could not recover attempt '${attemptId}': ${message}`);
+    }
+    state = committed.value.state;
+    events.push(...committed.value.events);
+    recoveredAttemptIds.push(attemptId);
+    try {
+      input.onCommit?.(structuredClone(state), structuredClone(committed.value.events));
+    } catch {
+      // A view observer cannot change recovery or canonical state.
+    }
+  }
+
+  return { state, events, recoveredAttemptIds };
+}
+
+export async function recoverOrphanedLoopAttempts(input: CheckRecoveryInput): Promise<CheckRecoveryResult> {
+  let state = input.state;
+  const events: DomainEvent[] = [];
+  const recoveredAttemptIds: string[] = [];
+  const loopByNode = new Map(state.definition.loops.flatMap((loop) => loop.nodes.map((nodeId) => [nodeId, loop.id] as const)));
+
+  for (const definitionNode of [...state.definition.nodes].sort((left, right) => left.id.localeCompare(right.id))) {
+    if ((definitionNode.kind ?? "task") === "check" || !loopByNode.has(definitionNode.id)) continue;
+    const runtime = state.runtime.nodes[definitionNode.id];
+    const attemptId = runtime?.currentAttemptId;
+    if (!runtime || !attemptId || !["starting", "running", "awaiting_evidence", "verifying"].includes(runtime.status)) continue;
+    const command: HypagraphCommand = {
+      type: "cancel-attempt",
+      nodeId: definitionNode.id,
+      attemptId,
+      reason: "The host stopped while this loop attempt was active. Revise the loop before it runs again.",
+      commandId: recoveryCommandId(state, definitionNode.id, attemptId, "cancel-orphaned-loop-attempt"),
+      correlationId: recoveryCommandId(state, definitionNode.id, attemptId, "recover-loop-attempt"),
+      at: input.at,
+    };
+    const committed = await applyCommandsAndCommit(input.store, state, [command]);
+    if (!committed.ok) {
+      const message = committed.diagnostics.map((item) => item.message).join(" ");
+      throw new Error(`Hypagraph could not recover loop attempt '${attemptId}': ${message}`);
     }
     state = committed.value.state;
     events.push(...committed.value.events);
