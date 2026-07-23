@@ -58,15 +58,62 @@ const reportCheckSchema = (
     name: StringEnum([parserName] as const),
     version: Type.Literal(1),
   }),
-  namespace: Type.String({ pattern: "^[a-z][A-Za-z0-9]*(?:\\.[a-z][A-Za-z0-9]*)*$" }),
+  namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
   maxReportBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
 });
+
+const fileAssertionSchema = Type.Union([
+  Type.Object({ kind: StringEnum(["exists"] as const), path: Type.String() }),
+  Type.Object({ kind: StringEnum(["absent"] as const), path: Type.String() }),
+  Type.Object({ kind: StringEnum(["size"] as const), path: Type.String(), bytes: Type.Integer({ minimum: 0 }) }),
+  Type.Object({
+    kind: StringEnum(["sha256"] as const),
+    path: Type.String(),
+    hash: Type.String({ pattern: "^[A-Fa-f0-9]{64}$" }),
+    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  }),
+  Type.Object({
+    kind: StringEnum(["text-contains"] as const),
+    path: Type.String(),
+    text: Type.String({ minLength: 1 }),
+    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  }),
+]);
+
+const gitAssertionSchema = Type.Union([
+  Type.Object({ kind: StringEnum(["clean"] as const) }),
+  Type.Object({ kind: StringEnum(["branch"] as const), name: Type.String({ minLength: 1 }) }),
+  Type.Object({ kind: StringEnum(["revision"] as const), sha: Type.String({ pattern: "^[A-Fa-f0-9]{7,64}$" }) }),
+  Type.Object({
+    kind: StringEnum(["changed-paths"] as const),
+    paths: Type.Array(Type.String(), { uniqueItems: true }),
+    mode: Type.Optional(StringEnum(["exact", "contains"] as const)),
+  }),
+]);
+
+const assertionCheckSchema = Type.Union([
+  Type.Object({
+    kind: StringEnum(["file-assertion"] as const),
+    version: Type.Literal(1),
+    assertion: fileAssertionSchema,
+    namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
+    retry: Type.Optional(retrySchema),
+  }),
+  Type.Object({
+    kind: StringEnum(["git-assertion"] as const),
+    version: Type.Literal(1),
+    assertion: gitAssertionSchema,
+    namespace: Type.String({ pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$" }),
+    retry: Type.Optional(retrySchema),
+  }),
+]);
 
 const checkSchema = Type.Union([
   commandCheckSchema,
   reportCheckSchema("test-report", "vitest-json"),
   reportCheckSchema("lint-report", "eslint-json"),
   reportCheckSchema("coverage-report", "istanbul-coverage-summary"),
+  assertionCheckSchema,
 ]);
 
 const nodeSchema = Type.Object({
@@ -161,20 +208,28 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
             ...normalizeRetry(node.check.retry),
             publish: node.check.publish.map((mapping) => ({ ...mapping })),
           }
-          : {
-            kind: node.check.kind,
-            command: node.check.command,
-            ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
-            ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
-            timeoutMs: node.check.timeoutMs,
-            ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
-            ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
-            ...normalizeRetry(node.check.retry),
-            reportPath: node.check.reportPath,
-            parser: { ...node.check.parser },
-            namespace: node.check.namespace,
-            ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
-          },
+          : node.check.kind === "file-assertion" || node.check.kind === "git-assertion"
+            ? {
+              kind: node.check.kind,
+              version: node.check.version,
+              assertion: structuredClone(node.check.assertion),
+              namespace: node.check.namespace,
+              ...normalizeRetry(node.check.retry),
+            }
+            : {
+              kind: node.check.kind,
+              command: node.check.command,
+              ...(node.check.arguments === undefined ? {} : { arguments: [...node.check.arguments] }),
+              ...(node.check.workingDirectory === undefined ? {} : { workingDirectory: node.check.workingDirectory }),
+              timeoutMs: node.check.timeoutMs,
+              ...(node.check.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...node.check.expectedExitCodes] }),
+              ...(node.check.environmentVariables === undefined ? {} : { environmentVariables: [...node.check.environmentVariables] }),
+              ...normalizeRetry(node.check.retry),
+              reportPath: node.check.reportPath,
+              parser: { ...node.check.parser },
+              namespace: node.check.namespace,
+              ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
+            },
       }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
