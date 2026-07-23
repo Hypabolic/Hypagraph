@@ -41,8 +41,17 @@ const requireCommandCheckDefinition = (state: HypagraphState, nodeId: string): C
   return definitionNode.check;
 };
 
+const requireLoopNotExhausted = (state: HypagraphState, nodeId: string): void => {
+  const loop = state.definition.loops.find((item) => {
+    const runtime = state.runtime.loops[item.id];
+    return item.nodes.includes(nodeId) && runtime?.status === "failed" && runtime.exitReason === "max_iterations";
+  });
+  if (loop) throw new Error(`loop_exhausted: Loop '${loop.id}' reached its limit of ${loop.maxIterations} iterations. It cannot start another iteration.`);
+};
+
 export function requireReadyCommandCheck(state: HypagraphState, nodeId: string): RunnableCommandCheck {
   const definition = requireCommandCheckDefinition(state, nodeId);
+  requireLoopNotExhausted(state, nodeId);
   const runtime = state.runtime.nodes[nodeId];
   if (!runtime || runtime.status !== "ready") throw new Error(`Check '${nodeId}' is not ready.`);
   return { definition: structuredClone(definition), state: structuredClone(state), retry: false };
@@ -55,6 +64,7 @@ export function requireRunnableCommandCheck(
   at: string,
 ): RunnableCommandCheck {
   const definition = requireCommandCheckDefinition(state, nodeId);
+  requireLoopNotExhausted(state, nodeId);
   const runtime = state.runtime.nodes[nodeId];
   if (!runtime) throw new Error(`Check '${nodeId}' has no runtime state.`);
   const eligibility = evaluateCheckStart(runtime, definition, attemptId, at);
