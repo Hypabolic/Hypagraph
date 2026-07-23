@@ -12,7 +12,9 @@ export type TestReportAdapterResult =
 const validNamespace = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)*$/;
 
 const publicFactName = (name: string, namespace: string): string => {
+  if (name === "passed") return `${namespace}.success`;
   if (name.startsWith("tests.")) return `${namespace}.${name.slice("tests.".length)}`;
+  if (name.startsWith("testSuites.")) return `${namespace}.suites.${name.slice("testSuites.".length)}`;
   return `${namespace}.${name}`;
 };
 
@@ -57,7 +59,7 @@ export function adaptVitestJsonResult(
   if (diagnostics.length > 0 || !parsed.ok) return { ok: false, diagnostics };
 
   const facts = namespaceFacts(parsed.value.facts, namespace, commandResult.evidence);
-  const parsedPassed = facts.find((fact) => fact.name === `${namespace}.passed`)?.value;
+  const parsedPassed = facts.find((fact) => fact.name === `${namespace}.success`)?.value;
   const commandPassed = commandResult.status === "passed";
   if (typeof parsedPassed !== "boolean" || parsedPassed !== commandPassed) {
     return {
@@ -66,6 +68,18 @@ export function adaptVitestJsonResult(
         code: "inconsistent_test_report_status",
         message: "The test report pass state must match the command result status.",
         location: "report.success",
+      }],
+    };
+  }
+
+  const names = facts.map((fact) => fact.name);
+  if (new Set(names).size !== names.length) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "duplicate_test_report_fact",
+        message: "The test report adapter produced duplicate public fact names.",
+        location: "adapter.namespace",
       }],
     };
   }
