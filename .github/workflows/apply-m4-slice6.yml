@@ -34,6 +34,17 @@ jobs:
           {
             python3 scripts/fix-m4-slice6-anchors.py
             python3 scripts/apply-m4-slice6.py
+            python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/graph/projection.ts")
+          text = path.read_text()
+          old = '  failurePolicy: "fail-workflow" | "block-dependants" | "record-and-continue";\n'
+          new = '  failurePolicy?: "fail-workflow" | "block-dependants" | "record-and-continue";\n'
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit("The generated failurePolicy field was not found.")
+          PY
           } > apply.log 2>&1
           status=$?
           cat apply.log
