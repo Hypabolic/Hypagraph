@@ -34,6 +34,7 @@ jobs:
           {
             python3 scripts/fix-m4-slice5.py
             python3 scripts/apply-m4-slice5.py
+            python3 scripts/fix-m4-slice5-generated.py
           } > apply.log 2>&1
           status=$?
           cat apply.log
