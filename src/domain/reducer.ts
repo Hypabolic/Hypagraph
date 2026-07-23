@@ -165,7 +165,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       success: result.value,
       factsUsed: result.factsUsed,
       semanticsVersion: CONDITION_SEMANTICS_VERSION,
-      noProgressCount: runtime.noProgressCount,
+      noProgressCount: runtime.noProgressCount ?? 0,
     };
   }
   const progressFact = state.runtime.facts[definition.progress.fact];
@@ -181,7 +181,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       success: result.value,
       factsUsed: [...new Set([...result.factsUsed, definition.progress.fact])],
       semanticsVersion: CONDITION_SEMANTICS_VERSION,
-      noProgressCount: runtime.noProgressCount,
+      noProgressCount: runtime.noProgressCount ?? 0,
       evaluationError: `Loop '${definition.id}' requires numeric progress fact '${definition.progress.fact}' from iteration ${runtime.currentIteration}.`,
     };
   }
@@ -201,7 +201,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       ...(runtime.bestMetric === undefined ? {} : { bestMetric: runtime.bestMetric }),
       ...(runtime.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
     }),
-    noProgressCount: improved ? 0 : runtime.noProgressCount + 1,
+    noProgressCount: improved ? 0 : (runtime.noProgressCount ?? 0) + 1,
   };
 };
 

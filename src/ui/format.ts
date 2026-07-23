@@ -59,7 +59,7 @@ export function renderWorkflow(state: HypagraphState): string {
     lines.push("Loops:");
     for (const loop of state.definition.loops) {
       const runtime = state.runtime.loops[loop.id];
-      const progress = runtime?.currentMetric === undefined ? "" : ` - metric ${runtime.currentMetric}${runtime.bestMetric === undefined ? "" : `, best ${runtime.bestMetric} at ${runtime.bestIteration}`}${loop.patience === undefined ? "" : `, patience ${Math.max(0, loop.patience - runtime.noProgressCount)}/${loop.patience}`}`;
+      const progress = runtime?.currentMetric === undefined ? "" : ` - metric ${runtime.currentMetric}${runtime.bestMetric === undefined ? "" : `, best ${runtime.bestMetric} at ${runtime.bestIteration}`}${loop.patience === undefined ? "" : `, patience ${Math.max(0, loop.patience - (runtime.noProgressCount ?? 0))}/${loop.patience}`}`;
       lines.push(`- ${loop.id}: ${runtime?.status ?? "pending"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : ""}${progress}`);
     }
   }
@@ -76,7 +76,7 @@ export function renderWidget(state: HypagraphState): string[] {
   const ready = readyNodeIds(state);
   const shownLoop = Object.values(state.runtime.loops).find((loop) => loop.status === "running") ?? Object.values(state.runtime.loops).find((loop) => loop.status === "failed" || loop.status === "succeeded");
   const definition = shownLoop ? state.definition.loops.find((loop) => loop.id === shownLoop.loopId) : undefined;
-  const progress = shownLoop?.bestMetric === undefined ? "" : ` best ${shownLoop.bestMetric} at ${shownLoop.bestIteration}${definition?.patience === undefined ? "" : ` patience ${Math.max(0, definition.patience - shownLoop.noProgressCount)}/${definition.patience}`}`;
+  const progress = shownLoop?.bestMetric === undefined ? "" : ` best ${shownLoop.bestMetric} at ${shownLoop.bestIteration}${definition?.patience === undefined ? "" : ` patience ${Math.max(0, definition.patience - (shownLoop.noProgressCount ?? 0))}/${definition.patience}`}`;
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]`,
     `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.loopId}: ${shownLoop.currentIteration}/${shownLoop.maxIterations}${progress}` : ""}`,

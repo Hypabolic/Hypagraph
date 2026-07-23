@@ -164,7 +164,7 @@ export interface LoopRuntime {
   currentMetric?: number;
   bestMetric?: number;
   bestIteration?: number;
-  noProgressCount: number;
+  noProgressCount?: number;
   startedAt?: string;
   completedAt?: string;
   exitReason?: LoopExitReason;

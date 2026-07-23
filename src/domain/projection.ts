@@ -49,7 +49,6 @@ const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
     maxIterations: loop.maxIterations,
     iterations: [],
     factsUsed: [],
-    noProgressCount: 0,
     ...(legacyText === undefined ? {} : { legacyPredicate: legacyText }),
   };
 };

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DomainEvent, FactInput, HypagraphCommand, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { replayEvents } from "../src/domain/projection.js";
+import { restoreLatestSession } from "../src/persistence/session-rebuild.js";
 import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
 import { validateDefinition } from "../src/domain/validate.js";
 
@@ -65,6 +66,24 @@ const iteration = (state: HypagraphState, events: DomainEvent[], number: number,
 };
 
 describe("M4 Slice 5 progress and patience", () => {
+  it("keeps existing schema-3 loop sessions hash compatible", () => {
+    const existing = definition();
+    delete existing.loops[0]!.progress;
+    delete existing.loops[0]!.patience;
+    const created = createWorkflow(existing, at, "workflow-schema3-loop");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    expect(Object.hasOwn(created.state.runtime.loops["quality-loop"]!, "noProgressCount")).toBe(false);
+    const restored = restoreLatestSession([{
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "hypagraph_define",
+        details: { hypagraph: { events: created.events, snapshot: created.state } },
+      },
+    }]);
+    expect(restored?.snapshot).toEqual(created.state);
+  });
+
   it("tracks best progress, applies strict minDelta, resets patience, and fails on no progress", () => {
     const created = createWorkflow(definition(), at, "workflow-progress");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
