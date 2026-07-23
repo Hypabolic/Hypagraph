@@ -126,6 +126,16 @@ interface GraphViewModel {
 }
 ```
 
+A graph component includes:
+
+- a stable component ID;
+- member node IDs;
+- member loop IDs;
+- whether it has an edge to another component after loop collapse;
+- its derived terminal outcome when one exists.
+
+Component identity is a projection value. It is not a new workflow node and it is not a domain event.
+
 A graph node includes:
 
 - node ID;
