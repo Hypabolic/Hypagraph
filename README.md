@@ -1,135 +1,168 @@
 # Hypagraph
 
-Hypagraph is a graph-native workflow and execution-control extension for coding agents. The first integration is for the Pi coding agent.
+**Give your coding agent a plan it can execute, inspect, and prove.**
 
-Hypagraph lets an agent define coding work as a directed graph. A deterministic runtime then controls execution with commands, events, attempts, dependencies, node contracts, evidence, typed facts, gates, bounded loop declarations, branch-aware session state, and deterministic command checks.
+Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It turns a coding plan into an explicit graph of tasks, checks, decisions, and bounded repair loops.
 
-## Current implementation
+Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works.
 
-M0 provides the stable graph foundation. M1 adds the event-driven execution runtime. M2 adds typed facts and deterministic gates. M3 is complete in v0.4 and adds deterministic check execution and Pi product integration. M4 is active and adds executable bounded loops.
-
-The current implementation includes:
-
-- an installable Pi package and a bundled Hypagraph skill;
-- the `hypagraph_define`, `hypagraph_read`, `hypagraph_run_check`, `hypagraph_cancel_check`, `hypagraph_transition`, and `hypagraph_revise` tools;
-- the `/hypagraph` command and graph-pane subcommands;
-- public Pi definitions for task, gate, and command-check nodes;
-- a live transport-independent graph projection;
-- a deterministic layered terminal graph layout;
-- dependency, selected-route, skipped-route, and loop-feedback edges;
-- declared loop boundaries;
-- typed loop success conditions;
-- schema version 3 canonical loop runtime;
-- one successful loop iteration with a downstream completion barrier;
-- a responsive Pi graph pane;
-- a passive right-side pane on wide terminals;
-- a full-screen graph view on narrow terminals;
-- read-only node navigation and inspection;
-- stable graph positions when runtime state changes;
-- terminal-control sanitisation and ASCII rendering fallback;
-- a bounded local command-check executor with no shell by default;
-- timeout and cancellation support;
-- a session-scoped active check execution registry;
-- explicit check cancellation through Pi tools and commands;
-- late-result rejection after cancellation;
-- explicit retry policy with allowed statuses, maximum attempts, and bounded backoff;
-- a new immutable attempt ID for each retry;
-- prior-attempt fact removal when a retry starts;
-- environment-variable name allowlists;
-- a small safe default command environment;
-- no environment values in definitions, events, results, or logs;
-- bounded stdout and stderr capture;
-- file-backed check artifact references;
-- automatic check result normalization and lifecycle completion;
-- typed fact publication from check results;
-- a Pi session journal for accepted event batches;
-- optimistic workflow sequence checks;
-- durable check-start, fact, result, and verification boundaries;
-- restore-time closure of interrupted check attempts;
-- verification recovery from a stored raw result without command rerun;
-- versioned commands and events;
-- an append-only event stream as the source of truth;
-- pure event projection and deterministic replay;
-- schema version 2 snapshots with deterministic hashes;
-- migration from valid schema version 1 snapshots;
-- explicit node and attempt lifecycles;
-- immutable attempt IDs;
-- stale-attempt rejection;
-- separate result-submission and verification states;
-- pause and resume commands in the domain runtime;
-- dependency-based readiness events;
-- one-active-attempt enforcement;
-- evidence-gated result submission;
-- typed fact contracts and fact publication;
-- fact binding to workflow revisions and attempts;
-- a typed condition abstract syntax tree;
-- static condition and operator type validation;
-- bounded deterministic condition evaluation;
-- gate nodes with persisted route selections;
-- branch skipping and branch-aware joins;
-- route invalidation after graph revisions;
-- Tarjan strongly connected component detection;
-- exact loop-region validation;
-- downstream invalidation after graph revisions;
-- strict file-scope enforcement;
-- property tests for generated directed acyclic graphs;
-- replay, determinism, persistence, migration, lifecycle, recovery, cancellation, retry, environment, fact, routing, check, artifact, graph, and Pi adapter tests.
-
-M4 is the selected next milestone. Slices 1 to 4 add typed loop success conditions, structured iteration-region validation, schema version 3, deterministic feedback continuation, isolated multi-iteration task loops, check-driven repair loops, and terminal hard-limit failure. A final unsuccessful iteration records `max_iterations` and fails the workflow. Later slices add progress and patience rules, recovery hardening, and the complete Pi loop surface. M3.1 parser adapters are deferred until after v0.5.
-
-## v0.4 dogfood result
-
-The v0.4 release was tested through the real Pi product path. The run defined a complex graph, ran deterministic checks, published facts, selected a gate route, restored the session without rerunning the command, and kept the live graph pane open. The pane showed the selected route, the ready frontier, a declared loop boundary, and its feedback edge.
-
-See [the v0.4 dogfood record](docs/v0.4-dogfood.md) and [the command-check gate example](examples/command-check-gate.json).
-
-## Language rules
-
-All repository text must use the ASD-STE100 Simplified Technical English writing method.
-
-This rule applies to documentation, plans, comments, test descriptions, error messages, user interface text, and tool guidance.
-
-See [AGENTS.md](AGENTS.md) for the mandatory rules.
-
-## Run Hypagraph locally
-
-```bash
-npm install
-npm run check
-pi -e ./extensions/hypagraph.ts
+```mermaid
+flowchart LR
+    A[Implement change] --> B[Run checks]
+    B --> C{Checks pass?}
+    C -- Yes --> D[Document result]
+    C -- No --> E[Repair failure]
+    E -. bounded retry .-> B
 ```
 
-Install the package from GitHub:
+## Why use Hypagraph?
+
+Coding agents often start with a reasonable plan, then lose structure as the session grows. Hypagraph makes the plan executable.
+
+- **See the work:** open a live graph pane inside Pi.
+- **Control execution:** dependencies decide which nodes are ready.
+- **Prove completion:** tasks require evidence and checks record their results.
+- **Route from facts:** gates select branches from typed check output.
+- **Bound repair cycles:** declared loops have explicit limits and success conditions.
+- **Resume safely:** workflow state is stored in the Pi session and rebuilt on restore.
+
+Hypagraph is useful for repository changes that have dependencies, conditional paths, mandatory checks, or repeat-until-passing work.
+
+## Install
+
+Install Hypagraph directly from GitHub:
 
 ```bash
 pi install git:github.com/Hypabolic/Hypagraph
 ```
 
-## Commands and tools
+Restart Pi after installation. Hypagraph loads its extension and bundled skill automatically.
 
-| Name | Purpose |
+Update an existing installation:
+
+```bash
+pi update git:github.com/Hypabolic/Hypagraph
+```
+
+Install it only for the current project with Pi's `-l` option:
+
+```bash
+pi install -l git:github.com/Hypabolic/Hypagraph
+```
+
+## Start your first workflow
+
+Open Pi in a repository and describe the work as a graph. You do not need to write the graph JSON yourself.
+
+For example:
+
+```text
+Create a Hypagraph workflow for this change:
+
+1. Inspect the current authentication flow.
+2. Implement refresh-token rotation.
+3. Run the repository checks.
+4. If the checks fail, repair the implementation and run them again.
+5. When the checks pass, update the authentication documentation.
+
+Limit the repair loop to three iterations. Keep implementation changes inside src/auth/** and tests/auth/**.
+```
+
+The agent can define the workflow with Hypagraph, then execute only the nodes that are ready.
+
+Open the live graph:
+
+```text
+/hypagraph graph
+```
+
+Show a compact workflow summary:
+
+```text
+/hypagraph
+```
+
+A typical run looks like this:
+
+1. Hypagraph validates and stores the graph.
+2. The first dependency-free nodes become ready.
+3. The agent completes a task and submits evidence.
+4. Hypagraph runs the declared command check.
+5. The check publishes typed facts such as `tests.passed`.
+6. A gate selects the success or repair route.
+7. A failed route can enter a bounded repair loop.
+8. The workflow completes only when its selected path is complete.
+
+## Example: check, route, and repair
+
+The repository includes a complete [command-check gate example](examples/command-check-gate.json). It models this workflow:
+
+```mermaid
+flowchart TD
+    A[Run npm run check] --> B{tests.passed}
+    B -- true --> C[Document the passing result]
+    B -- false --> D[Repair the failed result]
+```
+
+The command check runs without a shell by default, has a timeout, captures bounded output, and publishes facts from its result. The gate reads those facts and persists the selected route.
+
+Ask Pi to load or adapt the example:
+
+```text
+Use examples/command-check-gate.json as the basis for a Hypagraph workflow for this repository. Adapt the command, file scopes, and acceptance criteria before you start execution.
+```
+
+## Working with the graph pane
+
+Use these commands inside Pi:
+
+| Command | Action |
 | --- | --- |
 | `/hypagraph` | Show the active workflow state. |
-| `/hypagraph graph` | Open the live graph pane, or focus it when it is open. |
-| `/hypagraph graph toggle` | Open or close the live graph pane. |
-| `/hypagraph graph focus` | Give keyboard focus to the open graph pane. |
+| `/hypagraph graph` | Open or focus the live graph pane. |
+| `/hypagraph graph toggle` | Open or close the graph pane. |
+| `/hypagraph graph focus` | Give keyboard focus to the pane. |
 | `/hypagraph graph close` | Close the graph pane. |
-| `/hypagraph check active` | Show the active check execution. |
-| `/hypagraph check cancel [node-id]` | Request cancellation of an active check. |
-| `hypagraph_define` | Validate, create, and durably store a workflow. |
-| `hypagraph_read` | Read the projected state. Use the `graph` view for the structured graph projection. |
-| `hypagraph_run_check` | Durably run one ready or retryable deterministic command check. |
-| `hypagraph_cancel_check` | Request cancellation of an active command check. |
-| `hypagraph_transition` | Durably apply a task or gate lifecycle transition. |
-| `hypagraph_revise` | Durably replace the graph and invalidate changed work. |
+| `/hypagraph check active` | Show the active command check. |
+| `/hypagraph check cancel [node-id]` | Cancel an active command check. |
 
-The graph pane uses arrow keys or `h`, `j`, `k`, and `l` for navigation. Use Enter to show node details, Home to select the active node, `r` to select the ready frontier, `+` or `-` to change density, Escape to release focus on wide terminals, and `q` to close the pane.
+Graph pane controls:
 
-## Durable session storage
+| Key | Action |
+| --- | --- |
+| Arrow keys or `h`, `j`, `k`, `l` | Move between nodes. |
+| Enter | Show details for the selected node. |
+| Home | Select the active node. |
+| `r` | Select the ready frontier. |
+| `+` or `-` | Change graph density. |
+| Escape | Release focus on a wide terminal. |
+| `q` | Close the pane. |
 
-Hypagraph writes each accepted event batch to a Pi custom session entry. Each batch contains the expected sequence, the new events, and the resulting snapshot. Restore checks sequence continuity and rebuilds the snapshot from the stored events.
+On wide terminals, Hypagraph uses a passive right-side pane. On narrow terminals, it opens a full-screen graph view.
 
-A command check follows this order:
+## What a workflow can contain
+
+### Tasks
+
+A task describes agent work. It can define acceptance criteria, required evidence, dependencies, and allowed file paths.
+
+### Command checks
+
+A command check runs a deterministic local command such as `npm run check`. It supports timeouts, cancellation, bounded output, explicit retry policy, environment-variable allowlists, and result artifacts.
+
+### Gates
+
+A gate evaluates a typed condition against facts produced by earlier nodes. It selects and persists one route while skipping the other route.
+
+### Bounded loops
+
+A loop declares a feedback edge, an iteration region, a success condition, and a hard iteration limit. Hypagraph can use it for test-and-repair work without allowing an unbounded agent loop.
+
+## Session safety and recovery
+
+Hypagraph stores accepted event batches in the Pi session. The event stream is the source of truth, and the current workflow is a deterministic projection of those events.
+
+A command check is stored in this order:
 
 ```text
 store check start
@@ -147,32 +180,55 @@ store raw result
 store verification result
 ```
 
-If the start cannot be stored, Hypagraph does not run the command. Restore does not rerun a command. It records an interrupted result for a check that has no stored result, or it finishes verification when a raw result is already stored.
+Hypagraph does not run a command when it cannot first store the check start. Session restore does not rerun a completed command. It closes an interrupted attempt or resumes verification from a stored raw result.
 
-## Check execution policy
+Check output artifacts are stored under `.hypagraph/check-artifacts`. Hypagraph stores references in the event stream instead of storing large command output in the Pi session.
 
-Cancellation is terminal for the current attempt. Hypagraph passes the Pi abort signal to the executor. A cancellation tool can also abort the registered execution. If an executor ignores cancellation and returns a later success result, Hypagraph records a cancelled result and does not publish success facts.
+## Current status
 
-Retries are explicit. Hypagraph does not retry automatically. A retry must use a new attempt ID. The prior result and artifacts remain in attempt history. Facts from the prior attempt are removed when a retry starts. The definition can restrict retry statuses, the total attempt count, and the retry backoff.
+Hypagraph v0.4 includes:
 
-A command check stores environment-variable names only. It does not store environment values. The executor inherits a small safe launch environment by default. A definition can replace that default with an explicit list of names.
+- installable Pi integration and a bundled skill;
+- task, gate, and command-check nodes;
+- a live terminal graph pane;
+- typed facts and deterministic route selection;
+- durable event-based workflow state;
+- command checks with timeout, cancellation, retry policy, and artifact capture;
+- branch-aware joins and graph revision invalidation;
+- declared bounded loops and loop feedback rendering;
+- deterministic replay, migration, recovery, and property tests.
 
-Hypagraph stores check artifacts under `.hypagraph/check-artifacts`. v0.4 does not delete artifacts automatically. They remain until the user or workspace cleanup removes them. The default stdout and stderr capture limit is 1,048,576 bytes for each stream.
+The v0.4 release was dogfooded through the real Pi product path with a graph that included a command check, a gate, selected and skipped routes, a join, and a declared feedback loop. See the [v0.4 dogfood record](docs/v0.4-dogfood.md).
 
-## Design documents
+M4 is in progress. It extends executable bounded loops with multi-iteration repair behavior, progress rules, recovery hardening, and the complete Pi loop surface.
+
+## Develop locally
+
+Development requires Node.js 22 or later.
+
+```bash
+git clone https://github.com/Hypabolic/Hypagraph.git
+cd Hypagraph
+npm install
+npm run check
+pi -e ./extensions/hypagraph.ts
+```
+
+The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
+
+## Documentation
 
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
-- [M4 executable bounded loops vertical-slice plan](docs/m4-vertical-slice-plan.md)
+- [M4 executable bounded loops plan](docs/m4-vertical-slice-plan.md)
 - [Trusted evaluation contracts and loss functions](docs/trusted-evaluation-contract-plan.md)
-- [Hypagoal vertical-slice plan](docs/hypagoal-vertical-slice-plan.md)
-- [M3 deterministic check execution plan](docs/m3-vertical-slice-plan.md)
-- [M3 completion and Pi productisation plan](docs/m3-completion-phase-plan.md)
+- [Hypagoal plan](docs/hypagoal-vertical-slice-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
-- [Check cancellation, retry, and environment policy](docs/check-execution-policy.md)
-- [v0.4 dogfood record](docs/v0.4-dogfood.md)
-- [v0.4 release notes](CHANGELOG.md)
+- [Check execution policy](docs/check-execution-policy.md)
 - [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
-- [Event-driven runtime](docs/event-runtime.md)
-- [Graph visualisation and delegated execution architecture](docs/delegation-and-visualisation.md)
-- [Pi workflow comparison and adoption decisions](docs/research/pi-workflows-comparison.md)
+- [v0.4 dogfood record](docs/v0.4-dogfood.md)
+- [Release notes](CHANGELOG.md)
+
+## Repository writing rules
+
+Repository text uses the ASD-STE100 Simplified Technical English method. See [AGENTS.md](AGENTS.md) for the mandatory rules.
