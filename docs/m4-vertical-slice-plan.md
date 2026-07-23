@@ -1,6 +1,6 @@
-# M4 executable bounded loops vertical-slice plan
+# M4 executable bounded iteration regions vertical-slice plan
 
-- Status: planned
+- Status: active
 - Milestone: M4
 - Release marker: v0.5
 - Prerequisite: v0.4
@@ -11,17 +11,21 @@
 
 M4 makes declared cyclic graph regions executable.
 
-A loop is not a model instruction to repeat work. It is a deterministic runtime region with a typed success condition, a hard iteration limit, optional progress rules, durable iteration history, and an explicit exit reason.
+A loop is a first-class bounded iteration region. It is not a model instruction to repeat work, and it is not a repair-specific construct. It is a deterministic runtime region with a typed success condition, a hard iteration limit, optional progress rules, durable iteration history, explicit outcome policy, and an explicit exit reason.
 
-M4 must let a Pi user run a repair loop in which:
+M4 must let a Pi user run an iteration region in which:
 
 1. An entry node starts iteration 1.
 2. Task, gate, and check nodes run with their existing node rules.
 3. The runtime evaluates the loop after the declared evaluation node reaches a terminal verification result.
 4. A true success condition completes the loop.
-5. A false success condition follows the declared feedback edge and starts the next iteration.
+5. A false success condition follows declared feedback and starts the next iteration.
 6. The runtime stops at the hard iteration limit or after the configured patience limit.
-7. Restore and replay produce the same loop decision without running a command again.
+7. The region outcome policy controls the effect of failure on the wider workflow.
+8. A disconnected region can run without state coupling to another graph component.
+9. Restore and replay produce the same loop decision without running a command again.
+
+The same model must support refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, and repair.
 
 M3.1 parser adapters are deferred until v0.5 is complete.
 
@@ -29,17 +33,19 @@ M3.1 parser adapters are deferred until v0.5 is complete.
 
 At the end of M4, a user can:
 
-1. Define one bounded loop as part of a workflow.
+1. Define one bounded iteration region as part of a workflow.
 2. Use an existing typed condition as the loop success condition.
-3. Use task, gate, and command-check nodes inside the loop.
-4. Run more than one loop iteration.
+3. Use task, gate, and command-check nodes inside the region.
+4. Run more than one iteration.
 5. See facts and gate routes reset for the new iteration.
 6. Keep prior attempts, results, evidence, and artifacts in history.
-7. Let a failed evaluation check drive another repair iteration.
+7. Use a failed evaluation check as one valid observation when its facts are complete.
 8. Stop after success, the hard limit, or no progress.
-9. See the current iteration and exit reason in Pi.
-10. Restore the session without starting an executor.
-11. Replay the event stream and obtain the same loop state and decision.
+9. Define how a failed region affects the workflow.
+10. Define a loop as an independent graph component.
+11. See the current iteration, progress, outcome policy, and exit reason in Pi.
+12. Restore the session without starting an executor.
+13. Replay the event stream and obtain the same loop state and decision.
 
 ## 3. Mandatory architecture rules
 
@@ -65,7 +71,7 @@ A loop contains normal task, gate, and check nodes. These nodes keep their exist
 
 The loop runtime controls when the region starts, when current iteration state resets, and when work can leave the region.
 
-### 3.3 Use a single-entry and single-exit iteration region
+### 3.3 Use a single-entry and single-evaluation iteration region
 
 For v0.5, each loop is a structured iteration region.
 
@@ -137,9 +143,10 @@ At the evaluation boundary, use this order:
 3. Read and record the progress metric when one exists.
 4. Update the best metric and best iteration.
 5. Complete the loop when success is true and the evaluation node passed verification.
-6. Fail at `max_iterations` when the hard limit is reached.
-7. Fail at `no_progress` when patience is exhausted.
-8. Otherwise start the next iteration.
+6. Select `max_iterations` when the hard limit is reached.
+7. Select `no_progress` when patience is exhausted.
+8. Apply the failure policy when the loop has a failure exit reason.
+9. Otherwise start the next iteration.
 
 The hard limit is mandatory. Patience is an optional earlier stop.
 
@@ -154,7 +161,7 @@ When it published the required facts, the runtime can evaluate the loop after ve
 - missing or invalid evaluation facts fail the loop with `evaluation_error`;
 - failure of a non-evaluation node does not automatically start another iteration.
 
-This rule lets a failing test check send control back to a repair task without using model judgement.
+This rule lets a failing test check provide a valid observation and follow feedback without using model judgement. It is one loop pattern, not the definition of a loop.
 
 ### 3.8 Isolate current iteration state
 
@@ -183,7 +190,42 @@ External dependencies from the loop become satisfied only after the loop runtime
 
 This rule prevents a transient successful node state from releasing downstream work before the loop decision.
 
-### 3.10 Preserve durable boundaries
+### 3.10 Support independent loop regions and explicit outcomes
+
+A loop can have no external incoming or outgoing dependencies. In that case, it is an independent top-level graph component.
+
+Independent means:
+
+- the loop entry can become ready without another graph component;
+- its facts, routes, attempts, progress values, and iteration resets remain local to the loop;
+- its continuation does not reset or release an unrelated component;
+- its failure does not fail the complete workflow unless its policy says to do so;
+- its success does not satisfy an unrelated dependency.
+
+Add this failure policy:
+
+```ts
+type LoopFailurePolicy =
+  | "fail-workflow"
+  | "block-dependants"
+  | "record-and-continue";
+```
+
+The default is `fail-workflow` for compatibility.
+
+Use these rules:
+
+- `fail-workflow` makes loop failure a workflow failure.
+- `block-dependants` keeps direct and transitive dependants blocked and lets unrelated ready work continue.
+- `record-and-continue` records the failed region and lets unrelated work continue. A direct dependant still cannot pass the loop success barrier.
+- All loop regions must reach a terminal state before the workflow lifecycle can complete.
+- A recorded loop failure does not prevent a successful workflow result when it has no blocked required dependants and no `fail-workflow` policy applies.
+- M4 can execute independent regions sequentially through the current one-active-attempt rule.
+- M7 adds bounded concurrent dispatch for independent regions. M4 must not require a later domain-model change to add that concurrency.
+
+The graph projection must show each loop as a compound region. A disconnected loop appears as a separate top-level component.
+
+### 3.11 Preserve durable boundaries
 
 Loop events use the existing event store and optimistic sequence checks.
 
@@ -216,6 +258,11 @@ Restore must not run a node or check.
 M4 changes the loop definition to:
 
 ```ts
+type LoopFailurePolicy =
+  | "fail-workflow"
+  | "block-dependants"
+  | "record-and-continue";
+
 interface LoopDefinition {
   id: string;
   nodes: string[];
@@ -226,6 +273,7 @@ interface LoopDefinition {
   maxIterations: number;
   progress?: LoopProgressDefinition;
   patience?: number;
+  failurePolicy?: LoopFailurePolicy;
 }
 ```
 
@@ -308,7 +356,9 @@ The evaluation event records:
 - optional best iteration;
 - no-progress count;
 - decision;
-- exit reason when applicable.
+- exit reason when applicable;
+- failure policy when failure applies;
+- derived workflow effect when failure applies.
 
 The event must contain the decision result. Replay must not calculate a different decision from later facts.
 
@@ -431,15 +481,15 @@ A false success condition resets the loop region and makes the entry ready for i
 
 #### Done when
 
-A task-based repair loop runs two iterations and keeps correct history.
+A task-based iteration region runs two iterations and keeps correct history.
 
-### Slice 3 - Run a check-driven repair loop
+### Slice 3 - Support failed evaluation checks as loop observations
 
 - Status: implemented
 
 #### User result
 
-A failing evaluation check publishes facts, sends control back to the repair entry, and a later passing check completes the loop.
+A failing evaluation check can publish a complete observation, follow declared feedback, and let a later valid observation complete the loop.
 
 #### Add
 
@@ -471,7 +521,7 @@ A failing evaluation check publishes facts, sends control back to the repair ent
 
 #### Done when
 
-The principal repair-loop product path works through `hypagraph_run_check`.
+The failed-check observation pattern works through `hypagraph_run_check` without adding repair semantics to the loop model.
 
 ### Slice 4 - Enforce the hard iteration limit
 
@@ -485,7 +535,7 @@ A loop that never succeeds stops at `maxIterations` with an explicit failure rea
 
 - `hypagraph.loop.failed`;
 - `max_iterations` exit reason;
-- workflow failure after loop exhaustion;
+- default workflow failure after loop exhaustion before outcome policy is available;
 - terminal loop status in Pi and graph projections;
 - explicit diagnostics when a user tries to continue an exhausted loop.
 
@@ -493,7 +543,7 @@ A loop that never succeeds stops at `maxIterations` with an explicit failure rea
 
 - The runtime evaluates the final iteration before it reports exhaustion.
 - A successful final iteration completes normally.
-- An unsuccessful final iteration fails the loop and workflow.
+- An unsuccessful final iteration fails the loop. Slice 6 applies its failure policy to the workflow and dependants.
 - No node in the exhausted loop can start again.
 
 #### Tests
@@ -555,7 +605,54 @@ A user can define a numeric progress metric and stop a loop when it does not imp
 
 A loop can stop safely on hard bounds and on lack of progress.
 
-### Slice 6 - Harden revision, cancellation, and recovery
+### Slice 6 - Add independent loop regions and outcome policy
+
+#### User result
+
+A workflow can contain two disconnected loop regions. Each region keeps independent state, and one region can fail without terminating unrelated work when its policy permits that result.
+
+#### Add
+
+- `LoopFailurePolicy`;
+- default `fail-workflow` migration behavior;
+- disconnected-loop validation fixtures;
+- loop-local fact, route, attempt, and progress isolation tests;
+- workflow result aggregation across terminal loop regions;
+- `block-dependants` behavior;
+- `record-and-continue` behavior;
+- graph-component identity in projections;
+- compound-region rendering for disconnected loops;
+- Pi status text for failure policy and local outcome.
+
+#### Rules
+
+- A disconnected loop is valid.
+- Starting or continuing one loop must not reset another loop.
+- A loop success releases only explicit dependants.
+- A loop failure follows its declared policy.
+- `record-and-continue` does not release dependants that require loop success.
+- Unrelated ready nodes remain executable after a local loop failure.
+- Workflow completion waits for every loop region to become terminal.
+- Sequential execution in M4 must preserve the same semantics that M7 concurrency will use.
+
+#### Tests
+
+- validate two disconnected loops;
+- make both entries ready;
+- run iterations in interleaved order;
+- prove that facts and route selections do not leak between loops;
+- complete one loop while another remains active;
+- fail one loop with each failure policy;
+- keep unrelated work ready after `block-dependants` and `record-and-continue`;
+- prevent direct dependants from passing a failed loop barrier;
+- replay the same component outcomes and workflow result;
+- render two top-level loop regions in Pi.
+
+#### Done when
+
+Loop regions are semantically independent when the graph does not connect them, even though M4 still dispatches one active attempt at a time.
+
+### Slice 7 - Harden revision, cancellation, and recovery
 
 #### User result
 
@@ -595,7 +692,7 @@ A running loop remains correct across session restore, branch changes, cancellat
 
 A crash, restore, revision, or cancellation cannot create an unbounded or ambiguous loop state.
 
-### Slice 7 - Complete the Pi loop product surface
+### Slice 8 - Complete the Pi loop product surface
 
 #### User result
 
@@ -623,6 +720,9 @@ Show:
 - current metric;
 - best metric and iteration;
 - no-progress count and patience;
+- failure policy;
+- graph-component identity;
+- local outcome and workflow effect;
 - exit reason.
 
 The graph pane stays read-only. It must not contain a control that selects a loop decision.
@@ -640,31 +740,30 @@ The graph pane stays read-only. It must not contain a control that selects a loo
 
 The live Pi surface explains the loop state and decision from the canonical projection.
 
-### Slice 8 - Dogfood and v0.5 release
+### Slice 9 - Dogfood and v0.5 release
 
 #### User result
 
 The complete M4 path is proven in Pi and released as v0.5.
 
-#### Required dogfood graph
+#### Required dogfood workflows
 
-```text
-bootstrap
-    |
-    v
-implement <------------------+
-    |                         |
-    v                         |
-run-tests                     |
-    |                         |
-    v                         |
-tests.passed == true ? -------+
-    | true          | false
-    v               |
-document            + feedback to implement
-```
+Dogfood at least these loop purposes:
 
-The dogfood run must include at least three iterations:
+1. A refinement or optimization region that records a metric, improves, and succeeds.
+2. A bounded batch-processing region that exits when no items remain.
+3. A check-and-repair region that uses a failed check as an observation.
+4. Two disconnected loop regions in one workflow.
+
+The independent-region workflow must prove:
+
+- both entries can become ready;
+- the regions can run in interleaved order;
+- one region can complete while the other continues;
+- one region can use `record-and-continue` without terminating unrelated work;
+- state, facts, routes, progress, and iteration resets do not cross region boundaries.
+
+For the progress workflow, include at least three iterations:
 
 1. An unsuccessful evaluation with an initial metric.
 2. An unsuccessful evaluation with an improved metric.
@@ -674,6 +773,7 @@ Also run separate fixtures for:
 
 - hard-limit exhaustion;
 - patience exhaustion;
+- each failure policy;
 - cancellation;
 - restore between iterations;
 - restore after a raw check result and before loop evaluation;
@@ -704,7 +804,7 @@ Update:
 
 #### Done when
 
-A Pi user can run a bounded check-driven repair loop through multiple iterations, see deterministic progress and exit decisions, restore without rerun, and replay the same result.
+A Pi user can run generic bounded iteration regions through multiple iterations, combine connected and independent regions, see deterministic progress and outcome decisions, restore without rerun, and replay the same result.
 
 ## 7. Cross-slice test strategy
 
@@ -730,6 +830,8 @@ Property and example tests must prove:
 - a stale iteration result cannot change current state;
 - patience cannot be used without a progress metric;
 - a loop decision cannot depend on untyped text;
+- one loop cannot reset facts, routes, attempts, or progress state in another loop;
+- a loop failure follows its declared failure policy;
 - one loop event batch cannot partially commit.
 
 ### 7.3 Platform behavior
@@ -764,12 +866,13 @@ Implement in this order:
 
 1. Slice 1: one successful iteration;
 2. Slice 2: feedback continuation;
-3. Slice 3: check-driven repair;
+3. Slice 3: failed-check observations;
 4. Slice 4: hard limit;
 5. Slice 5: progress and patience;
-6. Slice 6: revision and recovery hardening;
-7. Slice 7: Pi product surface;
-8. Slice 8: dogfood and release.
+6. Slice 6: independent regions and outcome policy;
+7. Slice 7: revision and recovery hardening;
+8. Slice 8: Pi product surface;
+9. Slice 9: dogfood and release.
 
 Do not start with progress metrics or Pi controls. First prove the canonical iteration lifecycle and feedback reset.
 
@@ -782,10 +885,12 @@ M4 is complete when:
 - the runtime can complete one iteration;
 - the runtime can follow feedback into later iterations;
 - current iteration facts and routes are isolated;
-- a failed evaluation check can drive repair;
+- a failed evaluation check can provide a valid observation;
 - the hard iteration limit always stops the loop;
 - optional progress and patience decisions are deterministic;
 - loop attempts and facts identify their iteration;
+- disconnected loops keep independent state;
+- loop failure policy controls workflow and dependant effects;
 - downstream work waits for loop success;
 - restore does not run a node or check;
 - replay gives the same decisions and state hash;

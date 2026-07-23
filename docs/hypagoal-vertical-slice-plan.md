@@ -13,7 +13,7 @@ This plan adds a `/hypagoal` mode to Hypagraph.
 
 The user supplies one durable objective. Hypagraph converts that objective into an executable workflow. The current Pi session then continues work until the workflow reaches a terminal state or a deterministic stop condition applies.
 
-Hypagoal must use the full Hypagraph runtime. It must use node contracts, typed facts, deterministic gates, evidence, checks, bounded loops, progress rules, and replay.
+Hypagoal must use the full Hypagraph runtime. It must use node contracts, typed facts, deterministic gates, evidence, checks, bounded iteration regions, progress rules, explicit loop outcome policies, and replay.
 
 Hypagoal must not add a second execution model beside Hypagraph.
 
@@ -63,7 +63,7 @@ At the end of this milestone, a Pi user can:
 1. Start a durable goal from one `/hypagoal` command.
 2. Let the model inspect the repository and define a valid Hypagraph workflow.
 3. Continue through tasks, checks, and gates without a new user prompt for each turn.
-4. Run bounded repair loops.
+4. Run bounded iteration regions for refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, or repair.
 5. Use a typed success condition for each loop.
 6. Use a numeric progress or loss fact when the workflow has a defensible metric.
 7. Stop after success, failure, blockage, cancellation, a token budget, a turn budget, a hard loop limit, or a patience limit.
@@ -215,7 +215,7 @@ Canonical state:
 - Active node: implement-parser
 - Ready checks: none
 - Ready gates: none
-- Loop: repair-tests, iteration 3 of 6
+- Loop: parser-quality, iteration 3 of 6
 - Current metric: 4 failing tests
 - Best metric: 7 failing tests at iteration 2
 - Remaining patience: 2
@@ -311,6 +311,15 @@ A later view command can hide a terminal goal without changing canonical state.
 ## 7. Goal authoring rules
 
 Extend the bundled Hypagraph skill with goal authoring guidance.
+
+Use these loop-authoring rules:
+
+- Do not infer that a loop is a repair loop.
+- Define the loop purpose through node intent, facts, checks, success conditions, and progress rules.
+- Use a disconnected loop region when work has an independent bounded lifecycle.
+- Define the failure policy for each loop.
+- Do not connect independent regions only to force global completion order.
+- Let explicit dependencies carry data or control between regions.
 
 Translate a user objective into these graph elements:
 
