@@ -113,7 +113,8 @@ describe("M5A metric report loop integration", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     events.push(...result.events);
-    expect(result.state.runtime.facts["evaluation.score"]?.value).toBe(0.72);
+    expect(result.result.facts).toContainEqual(expect.objectContaining({ name: "evaluation.score", value: 0.72 }));
+    expect(result.state.runtime.facts["evaluation.score"]).toBeUndefined();
     expect(result.state.runtime.loops["quality-loop"]).toMatchObject({
       currentIteration: 2,
       currentMetric: 0.72,
@@ -128,6 +129,7 @@ describe("M5A metric report loop integration", () => {
       improved: true,
       decision: "continue",
     });
+    expect(result.state.runtime.nodes.evaluate?.attempts["evaluate-1"]?.checkResult?.facts).toContainEqual(expect.objectContaining({ name: "evaluation.score", value: 0.72 }));
     expect(result.state.runtime.nodes.improve?.status).toBe("ready");
     expect(replayEvents(events)).toEqual(result.state);
   });
