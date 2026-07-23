@@ -295,7 +295,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         const success = event.data.success === true;
         const factsUsed = Array.isArray(event.data.factsUsed) ? event.data.factsUsed.filter((item): item is string => typeof item === "string") : [];
         const semanticsVersion = Number(event.data.semanticsVersion ?? CONDITION_SEMANTICS_VERSION);
-        const decision = event.data.decision === "complete" ? "complete" : event.data.decision === "continue" ? "continue" : "pending";
+        const decision = event.data.decision === "complete" ? "complete" : event.data.decision === "continue" ? "continue" : event.data.decision === "fail" ? "fail" : "pending";
         if (record) {
           record.evaluatedAt = event.timestamp;
           record.evaluationEventId = event.eventId;
@@ -318,6 +318,16 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         runtime.status = "succeeded";
         runtime.completedAt = event.timestamp;
         runtime.exitReason = "success";
+      }
+      break;
+    }
+    case "hypagraph.loop.failed": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const runtime = next.runtime.loops[loopId];
+      if (runtime) {
+        runtime.status = "failed";
+        runtime.completedAt = event.timestamp;
+        runtime.exitReason = "max_iterations";
       }
       break;
     }

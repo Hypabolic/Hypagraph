@@ -124,8 +124,9 @@ export interface LoopDefinition {
   patience?: number;
 }
 
-export type LoopStatus = "pending" | "running" | "succeeded" | "requires_revision";
-export type LoopDecision = "complete" | "continue" | "pending";
+export type LoopStatus = "pending" | "running" | "succeeded" | "failed" | "requires_revision";
+export type LoopDecision = "complete" | "continue" | "fail" | "pending";
+export type LoopExitReason = "success" | "max_iterations";
 
 export interface LoopIterationRuntime {
   iteration: number;
@@ -150,7 +151,7 @@ export interface LoopRuntime {
   semanticsVersion?: number;
   startedAt?: string;
   completedAt?: string;
-  exitReason?: "success";
+  exitReason?: LoopExitReason;
   legacyPredicate?: string;
 }
 
@@ -249,7 +250,8 @@ export type EventType =
   | "hypagraph.attempt.cancelled"
   | "hypagraph.loop.iteration-started"
   | "hypagraph.loop.evaluated"
-  | "hypagraph.loop.completed";
+  | "hypagraph.loop.completed"
+  | "hypagraph.loop.failed";
 
 export interface DomainEvent<T = Record<string, unknown>> {
   eventId: string;

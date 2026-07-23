@@ -198,13 +198,23 @@ The verification event remains `hypagraph.verification.failed`. The same durable
 
 A cancelled, interrupted, timed-out, or executor-error result does not continue the loop. A failed check that is not the evaluation node does not continue the loop. Check retry stays in the same iteration. Loop continuation starts a new iteration and requires a new attempt ID.
 
+## Hard iteration limit
+
+The runtime evaluates the final allowed iteration before it reports exhaustion. A successful final iteration stores `hypagraph.loop.completed`. An unsuccessful final iteration stores these events in order:
+
+1. the verification result;
+2. `hypagraph.loop.evaluated` with decision `fail`;
+3. `hypagraph.loop.failed` with exit reason `max_iterations`;
+4. `hypagraph.workflow.failed`.
+
+The final iteration facts, attempts, evidence, results, and artifact references remain in history. The exhausted loop cannot start again. A node command for that loop returns `loop_exhausted`.
+
 ## Current M4 limit
 
-M4 Slices 1 to 3 support successful task and check iterations, deterministic feedback continuation, isolated iteration reset, and failed evaluation-check observations.
+M4 Slices 1 to 4 support successful task and check iterations, deterministic feedback continuation, isolated iteration reset, failed evaluation-check observations, and hard-limit failure.
 
 It does not yet support:
 
-- hard-limit failure;
 - progress metrics or patience;
 - loop cancellation and revision hardening;
 - parallel iterations;
