@@ -121,8 +121,8 @@ describe("M5A evaluation budgets", () => {
   });
 
   it("rejects a retry before it starts another external evaluation", async () => {
-    const node = optionalMetricNode("evaluate", [], "development");
-    node.check.retry = { maxAttempts: 2, retryOn: ["error"] };
+    const baseNode = optionalMetricNode("evaluate", [], "development");
+    const node = { ...baseNode, check: { ...baseNode.check, retry: { maxAttempts: 2, retryOn: ["error" as const] } } };
     const definition: HypagraphDefinition = {
       title: "Retry budget",
       goal: "Stop a retry at the evaluation limit",
@@ -165,9 +165,9 @@ describe("M5A evaluation budgets", () => {
           check: {
             ...optionalMetricNode("evaluate", ["improve"], "development").check,
             mappings: [
-              { source: "valid", fact: "evaluation.valid", type: "boolean" },
-              { source: "accepted", fact: "evaluation.accepted", type: "boolean" },
-              { source: "score", fact: "evaluation.score", type: "number" },
+              { source: "valid", fact: "evaluation.valid", type: "boolean" as const },
+              { source: "accepted", fact: "evaluation.accepted", type: "boolean" as const },
+              { source: "score", fact: "evaluation.score", type: "number" as const },
             ],
           },
         },
