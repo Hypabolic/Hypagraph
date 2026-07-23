@@ -180,16 +180,32 @@ The Pi extension can:
 
 The Pi extension must not contain loop decision rules.
 
+The default stdout and stderr capture limit is 1,048,576 bytes for each stream.
+
+## Failed check observations
+
+A command check at the declared loop evaluation node can be a valid failed observation.
+
+Hypagraph continues the loop only when:
+
+- the raw check result status is `failed`;
+- result normalization succeeded;
+- all required facts from that check attempt are present and valid;
+- the typed loop success condition is false;
+- another iteration is available.
+
+The verification event remains `hypagraph.verification.failed`. The same durable verification batch stores the loop evaluation, the `continue` decision, the next iteration start, and entry readiness. A true success condition cannot complete a loop when verification failed.
+
+A cancelled, interrupted, timed-out, or executor-error result does not continue the loop. A failed check that is not the evaluation node does not continue the loop. Check retry stays in the same iteration. Loop continuation starts a new iteration and requires a new attempt ID.
+
 ## Current M4 limit
 
-M4 Slice 1 supports one successful loop iteration.
+M4 Slices 1 to 3 support successful task and check iterations, deterministic feedback continuation, isolated iteration reset, and failed evaluation-check observations.
 
 It does not yet support:
 
-- feedback continuation into iteration 2;
 - hard-limit failure;
 - progress metrics or patience;
-- failed-check observation as a continuation signal;
 - loop cancellation and revision hardening;
 - parallel iterations;
 - nested or overlapping loops.
