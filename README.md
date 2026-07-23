@@ -2,9 +2,9 @@
 
 **Give your coding agent a plan it can execute, inspect, and prove.**
 
-Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It turns a coding plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
+Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It automatically turns an ordinary coding request or an existing plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
 
-Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works.
+Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works. The user does not have to design the graph or use graph terminology.
 
 ```mermaid
 flowchart LR
@@ -52,23 +52,25 @@ pi install -l git:github.com/Hypabolic/Hypagraph
 
 ## Start your first workflow
 
-Open Pi in a repository and describe the work as a graph. You do not need to write the graph JSON yourself.
+Open Pi in a repository and describe what you want done in normal language. You do not need to mention Hypagraph, graphs, nodes, gates, facts, or loops.
 
 For example:
 
 ```text
-Create a Hypagraph workflow for this migration:
+Move the remaining modules from the old parser to the new parser in safe batches.
+Run compatibility checks after each batch. Stop when no old-parser imports remain,
+then update the migration record.
 
-1. Inspect the modules that still use the old parser.
-2. Migrate one bounded batch of modules.
-3. Run compatibility checks and publish migration.remaining.
-4. Continue the batch loop until migration.remaining is zero.
-5. Update the migration record.
-
-Limit the batch loop to six iterations. Keep changes inside src/parser/** and tests/parser/**.
+Keep changes inside src/parser/** and tests/parser/**.
 ```
 
-The agent can define the workflow with Hypagraph, then execute only the nodes that are ready.
+The bundled skill inspects the repository and compiles the request into the smallest useful Hypagraph workflow. It infers work contracts, dependencies, checks, branches, bounded iteration, evidence, and writable scopes before execution.
+
+A small request stays small. Hypagraph can use one task and one check when that is sufficient. It does not add graph complexity that the work does not need.
+
+You can also paste an issue, checklist, or existing implementation plan. The skill preserves its intent while converting sequence, dependencies, conditions, and repeated work into executable graph structure.
+
+The skill asks about product intent only when it cannot infer a safe answer. It does not ask the user to design nodes or edges.
 
 Open the live graph:
 
@@ -84,14 +86,15 @@ Show a compact workflow summary:
 
 A typical run looks like this:
 
-1. Hypagraph validates and stores the graph.
-2. The first dependency-free nodes, including eligible loop entries, become ready.
-3. The agent completes a task and submits evidence.
-4. Checks or task nodes publish typed facts.
-5. Gates select deterministic routes from those facts.
-6. A loop evaluates its typed success condition at its declared boundary.
-7. A false result can follow declared feedback and start another bounded iteration.
-8. The workflow completes only when its required graph components reach a valid terminal result.
+1. The bundled skill compiles the user's request or plan into a workflow graph.
+2. Hypagraph validates and stores the graph.
+3. The first dependency-free nodes, including eligible loop entries, become ready.
+4. The agent completes a task and submits evidence.
+5. Checks or task nodes publish typed facts.
+6. Gates select deterministic routes from those facts.
+7. A loop evaluates its typed success condition at its declared boundary.
+8. A false result can follow declared feedback and start another bounded iteration.
+9. The workflow completes only when its required graph components reach a valid terminal result.
 
 ## Example: check, route, and repair
 
@@ -221,6 +224,7 @@ The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24
 ## Documentation
 
 - [Product and technical specification](docs/product-spec.md)
+- [Automatic graph authoring model](docs/automatic-graph-authoring.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [Loop-region product model](docs/loop-region-product-model.md)
 - [M4 executable bounded iteration regions plan](docs/m4-vertical-slice-plan.md)
