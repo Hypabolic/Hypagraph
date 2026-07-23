@@ -72,10 +72,20 @@ const definitionLines = (definition: CheckDefinition | undefined): string[] => {
     lines.push(`Assertion: ${definition.assertion.kind}`);
     lines.push(`Namespace: ${definition.namespace}`);
   } else if (definition.kind === "metric-report") {
-    lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
+    const protectedEvaluator = definition.evaluation !== undefined
+      && definition.evaluation.feedback.exposeRawReport !== true;
+    lines.push(protectedEvaluator
+      ? "Command: protected evaluator command"
+      : `Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
     lines.push(`Report: ${definition.reportPath}`);
     lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
     lines.push(`Metric mappings: ${definition.mappings.length}`);
+    if (definition.evaluation) {
+      lines.push(`Evaluation kind: ${definition.evaluation.kind}`);
+      lines.push(`Feedback: ${definition.evaluation.feedback.mode}`);
+      if (definition.evaluation.feedback.maximumDiagnosticItems !== undefined) lines.push(`Diagnostic limit: ${definition.evaluation.feedback.maximumDiagnosticItems}`);
+      lines.push(`Raw report: ${definition.evaluation.feedback.exposeRawReport === true ? "public" : "protected"}`);
+    }
   } else {
     lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
     lines.push(`Report: ${definition.reportPath}`);
@@ -105,6 +115,14 @@ export function formatPiCheckResult(state: HypagraphState, nodeId: string, resul
   );
   if (facts.length === 0) lines.push("- none");
   else for (const fact of facts) lines.push(`- ${fact.name} = ${formatValue(fact.value)}`);
+  if (result.evaluation) {
+    lines.push(`Evaluation: ${result.evaluation.kind}`);
+    lines.push(`Feedback mode: ${result.evaluation.feedbackMode}`);
+    lines.push("Diagnostics:");
+    if (result.evaluation.diagnostics.length === 0) lines.push("- none");
+    else for (const diagnostic of result.evaluation.diagnostics) lines.push(`- ${diagnostic.code}: ${diagnostic.message}`);
+    if (result.evaluation.diagnosticsTruncated) lines.push("- More diagnostics were not shown.");
+  }
   lines.push(`Stdout: ${result.stdoutRef ?? "none"}`);
   lines.push(`Stderr: ${result.stderrRef ?? "none"}`);
   if (result.error) lines.push(`${result.status === "failed" ? "Assertion/check failure" : "Error"}: ${result.error}`);

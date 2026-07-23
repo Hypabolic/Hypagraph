@@ -6,6 +6,7 @@ import type {
   NodeStatus,
   WorkflowPhase,
 } from "../domain/model.js";
+import { evaluationBudgetStatus } from "../domain/evaluation-policy.js";
 
 export type GraphEdgeKind = "dependency" | "route" | "feedback";
 export type GraphRouteOutcome = "true" | "false";
@@ -79,6 +80,18 @@ export interface GraphViewComponent {
   loopIds: string[];
 }
 
+
+export interface GraphViewEvaluationBudget {
+  counts: { total: number; development: number; probe: number; holdout: number };
+  limits: {
+    maximumEvaluations?: number;
+    maximumDevelopmentEvaluations?: number;
+    maximumProbeEvaluations?: number;
+    maximumHoldoutEvaluations?: number;
+  };
+  remaining: { total?: number; development?: number; probe?: number; holdout?: number };
+}
+
 export interface GraphViewModel {
   workflowId: string;
   revision: number;
@@ -91,6 +104,7 @@ export interface GraphViewModel {
   components?: GraphViewComponent[];
   readyNodeIds: string[];
   activeNodeId?: string;
+  evaluationBudget?: GraphViewEvaluationBudget;
 }
 
 const ACTIVE_STATUSES = new Set<NodeStatus>(["starting", "running", "awaiting_evidence", "verifying"]);
@@ -276,6 +290,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
 
   const readyNodeIds = nodes.filter((node) => node.ready).map((node) => node.id);
   const activeNodeId = nodes.find((node) => node.active)?.id;
+  const evaluationBudget = evaluationBudgetStatus(state);
 
   return {
     workflowId: state.workflowId,
@@ -289,6 +304,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
     components,
     readyNodeIds,
     ...(activeNodeId === undefined ? {} : { activeNodeId }),
+    ...(evaluationBudget === undefined ? {} : { evaluationBudget }),
   };
 }
 

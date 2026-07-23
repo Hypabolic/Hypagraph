@@ -22,6 +22,7 @@ import { buildOutgoing } from "./scc.js";
 import { sha256 } from "./hash.js";
 import { validateDefinition } from "./validate.js";
 import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./workflow-outcome.js";
+import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEvaluationKind } from "./evaluation-policy.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -338,9 +339,22 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       const eligibility = evaluateCheckStart(node, definitionNode.check, command.attemptId, command.at);
       if (!eligibility.ok) return { ok: false, diagnostics: [eligibility.diagnostic] };
       if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
+      const evaluationKind = definitionNode.check.kind === "metric-report" ? metricEvaluationKind(definitionNode.check) : undefined;
+      if (evaluationKind) {
+        const budgetDiagnostic = evaluationStartDiagnostic(state.definition, state.runtime.evaluations, evaluationKind);
+        if (budgetDiagnostic) return reject(budgetDiagnostic.code, budgetDiagnostic.message, "evaluation.budget");
+      }
       const prepared = prepareLoopStart(next, events, command, command.nodeId);
       if ("ok" in prepared) return prepared;
       next = prepared.state;
+      if (evaluationKind) {
+        next = append(next, events, command, {
+          type: "hypagraph.evaluation.started",
+          nodeId: command.nodeId,
+          attemptId: command.attemptId,
+          data: { kind: evaluationKind },
+        });
+      }
       next = append(next, events, command, {
         type: "hypagraph.check.started",
         nodeId: command.nodeId,
@@ -414,10 +428,13 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         const evaluationFailed = evaluation.evaluationError !== undefined;
         const invalidLimitReached = !evaluationFailed && !evaluation.valid && loopDefinition.evaluation !== undefined && evaluation.invalidEvaluationCount >= loopDefinition.evaluation.maximumInvalidEvaluations;
         const completes = !evaluationFailed && evaluation.valid && command.passed && evaluation.success;
-        const exhausted = !evaluationFailed && !completes && !invalidLimitReached && !!loopRuntime && evaluation.iteration >= loopRuntime.maxIterations;
-        const patienceExhausted = !evaluationFailed && evaluation.valid && !completes && !exhausted && loopDefinition.patience !== undefined && evaluation.noProgressCount >= loopDefinition.patience;
-        const canContinue = !evaluationFailed && !completes && !invalidLimitReached && !exhausted && !patienceExhausted && (!evaluation.valid || !evaluation.success) && !!loopRuntime;
-        const exitReason = evaluationFailed ? "evaluation_error" : invalidLimitReached ? "invalid_evaluations" : exhausted ? "max_iterations" : patienceExhausted ? "no_progress" : undefined;
+        const evaluatorCheck = next.definition.nodes.find((item) => item.id === loopDefinition.evaluateAfter)?.check;
+        const evaluatorKind = evaluatorCheck?.kind === "metric-report" ? metricEvaluationKind(evaluatorCheck) : undefined;
+        const evaluationBudgetExhausted = !evaluationFailed && !completes && !invalidLimitReached && evaluatorKind !== undefined && evaluationBudgetExhaustedForKind(next, evaluatorKind);
+        const exhausted = !evaluationFailed && !completes && !invalidLimitReached && !evaluationBudgetExhausted && !!loopRuntime && evaluation.iteration >= loopRuntime.maxIterations;
+        const patienceExhausted = !evaluationFailed && evaluation.valid && !completes && !evaluationBudgetExhausted && !exhausted && loopDefinition.patience !== undefined && evaluation.noProgressCount >= loopDefinition.patience;
+        const canContinue = !evaluationFailed && !completes && !invalidLimitReached && !evaluationBudgetExhausted && !exhausted && !patienceExhausted && (!evaluation.valid || !evaluation.success) && !!loopRuntime;
+        const exitReason = evaluationFailed ? "evaluation_error" : invalidLimitReached ? "invalid_evaluations" : evaluationBudgetExhausted ? "evaluation_budget" : exhausted ? "max_iterations" : patienceExhausted ? "no_progress" : undefined;
         const decision = completes ? "complete" : canContinue ? "continue" : exitReason ? "fail" : "pending";
         next = append(next, events, command, {
           type: "hypagraph.loop.evaluated",
@@ -470,6 +487,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
               exitReason,
               failurePolicy,
               invalidEvaluationCount: evaluation.invalidEvaluationCount,
+              ...(next.runtime.evaluations === undefined ? {} : { evaluationCounts: structuredClone(next.runtime.evaluations) }),
               ...(loopDefinition.evaluation === undefined ? {} : { maximumInvalidEvaluations: loopDefinition.evaluation.maximumInvalidEvaluations }),
               ...(evaluation.evaluationError === undefined ? {} : { error: evaluation.evaluationError }),
             },
