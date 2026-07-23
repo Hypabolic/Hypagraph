@@ -61,10 +61,12 @@ const validReport = JSON.stringify({
   numPassedTests: 2,
   numFailedTests: 0,
   numPendingTests: 0,
+  startTime: 100,
+  testResults: [{ endTime: 125 }],
 });
 
 describe("M3.1 executable report checks", () => {
-  it("runs a producer, stores the report, and publishes collision-free facts", async () => {
+  it("runs a producer, stores the report, and publishes collision-free canonical facts", async () => {
     const workspace = await root();
     await writeFile(join(workspace, "vitest.json"), validReport, "utf8");
     const store = new MemoryCheckArtifactStore();
@@ -82,6 +84,7 @@ describe("M3.1 executable report checks", () => {
     expect(result.facts).toContainEqual(expect.objectContaining({ name: "tests.success", value: true }));
     expect(result.facts).toContainEqual(expect.objectContaining({ name: "tests.passed", value: 2 }));
     expect(result.facts).toContainEqual(expect.objectContaining({ name: "tests.suites.passed", value: 1 }));
+    expect(result.facts).toContainEqual(expect.objectContaining({ name: "tests.duration-ms", value: 25 }));
     expect(new Set(result.facts.map((fact) => fact.name)).size).toBe(result.facts.length);
     expect(result.evidence.at(-1)?.summary).toBe("vitest-json report.");
   });
