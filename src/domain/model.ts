@@ -188,6 +188,11 @@ export interface LoopProgressDefinition {
   minDelta?: number;
 }
 
+export interface LoopEvaluationDefinition {
+  validWhen: Condition;
+  maximumInvalidEvaluations: number;
+}
+
 export type LoopFailurePolicy = "fail-workflow" | "block-dependants" | "record-and-continue";
 
 export interface LoopDefinition {
@@ -200,12 +205,13 @@ export interface LoopDefinition {
   maxIterations: number;
   progress?: LoopProgressDefinition;
   patience?: number;
+  evaluation?: LoopEvaluationDefinition;
   failurePolicy?: LoopFailurePolicy;
 }
 
 export type LoopStatus = "pending" | "running" | "blocked" | "succeeded" | "failed" | "requires_revision";
 export type LoopDecision = "complete" | "continue" | "fail" | "pending";
-export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "evaluation_error";
+export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "invalid_evaluations" | "evaluation_error";
 
 export interface LoopIterationRuntime {
   iteration: number;
@@ -213,8 +219,10 @@ export interface LoopIterationRuntime {
   evaluatedAt?: string;
   evaluationEventId?: string;
   evaluationSequence?: number;
+  valid?: boolean;
   success?: boolean;
   factsUsed: string[];
+  validityFactsUsed?: string[];
   semanticsVersion?: number;
   decision?: LoopDecision;
   metric?: number;
@@ -222,6 +230,7 @@ export interface LoopIterationRuntime {
   bestMetric?: number;
   bestIteration?: number;
   noProgressCount?: number;
+  invalidEvaluationCount?: number;
 }
 
 export interface LoopRuntime {
@@ -230,13 +239,16 @@ export interface LoopRuntime {
   currentIteration: number;
   maxIterations: number;
   iterations: LoopIterationRuntime[];
+  lastValid?: boolean;
   lastSuccess?: boolean;
   factsUsed: string[];
+  validityFactsUsed?: string[];
   semanticsVersion?: number;
   currentMetric?: number;
   bestMetric?: number;
   bestIteration?: number;
   noProgressCount?: number;
+  invalidEvaluationCount?: number;
   startedAt?: string;
   completedAt?: string;
   exitReason?: LoopExitReason;
