@@ -129,7 +129,8 @@ describe("M5A Slice 2 evaluation validity", () => {
       invalidEvaluationCount: 1,
       status: "running",
     });
-    expect(state.runtime.loops["quality-loop"]?.iterations[2]).toMatchObject({ valid: false, success: false, metric: 100, improved: undefined, noProgressCount: 1 });
+    expect(state.runtime.loops["quality-loop"]?.iterations[2]).toMatchObject({ valid: false, success: false, metric: 100, noProgressCount: 1 });
+    expect(state.runtime.loops["quality-loop"]?.iterations[2]?.improved).toBeUndefined();
 
     state = iteration(state, events, 4, { valid: false, accepted: true, score: 200 });
     expect(state.phase).toBe("failed");
