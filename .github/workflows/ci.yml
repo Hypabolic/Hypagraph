@@ -1,6 +1,5 @@
 name: CI
 
-# Temporary Slice 7 preparation runs before the normal matrix.
 on:
   workflow_dispatch:
   pull_request:
@@ -13,13 +12,13 @@ permissions:
 
 jobs:
   prepare-slice-7:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening-current'
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-final'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the Slice 7 branch
         uses: actions/checkout@v4
         with:
-          ref: agent/m4-slice-7-recovery-hardening-current
+          ref: agent/m4-slice-7-final
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -74,7 +73,7 @@ jobs:
             echo "Slice 7 product files are already current."
           else
             git commit -m "Implement M4 Slice 7 recovery hardening"
-            git push origin HEAD:agent/m4-slice-7-recovery-hardening-current
+            git push origin HEAD:agent/m4-slice-7-final
           fi
 
   check:
