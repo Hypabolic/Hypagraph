@@ -2,7 +2,7 @@
 
 **Give your coding agent a plan it can execute, inspect, and prove.**
 
-Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It automatically turns an ordinary coding request or an existing plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
+Hypagraph is a graph-workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It automatically turns an ordinary coding request or an existing plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
 
 Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works. The user does not have to design the graph or use graph terminology.
 
@@ -23,8 +23,9 @@ Coding agents often start with a reasonable plan, then lose structure as the ses
 - **Control execution:** dependencies decide which nodes are ready.
 - **Prove completion:** tasks require evidence and checks record their results.
 - **Route from facts:** gates select branches from typed check output.
-- **Run bounded iteration:** declared loop regions have typed success conditions, hard limits, and optional progress and patience rules.
-- **Resume safely:** workflow state is stored in the Pi session and rebuilt on restore.
+- **Run bounded iteration:** loop regions have typed success conditions, hard limits, optional progress metrics, patience, and explicit outcome policies.
+- **Compose independent work:** a loop can connect to the wider graph or run as an independent top-level component.
+- **Resume safely:** workflow state is stored in the Pi session and rebuilt without rerunning completed commands.
 
 Hypagraph is useful for repository changes that have dependencies, conditional paths, mandatory checks, or bounded repeated work.
 
@@ -78,27 +79,59 @@ Open the live graph:
 /hypagraph graph
 ```
 
-Show a compact workflow summary:
+Show the current workflow:
 
 ```text
 /hypagraph
 ```
 
-A typical run looks like this:
+Show detailed bounded-iteration status:
+
+```text
+/hypagraph loop
+```
+
+A typical run works like this:
 
 1. The bundled skill compiles the user's request or plan into a workflow graph.
 2. Hypagraph validates and stores the graph.
-3. The first dependency-free nodes, including eligible loop entries, become ready.
-4. The agent completes a task and submits evidence.
+3. Dependency-free nodes and eligible loop entries become ready.
+4. The agent completes tasks and submits evidence.
 5. Checks or task nodes publish typed facts.
 6. Gates select deterministic routes from those facts.
 7. A loop evaluates its typed success condition at its declared boundary.
 8. A false result can follow declared feedback and start another bounded iteration.
-9. The workflow completes only when its required graph components reach a valid terminal result.
+9. Progress and patience rules can stop an unproductive region before its hard limit.
+10. Each failed region applies its declared workflow outcome policy.
+11. The workflow completes only when its required graph components reach valid terminal results.
+
+## Bounded iteration is generic
+
+A loop is a first-class bounded iteration region. It is not a repair command and repair is not its default purpose.
+
+The same model can represent:
+
+- refinement and optimization;
+- bounded batch processing;
+- search and repeated evaluation;
+- reconciliation and migration;
+- polling with a hard stop;
+- test-and-repair as one pattern among many.
+
+Each region declares:
+
+- an entry and evaluation boundary;
+- typed success conditions;
+- feedback edges;
+- a mandatory maximum iteration count;
+- an optional numeric progress metric and patience;
+- a failure policy: `fail-workflow`, `block-dependants`, or `record-and-continue`.
+
+Facts, attempts, routes, evidence, progress, and resets are scoped to the current loop and iteration. A disconnected loop appears as its own graph component and cannot reset or satisfy unrelated work.
 
 ## Example: check, route, and repair
 
-Repair is one common use of an iteration region. It is not a special loop type.
+Repair remains a useful example, but it is not a special loop type.
 
 The repository includes a complete [command-check gate example](examples/command-check-gate.json). It models this workflow:
 
@@ -119,11 +152,10 @@ Use examples/command-check-gate.json as the basis for a Hypagraph workflow for t
 
 ## Working with the graph pane
 
-Use these commands inside Pi:
-
 | Command | Action |
 | --- | --- |
 | `/hypagraph` | Show the active workflow state. |
+| `/hypagraph loop` | Show canonical loop state, progress, outcome policy, and exit details. |
 | `/hypagraph graph` | Open or focus the live graph pane. |
 | `/hypagraph graph toggle` | Open or close the graph pane. |
 | `/hypagraph graph focus` | Give keyboard focus to the pane. |
@@ -143,7 +175,7 @@ Graph pane controls:
 | Escape | Release focus on a wide terminal. |
 | `q` | Close the pane. |
 
-On wide terminals, Hypagraph uses a passive right-side pane. On narrow terminals, it opens a full-screen graph view.
+On wide terminals, Hypagraph uses a passive right-side pane. On narrow terminals, it opens a full-screen graph view. The pane is read-only and cannot select a loop decision.
 
 ## What a workflow can contain
 
@@ -161,7 +193,7 @@ A gate evaluates a typed condition against facts produced by earlier nodes. It s
 
 ### Bounded iteration regions
 
-A loop declares feedback, an iteration region, a typed success condition, and a hard iteration limit. It can model refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, or test-and-repair work. A loop can connect to the main graph or form an independent graph component.
+A loop declares feedback, an iteration region, a typed success condition, and a hard iteration limit. It can connect to the main graph or form an independent graph component.
 
 ## Session safety and recovery
 
@@ -182,30 +214,31 @@ store facts
 store raw result
     |
     v
-store verification result
+store verification and loop decision
 ```
 
-Hypagraph does not run a command when it cannot first store the check start. Session restore does not rerun a completed command. It closes an interrupted attempt or resumes verification from a stored raw result.
+Hypagraph does not run a command when it cannot first store the check start. Session restore does not rerun a completed command. It closes an interrupted attempt or resumes verification from a stored raw result. Loop decisions and next-iteration resets are committed atomically.
 
 Check output artifacts are stored under `.hypagraph/check-artifacts`. Hypagraph stores references in the event stream instead of storing large command output in the Pi session.
 
 ## Current status
 
-Hypagraph v0.4 includes:
+Hypagraph v0.5 includes:
 
-- installable Pi integration and a bundled skill;
+- installable Pi integration and a bundled automatic graph-authoring skill;
 - task, gate, and command-check nodes;
 - a live terminal graph pane;
 - typed facts and deterministic route selection;
 - durable event-based workflow state;
 - command checks with timeout, cancellation, retry policy, and artifact capture;
-- branch-aware joins and graph revision invalidation;
-- declared bounded loops and loop feedback rendering;
+- generic bounded iteration regions with deterministic feedback;
+- hard limits, numeric progress, best-result tracking, and patience;
+- independent loop components and explicit failure policies;
+- revision invalidation, cancellation blocking, restore recovery, and stale-result rejection;
+- canonical loop summaries and graph-pane loop state;
 - deterministic replay, migration, recovery, and property tests.
 
-The v0.4 release was dogfooded through the real Pi product path with a graph that included a command check, a gate, selected and skipped routes, a join, and a declared feedback loop. See the [v0.4 dogfood record](docs/v0.4-dogfood.md).
-
-M4 is in progress. Slices 1 to 7 provide generic bounded iteration regions, independent graph components, explicit failure policies, hard limits, numeric progress, revision invalidation, branch-safe persistence, cancellation blocking, and restore recovery. The remaining slices complete the Pi loop surface and dogfood v0.5.
+The v0.5 release evidence covers refinement and optimization, bounded processing, check-and-repair, disconnected regions, every failure policy, cancellation, restore, hard-limit and patience exhaustion, and stale-result rejection. See the [v0.5 dogfood record](docs/v0.5-dogfood.md).
 
 ## Develop locally
 
@@ -233,6 +266,7 @@ The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
 - [Check execution policy](docs/check-execution-policy.md)
 - [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
+- [v0.5 dogfood record](docs/v0.5-dogfood.md)
 - [v0.4 dogfood record](docs/v0.4-dogfood.md)
 - [Release notes](CHANGELOG.md)
 
