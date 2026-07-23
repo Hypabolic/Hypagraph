@@ -113,6 +113,12 @@ export interface LegacyLoopPredicate {
 
 export type LoopSuccessPredicate = Condition | LegacyLoopPredicate | string;
 
+export interface LoopProgressDefinition {
+  fact: string;
+  direction: "minimize" | "maximize";
+  minDelta?: number;
+}
+
 export interface LoopDefinition {
   id: string;
   nodes: string[];
@@ -121,12 +127,13 @@ export interface LoopDefinition {
   feedbackEdges: FeedbackEdge[];
   successWhen: LoopSuccessPredicate;
   maxIterations: number;
+  progress?: LoopProgressDefinition;
   patience?: number;
 }
 
 export type LoopStatus = "pending" | "running" | "succeeded" | "failed" | "requires_revision";
 export type LoopDecision = "complete" | "continue" | "fail" | "pending";
-export type LoopExitReason = "success" | "max_iterations";
+export type LoopExitReason = "success" | "max_iterations" | "no_progress" | "evaluation_error";
 
 export interface LoopIterationRuntime {
   iteration: number;
@@ -138,6 +145,11 @@ export interface LoopIterationRuntime {
   factsUsed: string[];
   semanticsVersion?: number;
   decision?: LoopDecision;
+  metric?: number;
+  improved?: boolean;
+  bestMetric?: number;
+  bestIteration?: number;
+  noProgressCount?: number;
 }
 
 export interface LoopRuntime {
@@ -149,6 +161,10 @@ export interface LoopRuntime {
   lastSuccess?: boolean;
   factsUsed: string[];
   semanticsVersion?: number;
+  currentMetric?: number;
+  bestMetric?: number;
+  bestIteration?: number;
+  noProgressCount?: number;
   startedAt?: string;
   completedAt?: string;
   exitReason?: LoopExitReason;

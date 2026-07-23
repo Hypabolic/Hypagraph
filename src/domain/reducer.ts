@@ -142,6 +142,12 @@ interface LoopEvaluation {
   success: boolean;
   factsUsed: string[];
   semanticsVersion: number;
+  metric?: number;
+  improved?: boolean;
+  bestMetric?: number;
+  bestIteration?: number;
+  noProgressCount: number;
+  evaluationError?: string;
 }
 
 const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvaluation | Rejection | undefined => {
@@ -152,12 +158,50 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
   if (isLegacyPredicate(definition.successWhen)) return reject("loop_predicate_revision_required", `Loop '${definition.id}' requires a typed success condition before it can run.`, `loops.${definition.id}.successWhen`);
   const result = evaluateCondition(definition.successWhen, state.runtime.facts);
   if (!result.ok) return reject(result.code, result.message, `loops.${definition.id}.successWhen`);
+  if (!definition.progress) {
+    return {
+      loopId: definition.id,
+      iteration: runtime.currentIteration,
+      success: result.value,
+      factsUsed: result.factsUsed,
+      semanticsVersion: CONDITION_SEMANTICS_VERSION,
+      noProgressCount: runtime.noProgressCount ?? 0,
+    };
+  }
+  const progressFact = state.runtime.facts[definition.progress.fact];
+  const validMetric = progressFact
+    && typeof progressFact.value === "number"
+    && Number.isFinite(progressFact.value)
+    && progressFact.loopId === definition.id
+    && progressFact.iteration === runtime.currentIteration;
+  if (!validMetric) {
+    return {
+      loopId: definition.id,
+      iteration: runtime.currentIteration,
+      success: result.value,
+      factsUsed: [...new Set([...result.factsUsed, definition.progress.fact])],
+      semanticsVersion: CONDITION_SEMANTICS_VERSION,
+      noProgressCount: runtime.noProgressCount ?? 0,
+      evaluationError: `Loop '${definition.id}' requires numeric progress fact '${definition.progress.fact}' from iteration ${runtime.currentIteration}.`,
+    };
+  }
+  const metric = progressFact.value as number;
+  const first = runtime.bestMetric === undefined;
+  const delta = first ? undefined : definition.progress.direction === "maximize" ? metric - runtime.bestMetric! : runtime.bestMetric! - metric;
+  const improved = first || (delta! > (definition.progress.minDelta ?? 0));
   return {
     loopId: definition.id,
     iteration: runtime.currentIteration,
     success: result.value,
-    factsUsed: result.factsUsed,
+    factsUsed: [...new Set([...result.factsUsed, definition.progress.fact])],
     semanticsVersion: CONDITION_SEMANTICS_VERSION,
+    metric,
+    improved,
+    ...(improved ? { bestMetric: metric, bestIteration: runtime.currentIteration } : {
+      ...(runtime.bestMetric === undefined ? {} : { bestMetric: runtime.bestMetric }),
+      ...(runtime.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
+    }),
+    noProgressCount: improved ? 0 : (runtime.noProgressCount ?? 0) + 1,
   };
 };
 
@@ -290,10 +334,14 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       next = append(next, events, command, { type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
       if (evaluation) {
         const loopRuntime = next.runtime.loops[evaluation.loopId];
-        const completes = command.passed && evaluation.success;
-        const canContinue = !evaluation.success && !!loopRuntime && evaluation.iteration < loopRuntime.maxIterations;
-        const exhausted = !completes && !canContinue && !!loopRuntime && evaluation.iteration >= loopRuntime.maxIterations;
-        const decision = completes ? "complete" : canContinue ? "continue" : exhausted ? "fail" : "pending";
+        const loopDefinition = next.definition.loops.find((loop) => loop.id === evaluation.loopId)!;
+        const evaluationFailed = evaluation.evaluationError !== undefined;
+        const completes = !evaluationFailed && command.passed && evaluation.success;
+        const exhausted = !evaluationFailed && !completes && !!loopRuntime && evaluation.iteration >= loopRuntime.maxIterations;
+        const patienceExhausted = !evaluationFailed && !completes && !exhausted && loopDefinition.patience !== undefined && evaluation.noProgressCount >= loopDefinition.patience;
+        const canContinue = !evaluationFailed && !completes && !exhausted && !patienceExhausted && !evaluation.success && !!loopRuntime;
+        const exitReason = evaluationFailed ? "evaluation_error" : exhausted ? "max_iterations" : patienceExhausted ? "no_progress" : undefined;
+        const decision = completes ? "complete" : canContinue ? "continue" : exitReason ? "fail" : "pending";
         next = append(next, events, command, {
           type: "hypagraph.loop.evaluated",
           loopId: evaluation.loopId,
@@ -305,8 +353,14 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             semanticsVersion: evaluation.semanticsVersion,
             decision,
             verificationPassed: command.passed,
+            noProgressCount: evaluation.noProgressCount,
+            ...(evaluation.metric === undefined ? {} : { metric: evaluation.metric }),
+            ...(evaluation.improved === undefined ? {} : { improved: evaluation.improved }),
+            ...(evaluation.bestMetric === undefined ? {} : { bestMetric: evaluation.bestMetric }),
+            ...(evaluation.bestIteration === undefined ? {} : { bestIteration: evaluation.bestIteration }),
+            ...(evaluation.evaluationError === undefined ? {} : { evaluationError: evaluation.evaluationError }),
             ...(failedCheckObservation ? { observationStatus: "failed" } : {}),
-            ...(exhausted ? { exitReason: "max_iterations" } : {}),
+            ...(exitReason === undefined ? {} : { exitReason }),
           },
         });
         if (completes) {
@@ -324,15 +378,16 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             },
           });
           next = appendReadyEvents(next, events, command);
-        } else if (exhausted) {
+        } else if (exitReason) {
           next = append(next, events, command, {
             type: "hypagraph.loop.failed",
             loopId: evaluation.loopId,
             data: {
               loopId: evaluation.loopId,
               iteration: evaluation.iteration,
-              maxIterations: loopRuntime.maxIterations,
-              exitReason: "max_iterations",
+              maxIterations: loopRuntime?.maxIterations ?? loopDefinition.maxIterations,
+              exitReason,
+              ...(evaluation.evaluationError === undefined ? {} : { error: evaluation.evaluationError }),
             },
           });
           next = append(next, events, command, {
@@ -340,7 +395,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             data: {
               reason: "loop_failed",
               loopId: evaluation.loopId,
-              exitReason: "max_iterations",
+              exitReason,
             },
           });
         }

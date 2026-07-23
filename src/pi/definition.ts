@@ -57,6 +57,11 @@ const nodeSchema = Type.Object({
 });
 
 const feedbackEdgeSchema = Type.Object({ from: Type.String(), to: Type.String() });
+const loopProgressSchema = Type.Object({
+  fact: Type.String(),
+  direction: StringEnum(["minimize", "maximize"] as const),
+  minDelta: Type.Optional(Type.Number({ minimum: 0 })),
+});
 const loopSchema = Type.Object({
   id: Type.String(),
   nodes: Type.Array(Type.String()),
@@ -65,6 +70,8 @@ const loopSchema = Type.Object({
   feedbackEdges: Type.Array(feedbackEdgeSchema, { minItems: 1 }),
   successWhen: conditionSchema,
   maxIterations: Type.Integer({ minimum: 1 }),
+  progress: Type.Optional(loopProgressSchema),
+  patience: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 export const definitionSchema = Type.Object({
@@ -135,6 +142,8 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       feedbackEdges: loop.feedbackEdges.map((edge) => ({ ...edge })),
       successWhen: structuredClone(loop.successWhen),
       maxIterations: loop.maxIterations,
+      ...(loop.progress === undefined ? {} : { progress: { ...loop.progress } }),
+      ...(loop.patience === undefined ? {} : { patience: loop.patience }),
     })),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };

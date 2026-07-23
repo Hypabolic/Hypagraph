@@ -306,7 +306,19 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     loopIds.add(loop.id);
     if (new Set(loop.nodes).size !== loop.nodes.length) diagnostics.push({ code: "duplicate_loop_node", message: `Loop '${loop.id}' repeats a node.`, location: `${location}.nodes` });
     if (!Number.isInteger(loop.maxIterations) || loop.maxIterations < 1) diagnostics.push({ code: "invalid_loop_limit", message: `Loop '${loop.id}' must have a positive iteration limit.`, location: `${location}.maxIterations` });
-    if (loop.patience !== undefined) diagnostics.push({ code: "loop_patience_not_available", message: `Loop '${loop.id}' cannot use patience before the M4 progress slice.`, location: `${location}.patience` });
+    if (loop.progress) {
+      const type = factTypes.get(loop.progress.fact);
+      const owner = factOwners.get(loop.progress.fact);
+      if (!type) diagnostics.push({ code: "unknown_progress_fact", message: `Loop '${loop.id}' uses undeclared progress fact '${loop.progress.fact}'.`, location: `${location}.progress.fact` });
+      else if (!numericType(type)) diagnostics.push({ code: "progress_fact_not_numeric", message: `Loop progress fact '${loop.progress.fact}' must be numeric.`, location: `${location}.progress.fact` });
+      if (owner && !loopNodes.has(owner)) diagnostics.push({ code: "progress_fact_not_in_loop", message: `Loop progress fact '${loop.progress.fact}' must be produced inside loop '${loop.id}'.`, location: `${location}.progress.fact` });
+      if (loop.progress.direction !== "minimize" && loop.progress.direction !== "maximize") diagnostics.push({ code: "invalid_progress_direction", message: `Loop '${loop.id}' progress direction must be 'minimize' or 'maximize'.`, location: `${location}.progress.direction` });
+      if (loop.progress.minDelta !== undefined && (!Number.isFinite(loop.progress.minDelta) || loop.progress.minDelta < 0)) diagnostics.push({ code: "invalid_progress_delta", message: `Loop '${loop.id}' minimum progress delta must be a finite non-negative number.`, location: `${location}.progress.minDelta` });
+    }
+    if (loop.patience !== undefined) {
+      if (!loop.progress) diagnostics.push({ code: "patience_requires_progress", message: `Loop '${loop.id}' can use patience only with a progress definition.`, location: `${location}.patience` });
+      if (!Number.isInteger(loop.patience) || loop.patience < 1) diagnostics.push({ code: "invalid_loop_patience", message: `Loop '${loop.id}' patience must be a positive integer.`, location: `${location}.patience` });
+    }
     for (const node of loop.nodes) {
       if (!ids.has(node)) diagnostics.push({ code: "dangling_loop_node", message: `Loop '${loop.id}' refers to node '${node}', but that node does not exist.`, location: `${location}.nodes` });
       const owner = claimedNodes.get(node);
