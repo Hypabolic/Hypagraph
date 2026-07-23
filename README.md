@@ -221,6 +221,7 @@ The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
 - [M4 executable bounded loops plan](docs/m4-vertical-slice-plan.md)
+- [Trusted evaluation contracts and loss functions](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal plan](docs/hypagoal-vertical-slice-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
 - [Check execution policy](docs/check-execution-policy.md)
