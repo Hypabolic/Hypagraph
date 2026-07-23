@@ -33,7 +33,7 @@ describe("M3.1 test report result adapter", () => {
     if (!adapted.ok) return;
     expect(adapted.result.checkKind).toBe("test-report");
     expect(adapted.result.facts).toContainEqual({
-      name: "tests.tests.total",
+      name: "tests.total",
       type: "integer",
       value: 5,
       evidence: commandResult().evidence,
