@@ -1,5 +1,6 @@
 name: CI
 
+# Temporary Slice 7 preparation runs before the normal matrix.
 on:
   workflow_dispatch:
   pull_request:
