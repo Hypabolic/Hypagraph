@@ -12,7 +12,7 @@
 
 This plan adds trusted evaluation contracts to Hypagraph.
 
-M4 already adds the runtime part of a loss function. It adds a numeric progress fact, a minimize or maximize direction, a minimum improvement value, best-result tracking, patience, and a no-progress stop reason.
+M4 already adds the runtime part of a loss function. It adds a numeric progress fact, a minimize or maximize direction, a minimum improvement value, best-result tracking, patience, and a no-progress stop reason for any bounded iteration region.
 
 That runtime can compare values. It does not prove that a value is a trustworthy measure of progress.
 
@@ -28,6 +28,10 @@ Hypagraph must add a controlled evaluation surface that can:
 - record evaluation history for replay.
 
 This work is a foundation for optimization-grade Hypagoal workflows.
+
+A trusted evaluation contract can run inside the evaluated iteration region or in a separate graph component. The graph must connect the evaluator through explicit facts or artifacts when its result controls another region.
+
+This capability applies to refinement, optimization, search, repeated evaluation, and repair. It must not make repair the default loop purpose.
 
 ## 2. Decision
 
