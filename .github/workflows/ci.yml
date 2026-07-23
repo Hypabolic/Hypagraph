@@ -12,13 +12,13 @@ permissions:
 
 jobs:
   prepare-slice-7:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening'
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening-current'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the Slice 7 branch
         uses: actions/checkout@v4
         with:
-          ref: agent/m4-slice-7-recovery-hardening
+          ref: agent/m4-slice-7-recovery-hardening-current
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -48,7 +48,20 @@ jobs:
         run: npm install
 
       - name: Run type checks and tests
-        run: npm run check
+        shell: bash
+        run: |
+          set +e
+          npm run check > slice7-check.log 2>&1
+          status=$?
+          cat slice7-check.log
+          exit $status
+
+      - name: Upload Slice 7 check log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-slice7-check-log
+          path: slice7-check.log
 
       - name: Commit Slice 7 product files
         shell: bash
@@ -60,7 +73,7 @@ jobs:
             echo "Slice 7 product files are already current."
           else
             git commit -m "Implement M4 Slice 7 recovery hardening"
-            git push origin HEAD:agent/m4-slice-7-recovery-hardening
+            git push origin HEAD:agent/m4-slice-7-recovery-hardening-current
           fi
 
   check:
