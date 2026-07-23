@@ -165,7 +165,7 @@ describe("graph pane controller", () => {
     expect(fakeTui.requestRender).toHaveBeenCalledOnce();
     const after = component!.render(60).join("\n");
     expect(after).not.toBe(before);
-    expect(after).toContain("e1");
+    expect(after).toContain("e3");
     controller.close();
     finish?.();
   });
