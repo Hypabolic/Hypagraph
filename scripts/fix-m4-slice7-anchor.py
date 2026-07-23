@@ -1,61 +1,51 @@
 from pathlib import Path
 
-# Update one-off migration anchors and stale Slice 3 expectations. This file is removed before merge.
-path = Path("scripts/apply-m4-slice7.py")
-text = path.read_text()
+# Replace the old generator with one final idempotent hardening pass.
+Path("scripts/apply-m4-slice7.py").write_text(r'''from pathlib import Path
 
-old_ui = """replace_once(
-    \"src/ui/format.ts\",
-    '''      lines.push(`- ${loop.id}: ${runtime?.status ?? \"pending\"} - policy ${loop.failurePolicy ?? \"fail-workflow\"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : \"\"}${progress}`);''',
-    '''      lines.push(`- ${loop.id}: ${runtime?.status ?? \"pending\"} - policy ${loop.failurePolicy ?? \"fail-workflow\"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : \"\"}${runtime?.blockedReason ? ` - ${runtime.blockedReason}` : \"\"}${progress}`);''',
-)
-"""
-new_ui = """replace_once(
-    \"src/ui/format.ts\",
-    '''      lines.push(`- ${loop.id}: ${runtime?.status ?? \"pending\"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : \"\"} - policy ${loopFailurePolicy(loop)}${progress}`);''',
-    '''      lines.push(`- ${loop.id}: ${runtime?.status ?? \"pending\"} - iteration ${runtime?.currentIteration ?? 0}/${loop.maxIterations}${runtime?.exitReason ? ` - ${runtime.exitReason}` : \"\"} - policy ${loopFailurePolicy(loop)}${runtime?.blockedReason ? ` - ${runtime.blockedReason}` : \"\"}${progress}`);''',
-)
-"""
-if old_ui in text:
-    text = text.replace(old_ui, new_ui, 1)
-elif new_ui not in text:
-    raise SystemExit("Could not find the Slice 7 UI migration block.")
 
-snippet = r"""
-# Align existing cancellation and interruption tests with the accepted blocked-region rule.
+def replace_once(path: str, old: str, new: str) -> None:
+    file = Path(path)
+    text = file.read_text()
+    if old in text:
+        file.write_text(text.replace(old, new, 1))
+        return
+    if new not in text:
+        raise SystemExit(f"Required text was not found in {path}")
+
+
 replace_once(
-    "tests/loop-check-recovery.test.ts",
-    '''    expect(recovered.state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1 });
-    expect(recovered.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);''',
-    '''    expect(recovered.state.runtime.loops.repair).toMatchObject({ status: "blocked", currentIteration: 1, blockedAttemptId: "test-1" });
-    expect(recovered.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);
-    expect(recovered.events.some((event) => event.type === "hypagraph.loop.blocked")).toBe(true);''',
+    "src/domain/projection.ts",
+    '''    case "hypagraph.workflow.revised": {
+      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);''',
+    '''    case "hypagraph.workflow.revised": {
+      next.phase = "running";
+      next.definition = normaliseDefinition(event.data.definition as HypagraphDefinition);''',
 )
-replace_once(
-    "tests/loop-check-repair.test.ts",
-    '''      expect(lifecycle.state.runtime.nodes.test?.status).toBe("failed");
-      expect(lifecycle.state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1 });
-      expect(lifecycle.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);''',
-    '''      expect(lifecycle.state.runtime.nodes.test?.status).toBe("failed");
-      const blocksRegion = status === "cancelled" || status === "interrupted";
-      expect(lifecycle.state.runtime.loops.repair).toMatchObject({ status: blocksRegion ? "blocked" : "running", currentIteration: 1 });
-      expect(lifecycle.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);
-      expect(lifecycle.events.some((event) => event.type === "hypagraph.loop.blocked")).toBe(blocksRegion);''',
-)
+
 replace_once(
     "tests/loop-revision-recovery.test.ts",
-    '''    expect(cancelled.state.phase).toBe("blocked");
-    expect(cancelled.state.runtime.loops.region).toMatchObject({ status: "blocked", blockedAttemptId: "work-cancel", blockedReason: "Stop this iteration." });''',
-    '''    expect(cancelled.state.phase).toBe("running");
-    expect(cancelled.state.runtime.nodes.outside?.status).toBe("ready");
-    expect(cancelled.state.runtime.loops.region).toMatchObject({ status: "blocked", blockedAttemptId: "work-cancel", blockedReason: "Stop this iteration." });''',
+    '''  it("preserves an unchanged completed loop when unrelated work changes", () => {''',
+    '''  it("restarts a failed fail-workflow loop after a relevant revision", () => {
+    const created = createWorkflow(definition(), at, "workflow-failed-loop-revision");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    const events = [...created.events];
+    let state = completeRegion(created.state, events, false);
+    state = completeRegion(state, events, false);
+    expect(state.phase).toBe("failed");
+    expect(state.runtime.loops.region).toMatchObject({ status: "failed", currentIteration: 2, exitReason: "max_iterations" });
+
+    const revised = handleCommand(state, { type: "revise", definition: definition(3), commandId: "revise-failed-loop", at });
+    if (!revised.ok) throw new Error(JSON.stringify(revised.diagnostics));
+    expect(revised.state.phase).toBe("running");
+    expect(revised.state.runtime.loops.region).toMatchObject({ status: "pending", currentIteration: 0, maxIterations: 3 });
+    expect(revised.state.runtime.nodes.work?.status).toBe("ready");
+
+    const restarted = handleCommand(revised.state, { type: "start-node", nodeId: "work", attemptId: "work-after-failure", commandId: "restart-after-failure", at });
+    if (!restarted.ok) throw new Error(JSON.stringify(restarted.diagnostics));
+    expect(restarted.state.runtime.loops.region).toMatchObject({ status: "running", currentIteration: 1 });
+  });
+
+  it("preserves an unchanged completed loop when unrelated work changes", () => {''',
 )
-
-"""
-marker = "for path in [\n"
-if snippet not in text:
-    if marker not in text:
-        raise SystemExit("Could not find the Slice 7 final scan marker.")
-    text = text.replace(marker, snippet + marker, 1)
-
-path.write_text(text)
+''')
