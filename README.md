@@ -2,17 +2,17 @@
 
 **Give your coding agent a plan it can execute, inspect, and prove.**
 
-Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It turns a coding plan into an explicit graph of tasks, checks, decisions, and bounded repair loops.
+Hypagraph is a graph workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It turns a coding plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
 
 Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works.
 
 ```mermaid
 flowchart LR
-    A[Implement change] --> B[Run checks]
-    B --> C{Checks pass?}
-    C -- Yes --> D[Document result]
-    C -- No --> E[Repair failure]
-    E -. bounded retry .-> B
+    A[Prepare candidate] --> B[Evaluate result]
+    B --> C{Success condition met?}
+    C -- Yes --> D[Publish result]
+    C -- No --> E[Start next iteration]
+    E -. bounded feedback .-> A
 ```
 
 ## Why use Hypagraph?
@@ -23,10 +23,10 @@ Coding agents often start with a reasonable plan, then lose structure as the ses
 - **Control execution:** dependencies decide which nodes are ready.
 - **Prove completion:** tasks require evidence and checks record their results.
 - **Route from facts:** gates select branches from typed check output.
-- **Bound repair cycles:** declared loops have explicit limits and success conditions.
+- **Run bounded iteration:** declared loop regions have typed success conditions, hard limits, and optional progress and patience rules.
 - **Resume safely:** workflow state is stored in the Pi session and rebuilt on restore.
 
-Hypagraph is useful for repository changes that have dependencies, conditional paths, mandatory checks, or repeat-until-passing work.
+Hypagraph is useful for repository changes that have dependencies, conditional paths, mandatory checks, or bounded repeated work.
 
 ## Install
 
@@ -57,15 +57,15 @@ Open Pi in a repository and describe the work as a graph. You do not need to wri
 For example:
 
 ```text
-Create a Hypagraph workflow for this change:
+Create a Hypagraph workflow for this migration:
 
-1. Inspect the current authentication flow.
-2. Implement refresh-token rotation.
-3. Run the repository checks.
-4. If the checks fail, repair the implementation and run them again.
-5. When the checks pass, update the authentication documentation.
+1. Inspect the modules that still use the old parser.
+2. Migrate one bounded batch of modules.
+3. Run compatibility checks and publish migration.remaining.
+4. Continue the batch loop until migration.remaining is zero.
+5. Update the migration record.
 
-Limit the repair loop to three iterations. Keep implementation changes inside src/auth/** and tests/auth/**.
+Limit the batch loop to six iterations. Keep changes inside src/parser/** and tests/parser/**.
 ```
 
 The agent can define the workflow with Hypagraph, then execute only the nodes that are ready.
@@ -85,15 +85,17 @@ Show a compact workflow summary:
 A typical run looks like this:
 
 1. Hypagraph validates and stores the graph.
-2. The first dependency-free nodes become ready.
+2. The first dependency-free nodes, including eligible loop entries, become ready.
 3. The agent completes a task and submits evidence.
-4. Hypagraph runs the declared command check.
-5. The check publishes typed facts such as `tests.passed`.
-6. A gate selects the success or repair route.
-7. A failed route can enter a bounded repair loop.
-8. The workflow completes only when its selected path is complete.
+4. Checks or task nodes publish typed facts.
+5. Gates select deterministic routes from those facts.
+6. A loop evaluates its typed success condition at its declared boundary.
+7. A false result can follow declared feedback and start another bounded iteration.
+8. The workflow completes only when its required graph components reach a valid terminal result.
 
 ## Example: check, route, and repair
+
+Repair is one common use of an iteration region. It is not a special loop type.
 
 The repository includes a complete [command-check gate example](examples/command-check-gate.json). It models this workflow:
 
@@ -154,9 +156,9 @@ A command check runs a deterministic local command such as `npm run check`. It s
 
 A gate evaluates a typed condition against facts produced by earlier nodes. It selects and persists one route while skipping the other route.
 
-### Bounded loops
+### Bounded iteration regions
 
-A loop declares a feedback edge, an iteration region, a success condition, and a hard iteration limit. Hypagraph can use it for test-and-repair work without allowing an unbounded agent loop.
+A loop declares feedback, an iteration region, a typed success condition, and a hard iteration limit. It can model refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, or test-and-repair work. A loop can connect to the main graph or form an independent graph component.
 
 ## Session safety and recovery
 
@@ -200,7 +202,7 @@ Hypagraph v0.4 includes:
 
 The v0.4 release was dogfooded through the real Pi product path with a graph that included a command check, a gate, selected and skipped routes, a join, and a declared feedback loop. See the [v0.4 dogfood record](docs/v0.4-dogfood.md).
 
-M4 is in progress. Slices 1 to 5 provide multi-iteration task and check repair loops, hard iteration limits, numeric progress metrics, best-result tracking, and patience failure. Later slices add recovery hardening and the complete Pi loop surface.
+M4 is in progress. Slices 1 to 5 provide generic multi-iteration regions, hard iteration limits, numeric progress metrics, best-result tracking, and patience failure. Later slices add independent-region outcome policy, recovery hardening, and the complete Pi loop surface.
 
 ## Develop locally
 
@@ -220,7 +222,8 @@ The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24
 
 - [Product and technical specification](docs/product-spec.md)
 - [Execution plan and roadmap](docs/execution-roadmap.md)
-- [M4 executable bounded loops plan](docs/m4-vertical-slice-plan.md)
+- [Loop-region product model](docs/loop-region-product-model.md)
+- [M4 executable bounded iteration regions plan](docs/m4-vertical-slice-plan.md)
 - [Trusted evaluation contracts and loss functions](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal plan](docs/hypagoal-vertical-slice-plan.md)
 - [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)

@@ -25,7 +25,7 @@ At version 1.0, Hypagraph must:
 4. Run deterministic checks.
 5. Publish typed facts.
 6. Evaluate routes without model judgement.
-7. Run bounded repair loops.
+7. Run bounded iteration regions for refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, and repair.
 8. Store an append-only event history.
 9. Rebuild state from events.
 10. Show live and historical execution in Pi.
@@ -98,7 +98,7 @@ All repository text must follow `AGENTS.md`.
 | M1 | v0.2 | Event-driven finite-state runtime |
 | M2 | v0.3 | Typed facts and deterministic gates |
 | M3 | v0.4 | Deterministic check execution |
-| M4 | v0.5 | Executable bounded loops |
+| M4 | v0.5 | Executable bounded iteration regions |
 | M5 | v0.6 | Event history, replay, and debugger UI |
 | M6 | v0.7 | Executor abstraction and isolated Pi execution |
 | M7 | v0.8 | Workspace integration and bounded concurrency |
@@ -415,18 +415,21 @@ M4 is selected before the M3.1 parser adapters.
 
 Execute declared cyclic regions as deterministic bounded iteration regions.
 
-A valid v0.5 loop has one entry, one evaluation boundary, typed success rules, declared feedback, a hard iteration limit, and optional numeric progress and patience rules.
+A valid v0.5 loop has one entry, one evaluation boundary, typed success rules, declared feedback, a hard iteration limit, optional numeric progress and patience rules, and an explicit failure policy.
+
+A loop can be connected to the main graph or be an independent graph component. Repair is one use case. It is not a loop type.
 
 ## Vertical slices
 
 1. Execute one successful iteration.
 2. Follow feedback and start iteration 2.
-3. Run a check-driven repair loop.
+3. Support a failed evaluation check as one loop observation.
 4. Enforce the hard iteration limit.
 5. Add progress, loss, best result, and patience.
-6. Harden revision, cancellation, and recovery.
-7. Complete the Pi loop product surface.
-8. Dogfood and release v0.5.
+6. Add independent loop regions and explicit outcome policy.
+7. Harden revision, cancellation, and recovery.
+8. Complete the Pi loop product surface.
+9. Dogfood and release v0.5.
 
 ## Loop state
 
@@ -441,7 +444,9 @@ Track:
 - no-progress count and patience;
 - selected feedback edge;
 - iteration history;
-- exit reason.
+- exit reason;
+- failure policy;
+- graph-component identity.
 
 Success and progress are different values.
 
@@ -453,7 +458,7 @@ A loop can improve without succeeding. A loop can also satisfy its success condi
 - [ ] The runtime executes only structured declared loop regions.
 - [ ] A false success condition follows only declared feedback.
 - [ ] Current facts and gate routes do not leak into a later iteration.
-- [ ] A failed evaluation check can drive a repair iteration.
+- [ ] A failed evaluation check can provide a valid loop observation.
 - [ ] The runtime stops at the hard limit.
 - [ ] The runtime can stop after no progress.
 - [ ] The runtime stores each iteration result and best metric.
@@ -461,6 +466,9 @@ A loop can improve without succeeding. A loop can also satisfy its success condi
 - [ ] Restore does not run a node or check.
 - [ ] Replay gives the same loop decision and state hash.
 - [ ] Pi shows current iteration, progress, and exit reason.
+- [ ] Two disconnected loop regions can run without state coupling.
+- [ ] A loop failure policy determines its effect on the workflow and its dependants.
+- [ ] The domain model and public guidance do not assign repair semantics to loops.
 - [ ] The v0.5 dogfood and release checks pass.
 
 ---
@@ -548,7 +556,7 @@ The executor cannot change the graph.
 
 ## Objective
 
-Run independent delegated nodes safely.
+Run independent delegated nodes and loop regions safely.
 
 ## Workspace rules
 
@@ -579,7 +587,8 @@ Do not run attempts together when they have:
 ## M7 acceptance criteria
 
 - Independent nodes can run together.
-- Conflicting nodes cannot run together.
+- Independent loop regions can overlap in execution when budgets permit.
+- Conflicting nodes and loop regions cannot run together.
 - Integration failure is separate from execution failure.
 - Post-integration checks run before completion.
 - A stale result cannot integrate.
@@ -639,7 +648,7 @@ Hypagraph can release version 1.0 when:
 - event replay is deterministic;
 - schema migration is documented and tested;
 - checks and gates are deterministic;
-- loops are bounded and replayable;
+- iteration regions are bounded, policy-driven, independent when disconnected, and replayable;
 - executors cannot change canonical state;
 - delegated file changes use isolated workspaces;
 - cancellation and stale-result rules are tested;

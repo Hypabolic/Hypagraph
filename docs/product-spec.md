@@ -13,13 +13,13 @@ The graph makes four concerns executable rather than advisory:
 1. dependency order;
 2. logical gates and branch selection;
 3. evidence-backed completion;
-4. bounded feedback and repair loops.
+4. bounded feedback and iteration regions.
 
 The graph kernel is deterministic. Models may propose graphs and perform work, but the controller validates graph definitions, transitions, evidence, loop boundaries, and revisions.
 
 ## Product thesis
 
-Flat plans encode sequence but not dependency, hide blocked states, accept narrative completion claims, and handle failed verification through unstructured replanning. Hypagraph represents work as bounded node contracts connected by explicit dependency, route, data, and feedback edges.
+Flat plans encode sequence but not dependency, hide blocked states, accept narrative completion claims, and handle repeated work through unstructured replanning. Hypagraph represents work as bounded node contracts connected by explicit dependency, route, data, and feedback edges.
 
 ## Product boundary
 
@@ -63,9 +63,23 @@ Checks publish typed immutable facts. Gates evaluate deterministic predicates ov
 
 ### Loop regions
 
-Every cyclic strongly connected component must be explicitly declared. A loop defines entry and evaluation points, feedback edges, success conditions, progress objectives, patience, and hard budgets.
+A loop is a first-class bounded iteration region. It contains normal task, gate, and check nodes. The node contracts define what the loop does. Hypagraph must not encode repair as a loop type or as an implicit loop purpose.
+
+Every cyclic strongly connected component must be explicitly declared. A loop defines entry and evaluation points, feedback edges, success conditions, progress objectives, patience, hard budgets, and failure policy.
 
 A Boolean success condition determines whether the loop may exit successfully. A separate loss or progress objective determines whether unsuccessful iterations are improving.
+
+A loop can model refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, or repair.
+
+### Independent loop regions
+
+A loop can connect to the wider graph through its entry and evaluation boundaries. It can also be a disconnected top-level graph component.
+
+Topological independence must also provide state independence. Facts, routes, attempts, iteration counters, progress values, and exit decisions from one loop must not change another loop unless an explicit graph dependency connects them.
+
+A loop failure policy controls whether a failed region fails the complete workflow, blocks only its dependants, or records the failure while unrelated work continues.
+
+The graph projection can show a loop region as one compound graph element with an inspectable internal graph. This gives Hypagraph a hypergraph-like composition without changing the deterministic node and edge kernel.
 
 ## Runtime invariants
 
@@ -76,6 +90,9 @@ A Boolean success condition determines whether the loop may exit successfully. A
 5. Graph revisions invalidate changed work and affected downstream nodes.
 6. Stale or cancelled attempts cannot transition current graph state.
 7. Delegated mutations occur in isolated workspace leases before integration.
+8. A loop has no implicit repair semantics.
+9. An independent loop cannot release, fail, or reset an unrelated graph component.
+10. Loop failure and workflow failure are separate decisions controlled by explicit policy.
 
 ## Current implementation
 
@@ -91,7 +108,7 @@ The initial implementation provides:
 - branch-aware restoration from Pi tool-result snapshots;
 - guided and strict scope enforcement.
 
-Loop iteration, gate evaluation, deterministic check runners, graph visualisation, delegated executors, and bounded parallel scheduling remain planned work.
+Multi-iteration loop execution is in progress. Independent-region outcome policy, delegated executors, and bounded parallel scheduling remain planned work.
 
 ## Delivery sequence
 
