@@ -1,127 +1,148 @@
 # M3.1 deterministic parser adapters
 
-- Status: active
-- Release marker: deferred after v0.5
+- Status: complete
+- Release marker: implemented after v0.5
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Objective
 
-Complete the check types that M3 deferred after command-check execution.
+Complete the deterministic check types that M3 deferred after command-check execution.
 
-M3.1 converts bounded tool output and repository state into typed facts. The runtime must not ask a model to interpret a test report, lint report, coverage report, file assertion, or Git assertion.
+M3.1 converts bounded tool output and repository state into typed facts. The runtime does not ask a model to interpret a test report, lint report, coverage report, file assertion, or Git assertion.
 
 ## 2. Product result
 
-A workflow can define a supported parser adapter, run or read its declared input, publish normalized facts, preserve the raw input as evidence, restore without a second external read, and replay the same facts and check result.
+A workflow can define command, report, file-assertion, and Git-assertion checks through the same node contract and durable lifecycle.
+
+The runtime can:
+
+- run a bounded producer command;
+- read only the declared report or repository state;
+- validate the declared parser or assertion version before execution;
+- publish canonical typed facts;
+- retain raw reports and assertion evaluations as evidence;
+- distinguish an assertion failure from an invalid evaluator input;
+- restore without repeating a completed external side effect;
+- replay the same facts, results, and workflow state.
 
 ## 3. Mandatory rules
 
-- A parser is deterministic and versioned.
+- A parser or assertion evaluator is deterministic and versioned.
 - A parser reads only bounded declared input.
-- A parser does not execute a shell command.
-- A parser does not use a model.
+- An assertion resolves paths inside the configured workspace root.
+- Git assertions use a fixed command allowlist.
+- A parser or assertion evaluator does not use a model.
 - Malformed input produces explicit diagnostics.
-- Unsupported formats fail during graph validation.
+- Unsupported formats and incomplete fact contracts fail during graph validation.
 - Parsed values must match declared fact types.
 - Raw input remains untrusted evidence.
 - Restore and replay do not repeat an external side effect.
-- A parser result cannot change canonical state directly.
+- A parser or assertion result cannot change canonical state directly.
 
-## 4. Vertical slices
+## 4. Completed vertical slices
 
-### Slice 1: Add the test-report parser boundary
+### Slice 1: Test-report parser boundary
 
-Status: complete.
+- Added a pure, versioned Vitest JSON parser.
+- Normalized suite, test, pass, and optional duration values.
+- Rejected malformed, incomplete, inconsistent, and invalid-time reports.
 
-- Define the parser result contract.
-- Add a versioned Vitest JSON parser.
-- Normalize suite and test counts into typed facts.
-- Reject malformed, incomplete, and inconsistent reports.
-- Add deterministic parser tests.
+### Slice 2: Executable test-report checks
 
-### Slice 2: Integrate test-report checks
+- Added the declarative `test-report` check kind.
+- Validated parser identity, version, report path, namespace, size, and fact contract.
+- Dispatched producer commands through the bounded command runner.
+- Stored the raw report as evidence.
+- Published parser facts through the durable event lifecycle.
+- Added restore and replay coverage.
 
-Status: active.
+### Slice 3: Lint-report adapters
 
-Completed work:
+- Added the versioned ESLint JSON parser.
+- Published success, file, error, warning, and fixable counts.
+- Kept producer status separate from report validity.
 
-- Adapt a recorded command result and stored Vitest report into a `test-report` result.
-- Read reports through a bounded artifact-store boundary.
-- Require the report reference in recorded command evidence.
-- Preserve the report evidence on every parsed fact.
-- Create a deterministic `publish-facts` command from validated output.
-- Reject missing, oversized, non-JSON, malformed, mismatched, timed-out, cancelled, interrupted, and errored input.
-- Keep parsing separate from command execution so restore and replay do not rerun the producer command.
+### Slice 4: Coverage-report adapters
 
-Remaining work:
+- Added the versioned Istanbul coverage-summary parser.
+- Published line, statement, function, and branch totals, covered counts, skipped counts, and percentages.
+- Rejected non-finite, out-of-range, and inconsistent values.
 
-- Add the declarative `test-report` check definition.
-- Validate parser name, parser version, report artifact name, and fact namespace before execution.
-- Dispatch the producer command through the existing bounded command runner.
-- Record the raw producer result before parsing and publication.
-- Add an event-backed end-to-end lifecycle test.
+### Slice 5: File assertions
 
-### Slice 3: Add lint-report adapters
+- Added first-class `file-assertion` checks.
+- Supported existence, absence, exact size, SHA-256, and bounded text matching.
+- Enforced workspace containment and bounded reads.
+- Recorded the deterministic assertion evaluation as evidence.
 
-- Add one versioned ESLint JSON adapter.
-- Publish error, warning, fixable, and file counts.
-- Keep lint process failure separate from report validity.
+### Slice 6: Git assertions
 
-### Slice 4: Add coverage-report adapters
+- Added first-class `git-assertion` checks.
+- Supported clean state, branch, revision, and exact or containing changed-path sets.
+- Used direct process invocation with a fixed Git command and argument allowlist.
+- Rejected arbitrary Git arguments and escaping paths.
 
-- Add one versioned Istanbul summary adapter.
-- Publish line, branch, function, and statement percentages.
-- Reject non-finite or out-of-range values.
+### Slice 7: Authoring and Pi surfaces
 
-### Slice 5: Add file assertions
+- Extended `hypagraph_define` schemas and normalization for every M3.1 check kind.
+- Added retry-policy support to reports and assertions.
+- Added Pi result formatting for parser identity, report path, assertion identity, facts, and diagnostics.
+- Preserved the existing durable Pi check entry point while dispatching through the generic check runner.
 
-- Support existence, absence, content hash, size, and bounded text matching.
-- Resolve all paths inside the configured workspace root.
-- Store assertion evidence before verification completes.
+### Slice 8: Dogfood and hardening
 
-### Slice 6: Add Git assertions
+- Added one durable workflow that executes:
+  1. a Vitest report check;
+  2. an ESLint report check;
+  3. an Istanbul coverage check;
+  4. a bounded file assertion;
+  5. a fixed-allowlist Git assertion.
+- Verified canonical facts after each node.
+- Verified workflow completion, persisted snapshot equality, and event replay equality.
+- Added cross-platform CI coverage on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-- Support clean state, changed-path sets, branch name, and revision assertions.
-- Use direct process invocation with a fixed Git command allowlist.
-- Do not accept arbitrary Git arguments from a workflow definition.
+## 5. Public fact naming
 
-### Slice 7: Complete authoring and Pi surfaces
+Parser-internal field names are not public workflow contracts.
 
-- Extend `hypagraph_define` schemas and guidance.
-- Show parser identity, format version, diagnostics, and published facts.
-- Explain report-invalid and assertion-failed states separately.
+Public facts:
 
-### Slice 8: Dogfood and harden
+- use the check namespace;
+- use lowercase dotted paths;
+- use kebab-case for multiword segments;
+- do not collide after namespacing.
 
-- Run test, lint, coverage, file, and Git checks in one workflow.
-- Cover malformed reports, timeouts, cancellation, restore, replay, stale results, and branch changes.
-- Add cross-platform CI fixtures.
+Examples:
 
-## 5. Slice 1 fact contract
+- `tests.success`;
+- `tests.suites.passed`;
+- `tests.duration-ms`;
+- `lint.files.with-errors`;
+- `lint.fixable-warnings`;
+- `coverage.lines.percent`;
+- `artifact.size-bytes`;
+- `repository.changed-paths`.
 
-The first parser publishes these values:
+Required parser outputs must have required fact contracts. Optional parser outputs, such as Vitest duration, must have optional contracts.
 
-- `passed`: Boolean;
-- `testSuites.total`: integer;
-- `testSuites.passed`: integer;
-- `testSuites.failed`: integer;
-- `tests.total`: integer;
-- `tests.passed`: integer;
-- `tests.failed`: integer;
-- `tests.skipped`: integer;
-- `durationMs`: number when the report supplies a valid duration.
+## 6. Failure semantics
 
-A report is inconsistent when a subtotal is negative, a subtotal exceeds its total, or passed, failed, and skipped test counts do not equal the total.
+- A producer timeout, cancellation, interruption, or execution error does not parse a report.
+- An invalid report or invalid assertion definition produces an `error` result and publishes no canonical facts.
+- A valid assertion that evaluates to false produces a `failed` result with recorded diagnostic evidence.
+- A successful parser or assertion publishes only declared facts with matching types.
+- Duplicate public fact names produce an explicit executor error.
 
-## 6. Acceptance criteria
+## 7. Acceptance evidence
 
-M3.1 is complete when:
+M3.1 is complete because:
 
-- each supported adapter has a versioned deterministic parser;
-- invalid input cannot publish facts;
+- all supported adapters and assertions are deterministic and versioned;
+- invalid input cannot publish canonical facts;
 - facts have stable names and types;
-- raw inputs remain available as evidence;
-- Pi explains parser and assertion failures;
-- restore does not rerun commands or repeat external reads;
-- replay reproduces the same normalized facts and state hash;
-- Windows, macOS, and Ubuntu CI pass.
+- raw reports and assertion evaluations remain available as evidence;
+- Pi explains parser and assertion results;
+- restore does not rerun completed commands or repeat external reads;
+- replay reproduces the same normalized facts and workflow state;
+- the complete five-check dogfood workflow passes;
+- the hosted matrix passes on Windows, macOS, and Ubuntu with Node.js 22 and 24.
