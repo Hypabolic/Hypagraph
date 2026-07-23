@@ -34,7 +34,7 @@ export interface GateDefinition {
   onFalse: string[];
 }
 
-export type CheckKind = "command" | "test-report" | "lint-report" | "coverage-report" | "file-assertion" | "git-assertion";
+export type CheckKind = "command" | "test-report" | "lint-report" | "coverage-report" | "metric-report" | "file-assertion" | "git-assertion";
 export type CheckResultStatus = "passed" | "failed" | "timed_out" | "cancelled" | "interrupted" | "error";
 export type CheckFactSource = "passed" | "status" | "exitCode" | "durationMs" | "timedOut" | "cancelled";
 export type CheckRetryStatus = "failed" | "timed_out" | "error";
@@ -65,7 +65,7 @@ export interface CommandCheckDefinition extends CommandExecutionDefinition {
   publish: FactMapping[];
 }
 
-export type ReportParserName = "vitest-json" | "eslint-json" | "istanbul-coverage-summary";
+export type ReportParserName = "vitest-json" | "eslint-json" | "istanbul-coverage-summary" | "metric-json";
 
 export interface ReportParserDefinition {
   name: ReportParserName;
@@ -77,6 +77,23 @@ export interface ReportCheckDefinition extends CommandExecutionDefinition {
   reportPath: string;
   parser: ReportParserDefinition;
   namespace: string;
+  maxReportBytes?: number;
+}
+
+export type MetricScalarType = "boolean" | "integer" | "number" | "string";
+
+export interface MetricReportMapping {
+  source: string;
+  fact: string;
+  type: MetricScalarType;
+  required?: boolean;
+}
+
+export interface MetricReportCheckDefinition extends CommandExecutionDefinition {
+  kind: "metric-report";
+  reportPath: string;
+  parser: { name: "metric-json"; version: 1 };
+  mappings: MetricReportMapping[];
   maxReportBytes?: number;
 }
 
@@ -112,6 +129,7 @@ export interface GitAssertionCheckDefinition {
 export type CheckDefinition =
   | CommandCheckDefinition
   | ReportCheckDefinition
+  | MetricReportCheckDefinition
   | FileAssertionCheckDefinition
   | GitAssertionCheckDefinition;
 
