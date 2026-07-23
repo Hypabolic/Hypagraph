@@ -1,15 +1,17 @@
 name: Apply Slice 3 patch
 
 on:
-  push:
+  pull_request:
+    types: [synchronize, edited]
     branches:
-      - agent/m5a-slice-3-feedback-budgets
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.head_ref == 'agent/m5a-slice-3-feedback-budgets'
     runs-on: ubuntu-latest
     steps:
       - name: Check out branch
