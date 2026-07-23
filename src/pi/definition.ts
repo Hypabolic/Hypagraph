@@ -7,7 +7,12 @@ const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String()
 const conditionSchema = Type.Any({ description: "A Hypagraph typed condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const checkFactSourceSchema = StringEnum(["passed", "status", "exitCode", "durationMs", "timedOut", "cancelled"] as const);
 const retryStatusSchema = StringEnum(["failed", "timed_out", "error"] as const);
-const metricScalarTypeSchema = StringEnum(["boolean", "integer", "number", "string"] as const);
+const metricScalarTypeSchema = Type.Union([
+  Type.Literal("boolean"),
+  Type.Literal("integer"),
+  Type.Literal("number"),
+  Type.Literal("string"),
+]);
 
 const factContractSchema = Type.Object({ name: Type.String(), type: factTypeSchema, required: Type.Optional(Type.Boolean()) });
 const gateSchema = Type.Object({ condition: conditionSchema, onTrue: Type.Array(Type.String(), { minItems: 1 }), onFalse: Type.Array(Type.String(), { minItems: 1 }) });
