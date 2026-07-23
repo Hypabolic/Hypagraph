@@ -1,0 +1,53 @@
+name: Apply loop product model
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/generalise-loop-product-model'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the planning branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/generalise-loop-product-model
+
+      - name: Apply loop product model
+        run: python3 scripts/apply-loop-product-model.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run repository checks
+        run: npm run check
+
+      - name: Remove temporary migration files
+        run: git rm scripts/apply-loop-product-model.py .github/workflows/apply-loop-product-model.yml
+
+      - name: Commit planning and documentation changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs skills
+          if git diff --cached --quiet; then
+            echo "Loop product documentation is already current."
+          else
+            git commit -m "Generalise loop regions and plan independent execution"
+            git push origin HEAD:agent/generalise-loop-product-model
+          fi
