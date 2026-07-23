@@ -3,9 +3,16 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
-  push:
     branches:
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  push:
+    branches:
+      - "**"
 
 permissions:
   contents: read
@@ -33,9 +40,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install locked dependencies
+        run: npm ci
 
       - name: Run type checks and tests
         id: check
