@@ -435,6 +435,8 @@ A task-based repair loop runs two iterations and keeps correct history.
 
 ### Slice 3 - Run a check-driven repair loop
 
+- Status: implemented
+
 #### User result
 
 A failing evaluation check publishes facts, sends control back to the repair entry, and a later passing check completes the loop.

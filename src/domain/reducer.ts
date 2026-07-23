@@ -161,6 +161,15 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
   };
 };
 
+const isFailedCheckLoopObservation = (state: HypagraphState, nodeId: string, attemptId: string): boolean => {
+  const definition = state.definition.nodes.find((item) => item.id === nodeId);
+  if ((definition?.kind ?? "task") !== "check") return false;
+  if (!state.definition.loops.some((loop) => loop.evaluateAfter === nodeId)) return false;
+  const attempt = state.runtime.nodes[nodeId]?.attempts[attemptId];
+  if (attempt?.checkResult?.status !== "failed") return false;
+  return requiredFactsArePresent(state, nodeId, attemptId).length === 0;
+};
+
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
   if (["completed", "failed", "cancelled"].includes(state.phase)) return reject("terminal_workflow", `The workflow is ${state.phase}.`);
   const events: DomainEvent[] = [];
@@ -263,13 +272,15 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         const missing = requiredFactsArePresent(state, command.nodeId, command.attemptId);
         if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
       }
-      const evaluation = command.passed ? prepareLoopEvaluation(state, command.nodeId) : undefined;
+      const failedCheckObservation = !command.passed && isFailedCheckLoopObservation(state, command.nodeId, command.attemptId);
+      const evaluation = command.passed || failedCheckObservation ? prepareLoopEvaluation(state, command.nodeId) : undefined;
       if (evaluation && "ok" in evaluation) return evaluation;
       next = append(next, events, command, { type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
       if (evaluation) {
         const loopRuntime = next.runtime.loops[evaluation.loopId];
+        const completes = command.passed && evaluation.success;
         const canContinue = !evaluation.success && !!loopRuntime && evaluation.iteration < loopRuntime.maxIterations;
-        const decision = evaluation.success ? "complete" : canContinue ? "continue" : "pending";
+        const decision = completes ? "complete" : canContinue ? "continue" : "pending";
         next = append(next, events, command, {
           type: "hypagraph.loop.evaluated",
           loopId: evaluation.loopId,
@@ -280,9 +291,11 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             factsUsed: structuredClone(evaluation.factsUsed),
             semanticsVersion: evaluation.semanticsVersion,
             decision,
+            verificationPassed: command.passed,
+            ...(failedCheckObservation ? { observationStatus: "failed" } : {}),
           },
         });
-        if (evaluation.success) {
+        if (completes) {
           next = append(next, events, command, { type: "hypagraph.loop.completed", loopId: evaluation.loopId, data: { loopId: evaluation.loopId, iteration: evaluation.iteration, exitReason: "success" } });
         } else if (canContinue) {
           next = append(next, events, command, {
