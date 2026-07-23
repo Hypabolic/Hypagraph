@@ -29,6 +29,13 @@ export class WorkflowSequenceConflictError extends Error {
   }
 }
 
+export class WorkflowBranchChangedError extends Error {
+  constructor(readonly workflowId: string) {
+    super(`Workflow '${workflowId}' belongs to an earlier Pi session branch. Its result was not stored.`);
+    this.name = "WorkflowBranchChangedError";
+  }
+}
+
 export function validateEventAppend(input: WorkflowEventAppend): void {
   if (input.events.length === 0) throw new Error("An event-store append must contain at least one event.");
   if (input.snapshot.workflowId !== input.workflowId) throw new Error("The stored snapshot belongs to a different workflow.");

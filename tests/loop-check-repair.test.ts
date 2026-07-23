@@ -270,8 +270,10 @@ describe("M4 Slice 3 check-driven repair loops", () => {
       expect(lifecycle.ok).toBe(true);
       if (!lifecycle.ok) return;
       expect(lifecycle.state.runtime.nodes.test?.status).toBe("failed");
-      expect(lifecycle.state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1 });
+      const blocksRegion = status === "cancelled" || status === "interrupted";
+      expect(lifecycle.state.runtime.loops.repair).toMatchObject({ status: blocksRegion ? "blocked" : "running", currentIteration: 1 });
       expect(lifecycle.events.some((event) => event.type === "hypagraph.loop.evaluated")).toBe(false);
+      expect(lifecycle.events.some((event) => event.type === "hypagraph.loop.blocked")).toBe(blocksRegion);
     },
   );
 

@@ -6,7 +6,7 @@ import type {
   ReducerResult,
 } from "../domain/model.js";
 import { handleCommand } from "../domain/reducer.js";
-import type { WorkflowEventStore } from "./event-store.js";
+import { WorkflowBranchChangedError, WorkflowSequenceConflictError, type WorkflowEventStore } from "./event-store.js";
 
 export interface CommittedCommandBatch {
   state: HypagraphState;
@@ -18,17 +18,27 @@ export type DurableCommandResult =
   | { ok: true; value: CommittedCommandBatch }
   | { ok: false; diagnostics: Diagnostic[] };
 
+const storeDiagnostic = (error: unknown): Diagnostic => error instanceof WorkflowSequenceConflictError
+  ? { code: "event_store_sequence_conflict", message: error.message }
+  : error instanceof WorkflowBranchChangedError
+    ? { code: "event_store_branch_changed", message: error.message }
+    : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
+
 export async function commitCreatedWorkflow(
   store: WorkflowEventStore,
   result: ReducerResult,
 ): Promise<ReducerResult> {
   if (!result.ok) return result;
-  await store.append({
-    workflowId: result.state.workflowId,
-    expectedSequence: 0,
-    events: result.events,
-    snapshot: result.state,
-  });
+  try {
+    await store.append({
+      workflowId: result.state.workflowId,
+      expectedSequence: 0,
+      events: result.events,
+      snapshot: result.state,
+    });
+  } catch (error) {
+    return { ok: false, diagnostics: [storeDiagnostic(error)] };
+  }
   return result;
 }
 
@@ -50,12 +60,16 @@ export async function applyCommandsAndCommit(
     accepted.push(structuredClone(command));
   }
 
-  await store.append({
-    workflowId: state.workflowId,
-    expectedSequence: state.sequence,
-    events,
-    snapshot: next,
-  });
+  try {
+    await store.append({
+      workflowId: state.workflowId,
+      expectedSequence: state.sequence,
+      events,
+      snapshot: next,
+    });
+  } catch (error) {
+    return { ok: false, diagnostics: [storeDiagnostic(error)] };
+  }
   return { ok: true, value: { state: next, events, commands: accepted } };
 }
 

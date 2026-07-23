@@ -256,8 +256,42 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         attempt.completedAt = event.timestamp;
         if (typeof event.data.reason === "string") attempt.failureReason = event.data.reason;
         node.status = "cancelled";
+        delete node.currentAttemptId;
       }
       break;
+    case "hypagraph.loop.invalidated": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const definition = next.definition.loops.find((loop) => loop.id === loopId);
+      if (definition) {
+        next.runtime.loops[loopId] = emptyLoop(definition);
+        const loopNodes = new Set(definition.nodes);
+        for (const [name, fact] of Object.entries(next.runtime.facts)) {
+          if (loopNodes.has(fact.producerNodeId)) delete next.runtime.facts[name];
+        }
+        for (const nodeId of definition.nodes) {
+          const loopNode = next.runtime.nodes[nodeId];
+          if (!loopNode) continue;
+          loopNode.status = "stale";
+          delete loopNode.currentAttemptId;
+          loopNode.evidence = [];
+          delete loopNode.blockedReason;
+          delete next.runtime.routes[nodeId];
+        }
+      }
+      break;
+    }
+    case "hypagraph.loop.blocked": {
+      const loopId = event.loopId ?? String(event.data.loopId ?? "");
+      const runtime = next.runtime.loops[loopId];
+      if (runtime) {
+        runtime.status = "blocked";
+        runtime.blockedAt = event.timestamp;
+        runtime.blockedReason = String(event.data.reason ?? "The loop requires explicit recovery.");
+        if (event.attemptId) runtime.blockedAttemptId = event.attemptId;
+      }
+      if (node && event.attemptId && node.currentAttemptId === event.attemptId) delete node.currentAttemptId;
+      break;
+    }
     case "hypagraph.loop.iteration-started": {
       const loopId = event.loopId ?? String(event.data.loopId ?? "");
       const runtime = next.runtime.loops[loopId];
@@ -281,6 +315,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         }
         runtime.status = "running";
         runtime.currentIteration = iteration;
+        delete runtime.blockedAt;
+        delete runtime.blockedReason;
+        delete runtime.blockedAttemptId;
         runtime.startedAt ??= event.timestamp;
         if (!runtime.iterations.some((item) => item.iteration === iteration)) {
           runtime.iterations.push({ iteration, startedAt: event.timestamp, factsUsed: [] });

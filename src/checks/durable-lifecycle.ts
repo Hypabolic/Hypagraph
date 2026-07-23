@@ -9,7 +9,7 @@ import type {
 import { sha256 } from "../domain/hash.js";
 import { handleCommand } from "../domain/reducer.js";
 import type { WorkflowEventStore } from "../persistence/event-store.js";
-import { WorkflowSequenceConflictError } from "../persistence/event-store.js";
+import { WorkflowBranchChangedError, WorkflowSequenceConflictError } from "../persistence/event-store.js";
 import { enforceCancelledResult } from "./cancellation.js";
 import { createCheckExecutionRequest, executeCheck } from "./execution.js";
 import { createCheckFactPublicationCommand } from "./normalization.js";
@@ -89,7 +89,9 @@ const missingRequiredFacts = (state: HypagraphState, nodeId: string, attemptId: 
 
 const storeDiagnostic = (error: unknown): Diagnostic => error instanceof WorkflowSequenceConflictError
   ? { code: "event_store_sequence_conflict", message: error.message }
-  : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
+  : error instanceof WorkflowBranchChangedError
+    ? { code: "event_store_branch_changed", message: error.message }
+    : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
 
 export async function runDurableCheckLifecycle(
   input: DurableCheckLifecycleInput,
