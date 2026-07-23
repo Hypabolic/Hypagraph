@@ -475,6 +475,8 @@ The principal repair-loop product path works through `hypagraph_run_check`.
 
 ### Slice 4 - Enforce the hard iteration limit
 
+- Status: implemented
+
 #### User result
 
 A loop that never succeeds stops at `maxIterations` with an explicit failure reason.

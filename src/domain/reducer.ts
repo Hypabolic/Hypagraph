@@ -170,8 +170,20 @@ const isFailedCheckLoopObservation = (state: HypagraphState, nodeId: string, att
   return requiredFactsArePresent(state, nodeId, attemptId).length === 0;
 };
 
+const exhaustedLoopForNode = (state: HypagraphState, nodeId: string): LoopDefinition | undefined =>
+  state.definition.loops.find((loop) => {
+    const runtime = state.runtime.loops[loop.id];
+    return loop.nodes.includes(nodeId) && runtime?.status === "failed" && runtime.exitReason === "max_iterations";
+  });
+
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
-  if (["completed", "failed", "cancelled"].includes(state.phase)) return reject("terminal_workflow", `The workflow is ${state.phase}.`);
+  if (["completed", "failed", "cancelled"].includes(state.phase)) {
+    if (state.phase === "failed" && "nodeId" in command) {
+      const exhausted = exhaustedLoopForNode(state, command.nodeId);
+      if (exhausted) return reject("loop_exhausted", `Loop '${exhausted.id}' reached its limit of ${exhausted.maxIterations} iterations. It cannot start another iteration.`);
+    }
+    return reject("terminal_workflow", `The workflow is ${state.phase}.`);
+  }
   const events: DomainEvent[] = [];
   let next = state;
   if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); return { ok: true, state: next, events }; }
@@ -280,7 +292,8 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         const loopRuntime = next.runtime.loops[evaluation.loopId];
         const completes = command.passed && evaluation.success;
         const canContinue = !evaluation.success && !!loopRuntime && evaluation.iteration < loopRuntime.maxIterations;
-        const decision = completes ? "complete" : canContinue ? "continue" : "pending";
+        const exhausted = !completes && !canContinue && !!loopRuntime && evaluation.iteration >= loopRuntime.maxIterations;
+        const decision = completes ? "complete" : canContinue ? "continue" : exhausted ? "fail" : "pending";
         next = append(next, events, command, {
           type: "hypagraph.loop.evaluated",
           loopId: evaluation.loopId,
@@ -293,6 +306,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             decision,
             verificationPassed: command.passed,
             ...(failedCheckObservation ? { observationStatus: "failed" } : {}),
+            ...(exhausted ? { exitReason: "max_iterations" } : {}),
           },
         });
         if (completes) {
@@ -310,9 +324,28 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             },
           });
           next = appendReadyEvents(next, events, command);
+        } else if (exhausted) {
+          next = append(next, events, command, {
+            type: "hypagraph.loop.failed",
+            loopId: evaluation.loopId,
+            data: {
+              loopId: evaluation.loopId,
+              iteration: evaluation.iteration,
+              maxIterations: loopRuntime.maxIterations,
+              exitReason: "max_iterations",
+            },
+          });
+          next = append(next, events, command, {
+            type: "hypagraph.workflow.failed",
+            data: {
+              reason: "loop_failed",
+              loopId: evaluation.loopId,
+              exitReason: "max_iterations",
+            },
+          });
         }
       }
-      if (command.passed) { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
+      if (command.passed && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
     }
     case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim() } }); break; }
