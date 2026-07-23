@@ -29,8 +29,10 @@ jobs:
 
       - name: Apply Slice 3
         run: |
+          python3 scripts/prep-m4-slice3.py
           python3 scripts/apply-m4-slice3.py
           python3 scripts/patch-m4-slice3.py
+          python3 scripts/finalize-m4-slice3.py
 
       - name: Install locked dependencies
         run: npm ci
