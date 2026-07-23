@@ -18,7 +18,7 @@ const cases = [
       { name: "tests.passed", type: "integer" as const },
       { name: "tests.failed", type: "integer" as const },
       { name: "tests.skipped", type: "integer" as const },
-      { name: "tests.durationMs", type: "number" as const },
+      { name: "tests.duration-ms", type: "number" as const, required: false },
     ],
   },
   {
@@ -26,14 +26,14 @@ const cases = [
     parser: "eslint-json" as const,
     namespace: "lint",
     produces: [
-      { name: "lint.passed", type: "boolean" as const },
+      { name: "lint.success", type: "boolean" as const },
       { name: "lint.files.total", type: "integer" as const },
-      { name: "lint.files.withErrors", type: "integer" as const },
-      { name: "lint.files.withWarnings", type: "integer" as const },
+      { name: "lint.files.with-errors", type: "integer" as const },
+      { name: "lint.files.with-warnings", type: "integer" as const },
       { name: "lint.errors", type: "integer" as const },
       { name: "lint.warnings", type: "integer" as const },
-      { name: "lint.fixableErrors", type: "integer" as const },
-      { name: "lint.fixableWarnings", type: "integer" as const },
+      { name: "lint.fixable-errors", type: "integer" as const },
+      { name: "lint.fixable-warnings", type: "integer" as const },
     ],
   },
   {
