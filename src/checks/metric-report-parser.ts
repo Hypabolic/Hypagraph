@@ -1,15 +1,13 @@
-import type { Diagnostic, FactInput } from "../domain/model.js";
+import type {
+  Diagnostic,
+  FactInput,
+  MetricReportMapping,
+  MetricScalarType,
+} from "../domain/model.js";
+
+export type { MetricReportMapping, MetricScalarType } from "../domain/model.js";
 
 export const METRIC_JSON_PARSER_VERSION = 1 as const;
-
-export type MetricScalarType = "boolean" | "integer" | "number" | "string";
-
-export interface MetricReportMapping {
-  source: string;
-  fact: string;
-  type: MetricScalarType;
-  required?: boolean;
-}
 
 export interface ParsedMetricReport {
   parser: "metric-json";
