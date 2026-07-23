@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+# Keep the one-off migration resilient to the current customer-facing loop format.
 path = Path("scripts/apply-m4-slice7.py")
 text = path.read_text()
 pattern = r'''replace_once\(\n    "src/ui/format\.ts",\n    '''.*?lines\.push\(`- \$\{loop\.id\}:.*?\n\)\n\nreplace_once\(\n    "docs/m4-vertical-slice-plan\.md",'''
