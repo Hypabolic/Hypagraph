@@ -102,15 +102,23 @@ describe("M4 Slice 1 loop execution", () => {
     expect(replayed.snapshotHash).toBe(state.snapshotHash);
   });
 
-  it("keeps downstream work blocked when the success condition is false", () => {
+  it("starts iteration 2 when the success condition is false", () => {
     const created = createWorkflow(definition(), at, "workflow-loop-false");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const events = [...created.events];
     let state = completeTask(created.state, events, "implement", "attempt-implement", "implement");
     state = completeTask(state, events, "test", "attempt-test", "test", [{ name: "tests.passed", type: "boolean", value: false }]);
-    expect(state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 1, lastSuccess: false });
+    expect(state.runtime.loops.repair).toMatchObject({ status: "running", currentIteration: 2, lastSuccess: false });
+    expect(state.runtime.loops.repair?.iterations[0]).toMatchObject({ iteration: 1, decision: "continue", success: false });
+    expect(state.runtime.loops.repair?.iterations[1]).toMatchObject({ iteration: 2 });
+    expect(state.runtime.nodes.implement?.status).toBe("ready");
     expect(state.runtime.nodes.document?.status).toBe("pending");
-    expect(events.at(-1)?.type).toBe("hypagraph.loop.evaluated");
+    expect(state.runtime.facts["tests.passed"]).toBeUndefined();
+    expect(events.filter((event) => event.loopId === "repair").map((event) => event.type)).toEqual([
+      "hypagraph.loop.iteration-started",
+      "hypagraph.loop.evaluated",
+      "hypagraph.loop.iteration-started",
+    ]);
   });
 
   it("migrates a version 2 loop with text to requires_revision", () => {

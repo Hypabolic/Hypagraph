@@ -392,6 +392,8 @@ A one-iteration loop completes through the real Pi transition and check paths.
 
 ### Slice 2 - Follow feedback and start iteration 2
 
+- Status: implemented
+
 #### User result
 
 A false success condition resets the loop region and makes the entry ready for iteration 2.

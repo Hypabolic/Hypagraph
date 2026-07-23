@@ -90,7 +90,7 @@ Facts are bound to:
 
 A gate uses the typed condition structure. The route-selection event stores the outcome, facts used, and condition-semantics version.
 
-## Loop Slice 1 lifecycle
+## Loop Slice 1 and Slice 2 lifecycle
 
 A new loop definition uses a typed `successWhen` condition.
 
@@ -111,7 +111,7 @@ The loop evaluation event stores the iteration, success value, facts used, condi
 
 A node outside the loop cannot become ready from the evaluation node until the loop status is `succeeded`.
 
-Slice 1 does not start a second iteration. A false condition records a pending decision and keeps downstream work blocked. Slice 2 adds feedback continuation and iteration reset.
+When the condition is false and another iteration is available, the evaluation event stores a `continue` decision. The same command batch then stores the next `hypagraph.loop.iteration-started` event and the entry ready event. Projection of the iteration-started event clears current loop facts, gate routes, node evidence, and current-attempt pointers. It keeps prior attempts, results, evidence, artifacts, events, and iteration history. Downstream work remains blocked until the loop succeeds.
 
 ## Readiness
 

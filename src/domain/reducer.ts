@@ -267,6 +267,9 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if (evaluation && "ok" in evaluation) return evaluation;
       next = append(next, events, command, { type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
       if (evaluation) {
+        const loopRuntime = next.runtime.loops[evaluation.loopId];
+        const canContinue = !evaluation.success && !!loopRuntime && evaluation.iteration < loopRuntime.maxIterations;
+        const decision = evaluation.success ? "complete" : canContinue ? "continue" : "pending";
         next = append(next, events, command, {
           type: "hypagraph.loop.evaluated",
           loopId: evaluation.loopId,
@@ -276,10 +279,25 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             success: evaluation.success,
             factsUsed: structuredClone(evaluation.factsUsed),
             semanticsVersion: evaluation.semanticsVersion,
-            decision: evaluation.success ? "complete" : "pending",
+            decision,
           },
         });
-        if (evaluation.success) next = append(next, events, command, { type: "hypagraph.loop.completed", loopId: evaluation.loopId, data: { loopId: evaluation.loopId, iteration: evaluation.iteration, exitReason: "success" } });
+        if (evaluation.success) {
+          next = append(next, events, command, { type: "hypagraph.loop.completed", loopId: evaluation.loopId, data: { loopId: evaluation.loopId, iteration: evaluation.iteration, exitReason: "success" } });
+        } else if (canContinue) {
+          next = append(next, events, command, {
+            type: "hypagraph.loop.iteration-started",
+            loopId: evaluation.loopId,
+            data: {
+              loopId: evaluation.loopId,
+              iteration: evaluation.iteration + 1,
+              previousIteration: evaluation.iteration,
+              maxIterations: loopRuntime.maxIterations,
+              reason: "feedback",
+            },
+          });
+          next = appendReadyEvents(next, events, command);
+        }
       }
       if (command.passed) { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
