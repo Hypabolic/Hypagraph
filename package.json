@@ -1,6 +1,6 @@
 {
   "name": "hypagraph",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Graph-native workflow guidance and execution control for coding agents",
   "type": "module",
   "private": true,
