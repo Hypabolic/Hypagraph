@@ -26,7 +26,9 @@ jobs:
           node-version: 24
 
       - name: Apply Slice 7
-        run: python3 scripts/apply-m4-slice7.py
+        run: |
+          python3 scripts/fix-m4-slice7-anchor.py
+          python3 scripts/apply-m4-slice7.py
 
       - name: Install dependencies
         run: npm install
