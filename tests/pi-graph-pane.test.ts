@@ -127,6 +127,49 @@ describe("graph pane controller", () => {
     finish?.();
   });
 
+  it("redraws an open pane for runtime changes without rebuilding its stable layout", () => {
+    const controller = new GraphPaneController();
+    const initial = state();
+    controller.update(initial);
+    const fakeTui = tui(140, 50);
+    const handle = {
+      focus: vi.fn(),
+      unfocus: vi.fn(),
+      hide: vi.fn(),
+      setHidden: vi.fn(),
+      isHidden: vi.fn(() => false),
+      isFocused: vi.fn(() => false),
+    } satisfies OverlayHandle;
+    let component: PiGraphPaneComponent | undefined;
+    let finish: (() => void) | undefined;
+    const custom = vi.fn((factory, options) => new Promise<void>((resolve) => {
+      finish = resolve;
+      component = factory(fakeTui, theme, {}, resolve);
+      options.onHandle(handle);
+    }));
+    const ctx = {
+      mode: "tui",
+      ui: { custom, notify: vi.fn() },
+    } as unknown as ExtensionContext;
+
+    controller.open(ctx);
+    const before = component!.render(60).join("\n");
+    const changed = structuredClone(initial);
+    changed.sequence += 1;
+    changed.runtime.nodes.plan!.status = "running";
+    changed.runtime.nodes.plan!.attemptCount = 1;
+    fakeTui.requestRender.mockClear();
+
+    controller.update(changed);
+
+    expect(fakeTui.requestRender).toHaveBeenCalledOnce();
+    const after = component!.render(60).join("\n");
+    expect(after).not.toBe(before);
+    expect(after).toContain("e1");
+    controller.close();
+    finish?.();
+  });
+
   it("uses a capturing full-screen overlay on narrow terminals", () => {
     const controller = new GraphPaneController();
     controller.update(state());
