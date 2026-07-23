@@ -15,6 +15,7 @@ The pane shows:
 - selected gate routes;
 - skipped routes;
 - loop regions;
+- independent top-level graph components;
 - loop feedback edges;
 - node state;
 - the ready frontier;
@@ -119,6 +120,7 @@ interface GraphViewModel {
   nodes: GraphViewNode[];
   edges: GraphViewEdge[];
   loops: GraphViewLoop[];
+  components: GraphViewComponent[];
   readyNodeIds: string[];
   activeNodeId?: string;
 }
@@ -157,7 +159,10 @@ A graph loop includes:
 - evaluation node ID;
 - feedback edges;
 - maximum iteration count;
-- current iteration when M4 provides it.
+- current iteration when M4 provides it;
+- failure policy when M4 provides it;
+- graph-component ID;
+- local outcome and workflow effect.
 
 The projection must have no Pi imports.
 
@@ -169,15 +174,17 @@ The layout engine consumes only `GraphViewModel`.
 
 Use a layered directed layout.
 
-Process loops before normal layout:
+Process loop regions and graph components before normal layout:
 
 1. Find strongly connected components.
 2. Match declared loop regions.
 3. Collapse each loop to one compound layout node.
-4. Layout the condensation graph from left to right.
-5. Expand each loop region.
-6. Route feedback edges on a separate lane.
-7. Preserve stable positions when the graph revision changes.
+4. Find weakly connected top-level graph components in the condensation graph.
+5. Layout each component from left to right.
+6. Place disconnected components with stable spacing and ordering.
+7. Expand each loop region.
+8. Route feedback edges on a separate lane.
+9. Preserve stable positions when the graph revision changes.
 
 Use stable node ID ordering for all tie decisions.
 
@@ -324,8 +331,8 @@ Use a visible loop boundary with the loop ID and iteration limit.
 Example:
 
 ```text
-+ loop repair [0/3] -------------------+
-| [fix] --------> [test]               |
++ loop quality [0/3] ------------------+
+| [draft] ------> [evaluate]           |
 |   ^                |                 |
 |   +----------------+ feedback        |
 +--------------------------------------+
@@ -457,6 +464,8 @@ Add:
 - projection from canonical state;
 - edge classification;
 - loop group projection;
+- top-level graph-component identity;
+- loop failure-policy and local-outcome projection;
 - deterministic tests.
 
 Done when the same state always produces the same graph view model.
@@ -471,9 +480,10 @@ Add:
 - node boxes;
 - orthogonal dependency edges;
 - loop boundaries and feedback lanes;
+- disconnected component placement;
 - clipping and ASCII fallback.
 
-Done when representative task, gate, check, branch, join, and loop graphs render in snapshot tests.
+Done when representative task, gate, check, branch, join, connected-loop, and disconnected-loop graphs render in snapshot tests.
 
 ### V3 - Dedicated Pi pane
 

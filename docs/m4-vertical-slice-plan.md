@@ -71,7 +71,7 @@ A loop contains normal task, gate, and check nodes. These nodes keep their exist
 
 The loop runtime controls when the region starts, when current iteration state resets, and when work can leave the region.
 
-### 3.3 Use a single-entry and single-exit iteration region
+### 3.3 Use a single-entry and single-evaluation iteration region
 
 For v0.5, each loop is a structured iteration region.
 
@@ -143,9 +143,10 @@ At the evaluation boundary, use this order:
 3. Read and record the progress metric when one exists.
 4. Update the best metric and best iteration.
 5. Complete the loop when success is true and the evaluation node passed verification.
-6. Fail at `max_iterations` when the hard limit is reached.
-7. Fail at `no_progress` when patience is exhausted.
-8. Otherwise start the next iteration.
+6. Select `max_iterations` when the hard limit is reached.
+7. Select `no_progress` when patience is exhausted.
+8. Apply the failure policy when the loop has a failure exit reason.
+9. Otherwise start the next iteration.
 
 The hard limit is mandatory. Patience is an optional earlier stop.
 
@@ -355,7 +356,9 @@ The evaluation event records:
 - optional best iteration;
 - no-progress count;
 - decision;
-- exit reason when applicable.
+- exit reason when applicable;
+- failure policy when failure applies;
+- derived workflow effect when failure applies.
 
 The event must contain the decision result. Replay must not calculate a different decision from later facts.
 
@@ -478,7 +481,7 @@ A false success condition resets the loop region and makes the entry ready for i
 
 #### Done when
 
-A task-based repair loop runs two iterations and keeps correct history.
+A task-based iteration region runs two iterations and keeps correct history.
 
 ### Slice 3 - Support failed evaluation checks as loop observations
 
@@ -532,7 +535,7 @@ A loop that never succeeds stops at `maxIterations` with an explicit failure rea
 
 - `hypagraph.loop.failed`;
 - `max_iterations` exit reason;
-- workflow failure after loop exhaustion;
+- default workflow failure after loop exhaustion before outcome policy is available;
 - terminal loop status in Pi and graph projections;
 - explicit diagnostics when a user tries to continue an exhausted loop.
 
@@ -540,7 +543,7 @@ A loop that never succeeds stops at `maxIterations` with an explicit failure rea
 
 - The runtime evaluates the final iteration before it reports exhaustion.
 - A successful final iteration completes normally.
-- An unsuccessful final iteration fails the loop and workflow.
+- An unsuccessful final iteration fails the loop. Slice 6 applies its failure policy to the workflow and dependants.
 - No node in the exhausted loop can start again.
 
 #### Tests
@@ -715,6 +718,9 @@ Show:
 - current metric;
 - best metric and iteration;
 - no-progress count and patience;
+- failure policy;
+- graph-component identity;
+- local outcome and workflow effect;
 - exit reason.
 
 The graph pane stays read-only. It must not contain a control that selects a loop decision.

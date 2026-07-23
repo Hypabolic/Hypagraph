@@ -85,7 +85,7 @@ Show a compact workflow summary:
 A typical run looks like this:
 
 1. Hypagraph validates and stores the graph.
-2. The first dependency-free nodes and loop entries become ready.
+2. The first dependency-free nodes, including eligible loop entries, become ready.
 3. The agent completes a task and submits evidence.
 4. Checks or task nodes publish typed facts.
 5. Gates select deterministic routes from those facts.
@@ -156,7 +156,7 @@ A command check runs a deterministic local command such as `npm run check`. It s
 
 A gate evaluates a typed condition against facts produced by earlier nodes. It selects and persists one route while skipping the other route.
 
-### Bounded loops
+### Bounded iteration regions
 
 A loop declares feedback, an iteration region, a typed success condition, and a hard iteration limit. It can model refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, or test-and-repair work. A loop can connect to the main graph or form an independent graph component.
 
