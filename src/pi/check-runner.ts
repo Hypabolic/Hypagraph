@@ -67,14 +67,14 @@ const definitionLines = (definition: CheckDefinition | undefined): string[] => {
   const lines = [`Kind: ${definition.kind}`];
   if (definition.kind === "command") {
     lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
-  } else if (definition.kind === "test-report" || definition.kind === "lint-report" || definition.kind === "coverage-report") {
+  } else if (definition.kind === "file-assertion" || definition.kind === "git-assertion") {
+    lines.push(`Assertion version: ${definition.version}`);
+    lines.push(`Assertion: ${definition.assertion.kind}`);
+    lines.push(`Namespace: ${definition.namespace}`);
+  } else {
     lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
     lines.push(`Report: ${definition.reportPath}`);
     lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
-    lines.push(`Namespace: ${definition.namespace}`);
-  } else {
-    lines.push(`Assertion version: ${definition.version}`);
-    lines.push(`Assertion: ${definition.assertion.kind}`);
     lines.push(`Namespace: ${definition.namespace}`);
   }
   return lines;
