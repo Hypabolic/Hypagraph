@@ -111,7 +111,7 @@ export function parseMetricJsonReport(
     if (!selected.found) {
       if (mapping.required !== false) diagnostics.push({
         code: "missing_metric_report_value",
-        message: `The metric report does not contain required source '${mapping.source}'.`,
+        message: `The metric report does not contain required source '${mapping.source}' for fact '${mapping.fact}'.`,
         location: `report.${mapping.source}`,
       });
       return;
@@ -121,7 +121,7 @@ export function parseMetricJsonReport(
         code: typeof selected.value === "number" && !Number.isFinite(selected.value)
           ? "non_finite_metric_report_value"
           : "metric_report_type_mismatch",
-        message: `Metric source '${mapping.source}' must have type '${mapping.type}'.`,
+        message: `Metric source '${mapping.source}' for fact '${mapping.fact}' must have type '${mapping.type}'.`,
         location: `report.${mapping.source}`,
       });
       return;
