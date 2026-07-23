@@ -26,9 +26,14 @@ const definition = (): HypagraphDefinition => ({
     acceptance: ["The test report passes."],
     produces: [
       { name: "tests.success", type: "boolean", required: true },
+      { name: "tests.suites.total", type: "integer", required: true },
+      { name: "tests.suites.passed", type: "integer", required: true },
+      { name: "tests.suites.failed", type: "integer", required: true },
       { name: "tests.total", type: "integer", required: true },
       { name: "tests.passed", type: "integer", required: true },
-      { name: "tests.suites.total", type: "integer", required: true },
+      { name: "tests.failed", type: "integer", required: true },
+      { name: "tests.skipped", type: "integer", required: true },
+      { name: "tests.durationMs", type: "number", required: false },
     ],
     check: {
       kind: "test-report",
