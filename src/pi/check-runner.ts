@@ -71,6 +71,11 @@ const definitionLines = (definition: CheckDefinition | undefined): string[] => {
     lines.push(`Assertion version: ${definition.version}`);
     lines.push(`Assertion: ${definition.assertion.kind}`);
     lines.push(`Namespace: ${definition.namespace}`);
+  } else if (definition.kind === "metric-report") {
+    lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
+    lines.push(`Report: ${definition.reportPath}`);
+    lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
+    lines.push(`Metric mappings: ${definition.mappings.length}`);
   } else {
     lines.push(`Command: ${[definition.command, ...(definition.arguments ?? [])].join(" ")}`);
     lines.push(`Report: ${definition.reportPath}`);

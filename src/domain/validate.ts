@@ -9,6 +9,7 @@ import type {
   HypagraphDefinition,
   LegacyLoopPredicate,
   LoopDefinition,
+  MetricReportCheckDefinition,
   NodeDefinition,
 } from "./model.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
@@ -17,6 +18,8 @@ const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FACT_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 const ENVIRONMENT_VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CHECK_NAMESPACE_PATTERN = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/;
+const METRIC_SOURCE_PATH_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/;
+const FORBIDDEN_METRIC_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 const MAX_CHECK_ATTEMPTS = 20;
 const MAX_RETRY_BACKOFF_MS = 86_400_000;
 const MAX_REPORT_BYTES = 16_777_216;
@@ -261,6 +264,35 @@ const validateAssertion = (node: NodeDefinition, check: FileAssertionCheckDefini
   return diagnostics;
 };
 
+const validateMetricReport = (node: NodeDefinition, check: MetricReportCheckDefinition, location: string): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact]));
+  if (check.parser.name !== "metric-json" || check.parser.version !== 1) diagnostics.push({ code: "report_parser_kind_mismatch", message: "A metric-report check requires parser 'metric-json' version 1.", location: `${location}.parser` });
+  if (relativePathInvalid(check.reportPath)) diagnostics.push({ code: "report_path_outside_workspace", message: `Report path '${check.reportPath}' must remain inside the workspace.`, location: `${location}.reportPath` });
+  if (check.maxReportBytes !== undefined && (!Number.isInteger(check.maxReportBytes) || check.maxReportBytes < 1 || check.maxReportBytes > MAX_REPORT_BYTES)) diagnostics.push({ code: "invalid_report_size_limit", message: `Report check '${node.id}' maximum report size must be between 1 and ${MAX_REPORT_BYTES} bytes.`, location: `${location}.maxReportBytes` });
+  if (check.mappings.length === 0) diagnostics.push({ code: "metric_report_mapping_required", message: `Metric report check '${node.id}' requires at least one scalar mapping.`, location: `${location}.mappings` });
+
+  const sources = new Set<string>();
+  const mappedFacts = new Set<string>();
+  check.mappings.forEach((mapping, index) => {
+    const mappingLocation = `${location}.mappings[${index}]`;
+    const segments = mapping.source.split(".");
+    if (!METRIC_SOURCE_PATH_PATTERN.test(mapping.source) || segments.some((segment) => FORBIDDEN_METRIC_SEGMENTS.has(segment))) diagnostics.push({ code: "invalid_metric_source_path", message: `Metric source '${mapping.source}' is not a safe scalar path.`, location: `${mappingLocation}.source` });
+    if (sources.has(mapping.source)) diagnostics.push({ code: "duplicate_metric_source", message: `Metric source '${mapping.source}' is mapped more than one time.`, location: `${mappingLocation}.source` });
+    if (mappedFacts.has(mapping.fact)) diagnostics.push({ code: "duplicate_metric_fact", message: `Metric fact '${mapping.fact}' is mapped more than one time.`, location: `${mappingLocation}.fact` });
+    sources.add(mapping.source);
+    mappedFacts.add(mapping.fact);
+    const contract = contracts.get(mapping.fact);
+    if (!contract) diagnostics.push({ code: "metric_fact_not_declared", message: `Metric mapping refers to undeclared fact '${mapping.fact}'.`, location: `${mappingLocation}.fact` });
+    else {
+      if (contract.type !== mapping.type) diagnostics.push({ code: "metric_fact_type_mismatch", message: `Metric fact '${mapping.fact}' must use type '${mapping.type}'.`, location: mappingLocation });
+      if (mapping.required !== false && !contract.required) diagnostics.push({ code: "metric_fact_must_be_required", message: `Required metric fact '${mapping.fact}' must use a required fact contract.`, location: `${mappingLocation}.fact` });
+    }
+  });
+  for (const name of contracts.keys()) if (!mappedFacts.has(name)) diagnostics.push({ code: "metric_fact_not_mapped", message: `Metric report check '${node.id}' declares unmapped fact '${name}'.`, location: `${location}.mappings` });
+  return diagnostics;
+};
+
 const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
   const check = node.check;
@@ -284,6 +316,7 @@ const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => 
     });
     return diagnostics;
   }
+  if (check.kind === "metric-report") return [...diagnostics, ...validateMetricReport(node, check, checkLocation)];
 
   const expectedParser = REPORT_PARSERS[check.kind];
   if (check.parser.name !== expectedParser || check.parser.version !== 1) diagnostics.push({ code: "report_parser_kind_mismatch", message: `Check kind '${check.kind}' requires parser '${expectedParser}' version 1.`, location: `${checkLocation}.parser` });
