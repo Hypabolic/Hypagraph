@@ -30,8 +30,14 @@ jobs:
       - name: Apply Slice 5
         shell: bash
         run: |
-          python3 scripts/fix-m4-slice5.py
-          python3 scripts/apply-m4-slice5.py
+          set +e
+          {
+            python3 scripts/fix-m4-slice5.py
+            python3 scripts/apply-m4-slice5.py
+          } > apply.log 2>&1
+          status=$?
+          cat apply.log
+          exit $status
 
       - name: Install locked dependencies
         run: npm ci
@@ -45,12 +51,14 @@ jobs:
           cat check.log
           exit $status
 
-      - name: Upload check diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m4-slice5-check-log
-          path: check.log
+          name: m4-slice5-diagnostics
+          path: |
+            apply.log
+            check.log
 
       - name: Commit Slice 5
         shell: bash
