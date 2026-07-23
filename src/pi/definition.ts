@@ -1,6 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import type { HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
+import type { CheckRetryPolicy, HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
 
 const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
@@ -127,9 +127,7 @@ export const factInputSchema = Type.Object({
 
 export type HypagraphDefineInput = Static<typeof definitionSchema>;
 
-const normalizeRetry = (retry: HypagraphDefineInput["nodes"][number]["check"] extends infer Check
-  ? Check extends { retry?: infer Retry } ? Retry : never
-  : never) => retry === undefined ? {} : {
+const normalizeRetry = (retry: CheckRetryPolicy | undefined) => retry === undefined ? {} : {
   retry: {
     maxAttempts: retry.maxAttempts,
     retryOn: [...retry.retryOn],
