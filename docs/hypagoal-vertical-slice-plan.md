@@ -1,4 +1,4 @@
-# Graph-backed goal mode vertical-slice plan
+# Hypagoal vertical-slice plan
 
 - Status: proposed
 - Proposed milestone: M5
@@ -9,19 +9,19 @@
 
 ## 1. Purpose
 
-This plan adds a `/goal` mode to Hypagraph.
+This plan adds a `/hypagoal` mode to Hypagraph.
 
 The user supplies one durable objective. Hypagraph converts that objective into an executable workflow. The current Pi session then continues work until the workflow reaches a terminal state or a deterministic stop condition applies.
 
-Goal mode must use the full Hypagraph runtime. It must use node contracts, typed facts, deterministic gates, evidence, checks, bounded loops, progress rules, and replay.
+Hypagoal must use the full Hypagraph runtime. It must use node contracts, typed facts, deterministic gates, evidence, checks, bounded loops, progress rules, and replay.
 
-Goal mode must not add a second execution model beside Hypagraph.
+Hypagoal must not add a second execution model beside Hypagraph.
 
 ## 2. Decision
 
-Hypagraph must add `/goal` as an autonomous controller over one canonical Hypagraph workflow.
+Hypagraph must add `/hypagoal` as an autonomous controller over one canonical Hypagraph workflow.
 
-Goal mode is not a prose continuation loop. It is not a new workflow type. It is not a new node kind.
+Hypagoal is not a prose continuation loop. It is not a new workflow type. It is not a new node kind.
 
 The workflow remains the source of truth for work. The goal controller only decides whether Pi can request another agent turn.
 
@@ -29,12 +29,12 @@ The runtime must derive goal completion from canonical workflow state. A model m
 
 ## 3. Research result
 
-The `pi-goal` project proves that a small `/goal` surface is useful in Pi.
+The `pi-goal` project proves that a small `/hypagoal` surface is useful in Pi.
 
 Useful product patterns include:
 
-- `/goal <objective>`;
-- `/goal status`;
+- `/hypagoal <objective>`;
+- `/hypagoal status`;
 - pause, resume, and clear controls;
 - optional token budgets;
 - compact lifecycle messages;
@@ -60,7 +60,7 @@ Hypagraph already has stronger control primitives. It has explicit node contract
 
 At the end of this milestone, a Pi user can:
 
-1. Start a durable goal from one `/goal` command.
+1. Start a durable goal from one `/hypagoal` command.
 2. Let the model inspect the repository and define a valid Hypagraph workflow.
 3. Continue through tasks, checks, and gates without a new user prompt for each turn.
 4. Run bounded repair loops.
@@ -260,7 +260,7 @@ Replay must not calculate a different stop result from later state.
 
 ### 6.3 Atomic goal creation tool
 
-Add a Pi tool such as `hypagraph_goal_start`.
+Add a Pi tool such as `hypagoal_start`.
 
 The initial input is:
 
@@ -283,26 +283,26 @@ Keep `hypagraph_define` for manually controlled workflows.
 Add:
 
 ```text
-/goal [--tokens 50k] [--turns 40] <objective>
-/goal
-/goal status
-/goal pause
-/goal resume
-/goal cancel
-/goal graph
+/hypagoal [--tokens 50k] [--turns 40] <objective>
+/hypagoal
+/hypagoal status
+/hypagoal pause
+/hypagoal resume
+/hypagoal cancel
+/hypagoal graph
 ```
 
 Use these rules:
 
-- `/goal <objective>` starts a planning turn.
+- `/hypagoal <objective>` starts a planning turn.
 - The model inspects the repository before it defines the workflow.
-- The model calls `hypagraph_goal_start` with the complete definition.
+- The model calls `hypagoal_start` with the complete definition.
 - The command asks for confirmation before it replaces a non-terminal goal.
-- `/goal pause` stops continuation and keeps all state.
-- `/goal resume` enables continuation.
-- `/goal cancel` is terminal and event-backed.
-- `/goal graph` opens the existing graph pane.
-- `/goal` and `/goal status` show the canonical goal state.
+- `/hypagoal pause` stops continuation and keeps all state.
+- `/hypagoal resume` enables continuation.
+- `/hypagoal cancel` is terminal and event-backed.
+- `/hypagoal graph` opens the existing graph pane.
+- `/hypagoal` and `/hypagoal status` show the canonical goal state.
 
 Do not use a clear command to delete canonical history.
 
@@ -328,7 +328,7 @@ Translate a user objective into these graph elements:
 | Blocked stop condition | Blocked node or workflow state |
 | Resource limit | Goal token and turn budgets |
 
-Goal mode must apply stronger validation than a manually controlled guided workflow.
+Hypagoal must apply stronger validation than a manually controlled guided workflow.
 
 The validator must require:
 
@@ -394,7 +394,7 @@ An active goal must pause after a Pi reload.
 
 An active goal must pause after a session branch change.
 
-The user must run `/goal resume` before autonomous continuation starts again.
+The user must run `/hypagoal resume` before autonomous continuation starts again.
 
 Restore must not:
 
@@ -441,7 +441,7 @@ The first release must not allow unlimited autonomous revisions.
 
 Use this initial rule:
 
-- a blocked or invalid workflow pauses goal mode;
+- a blocked or invalid workflow pauses Hypagoal;
 - the continuation message can request one explicit graph revision action;
 - if the revision does not restore a valid executable path, the goal stops as blocked.
 
@@ -523,7 +523,7 @@ A workflow can have a durable goal-control state.
 
 A manually driven workflow produces the correct goal terminal state through replay.
 
-### Slice 2 - Add atomic `/goal` creation
+### Slice 2 - Add atomic `/hypagoal` creation
 
 #### User result
 
@@ -531,8 +531,8 @@ A user can start goal planning with one command.
 
 #### Add
 
-- `/goal` command parsing;
-- `hypagraph_goal_start`;
+- `/hypagoal` command parsing;
+- `hypagoal_start`;
 - atomic workflow and goal creation;
 - replacement confirmation;
 - goal authoring guidance;
@@ -579,7 +579,7 @@ A multi-node workflow completes without manual continuation prompts.
 
 #### User result
 
-Goal mode stops at a token or turn limit and never resumes silently.
+Hypagoal stops at a token or turn limit and never resumes silently.
 
 #### Add
 
@@ -607,7 +607,7 @@ Token limits, turn limits, reload, and branch changes produce deterministic stop
 
 #### User result
 
-Goal mode can run a check-driven repair loop and stop for the correct reason.
+Hypagoal can run a check-driven repair loop and stop for the correct reason.
 
 #### Add
 
@@ -662,11 +662,11 @@ A user can understand goal state without raw event inspection.
 
 - compact status line;
 - lifecycle message renderer;
-- `/goal status`;
-- `/goal pause`;
-- `/goal resume`;
-- `/goal cancel`;
-- `/goal graph`;
+- `/hypagoal status`;
+- `/hypagoal pause`;
+- `/hypagoal resume`;
+- `/hypagoal cancel`;
+- `/hypagoal graph`;
 - graph-pane goal details;
 - narrow and wide terminal tests.
 
@@ -684,7 +684,7 @@ The complete goal path is proven in Pi and released.
 
 The dogfood run must:
 
-1. Start from one prose `/goal` command.
+1. Start from one prose `/hypagoal` command.
 2. Define a graph with at least one gate.
 3. Use one check-driven repair loop.
 4. Run at least three loop iterations.
@@ -701,7 +701,7 @@ The dogfood run must:
 
 #### Release result
 
-- all goal-mode acceptance tests pass;
+- all Hypagoal acceptance tests pass;
 - CI passes on Ubuntu, macOS, and Windows;
 - CI passes on Node.js 22 and 24;
 - the dogfood record is stored in `docs`;
@@ -757,7 +757,7 @@ Tests must cover:
 
 ## 15. Out of scope for the first release
 
-The first goal-mode release does not include:
+The first Hypagoal release does not include:
 
 - parallel autonomous node execution;
 - delegated subagents;
@@ -775,11 +775,11 @@ The first goal-mode release does not include:
 
 ## 16. Roadmap position
 
-Implement goal mode after M4.
+Implement Hypagoal after M4.
 
-Goal mode depends on executable bounded loops, typed success conditions, hard iteration limits, progress metrics, and patience rules.
+Hypagoal depends on executable bounded loops, typed success conditions, hard iteration limits, progress metrics, and patience rules.
 
-Implement goal mode before delegated execution.
+Implement Hypagoal before delegated execution.
 
 This order proves the single-session controller, continuation rules, stop semantics, and graph contract before Hypagraph distributes node execution across other agents.
 
@@ -788,7 +788,7 @@ Use this proposed sequence:
 | Milestone | Release marker | Result |
 | --- | --- | --- |
 | M4 | v0.5 | Executable bounded loops |
-| M5 | v0.6 | Graph-backed goal mode |
+| M5 | v0.6 | Hypagoal |
 | M6 | v0.7 | Event history, replay, and debugger UI |
 | M7 | v0.8 | Executor abstraction and isolated Pi execution |
 | M8 | v0.9 | Workspace integration and bounded concurrency |
@@ -797,9 +797,9 @@ Use this proposed sequence:
 
 ## 17. Exit criteria
 
-Goal mode is complete when:
+Hypagoal is complete when:
 
-- `/goal` creates one canonical workflow and goal-control state;
+- `/hypagoal` creates one canonical workflow and goal-control state;
 - the workflow graph is the executable contract;
 - the runtime derives goal completion;
 - the model cannot mark the goal complete;
