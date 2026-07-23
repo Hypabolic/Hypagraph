@@ -30,6 +30,11 @@ replace_once(
 )
 replace_once(
     "src/domain/reducer.ts",
+    "      noProgressCount: runtime.noProgressCount,",
+    "      noProgressCount: runtime.noProgressCount ?? 0,",
+)
+replace_once(
+    "src/domain/reducer.ts",
     "    noProgressCount: improved ? 0 : runtime.noProgressCount + 1,",
     "    noProgressCount: improved ? 0 : (runtime.noProgressCount ?? 0) + 1,",
 )
