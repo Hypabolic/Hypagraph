@@ -1,4 +1,4 @@
-import type { CommandCheckDefinition, Diagnostic, NodeRuntime } from "./model.js";
+import type { CheckDefinition, Diagnostic, NodeRuntime } from "./model.js";
 
 export type CheckStartEligibility =
   | { ok: true; retry: boolean; previousAttemptId?: string }
@@ -11,7 +11,7 @@ const reject = (code: string, message: string, suggestion?: string): CheckStartE
 
 export function evaluateCheckStart(
   runtime: NodeRuntime,
-  definition: CommandCheckDefinition,
+  definition: CheckDefinition,
   attemptId: string,
   at: string,
 ): CheckStartEligibility {
