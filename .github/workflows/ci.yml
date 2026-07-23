@@ -7,13 +7,14 @@ on:
   push:
     branches:
       - main
+      - agent/m4-slice-7-recovery-hardening-current
 
 permissions:
   contents: write
 
 jobs:
   prepare-slice-7:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening-current'
+    if: (github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening-current') || (github.event_name == 'push' && github.ref == 'refs/heads/agent/m4-slice-7-recovery-hardening-current')
     runs-on: ubuntu-latest
     steps:
       - name: Check out the Slice 7 branch
