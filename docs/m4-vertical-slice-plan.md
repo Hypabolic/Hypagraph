@@ -510,6 +510,8 @@ No executable loop can run without a deterministic hard stop.
 
 ### Slice 5 - Add progress, loss, best result, and patience
 
+- Status: implemented
+
 #### User result
 
 A user can define a numeric progress metric and stop a loop when it does not improve.

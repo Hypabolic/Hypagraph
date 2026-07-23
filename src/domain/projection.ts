@@ -49,6 +49,7 @@ const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
     maxIterations: loop.maxIterations,
     iterations: [],
     factsUsed: [],
+    noProgressCount: 0,
     ...(legacyText === undefined ? {} : { legacyPredicate: legacyText }),
   };
 };
@@ -304,10 +305,19 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
           record.factsUsed = structuredClone(factsUsed);
           record.semanticsVersion = semanticsVersion;
           record.decision = decision;
+          if (typeof event.data.metric === "number") record.metric = event.data.metric;
+          if (typeof event.data.improved === "boolean") record.improved = event.data.improved;
+          if (typeof event.data.bestMetric === "number") record.bestMetric = event.data.bestMetric;
+          if (typeof event.data.bestIteration === "number") record.bestIteration = event.data.bestIteration;
+          if (typeof event.data.noProgressCount === "number") record.noProgressCount = event.data.noProgressCount;
         }
         runtime.lastSuccess = success;
         runtime.factsUsed = structuredClone(factsUsed);
         runtime.semanticsVersion = semanticsVersion;
+        if (typeof event.data.metric === "number") runtime.currentMetric = event.data.metric;
+        if (typeof event.data.bestMetric === "number") runtime.bestMetric = event.data.bestMetric;
+        if (typeof event.data.bestIteration === "number") runtime.bestIteration = event.data.bestIteration;
+        if (typeof event.data.noProgressCount === "number") runtime.noProgressCount = event.data.noProgressCount;
       }
       break;
     }
@@ -327,7 +337,8 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       if (runtime) {
         runtime.status = "failed";
         runtime.completedAt = event.timestamp;
-        runtime.exitReason = "max_iterations";
+        const reason = event.data.exitReason;
+        runtime.exitReason = reason === "no_progress" || reason === "evaluation_error" ? reason : "max_iterations";
       }
       break;
     }

@@ -58,6 +58,12 @@ export interface GraphViewLoop {
   currentIteration: number;
   lastSuccess?: boolean;
   exitReason?: string;
+  currentMetric?: number;
+  bestMetric?: number;
+  bestIteration?: number;
+  noProgressCount?: number;
+  patience?: number;
+  remainingPatience?: number;
 }
 
 export interface GraphViewModel {
@@ -108,8 +114,13 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         maxIterations: loop.maxIterations,
         status: runtime?.status ?? "pending",
         currentIteration: runtime?.currentIteration ?? 0,
+        noProgressCount: runtime?.noProgressCount ?? 0,
+        ...(loop.patience === undefined ? {} : { patience: loop.patience, remainingPatience: Math.max(0, loop.patience - (runtime?.noProgressCount ?? 0)) }),
         ...(runtime?.lastSuccess === undefined ? {} : { lastSuccess: runtime.lastSuccess }),
         ...(runtime?.exitReason === undefined ? {} : { exitReason: runtime.exitReason }),
+        ...(runtime?.currentMetric === undefined ? {} : { currentMetric: runtime.currentMetric }),
+        ...(runtime?.bestMetric === undefined ? {} : { bestMetric: runtime.bestMetric }),
+        ...(runtime?.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));

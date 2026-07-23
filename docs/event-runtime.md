@@ -211,11 +211,12 @@ The final iteration facts, attempts, evidence, results, and artifact references 
 
 ## Current M4 limit
 
-M4 Slices 1 to 4 support successful task and check iterations, deterministic feedback continuation, isolated iteration reset, failed evaluation-check observations, and hard-limit failure.
+M4 Slices 1 to 5 support successful task and check iterations, deterministic feedback continuation, isolated iteration reset, failed evaluation-check observations, hard iteration limits, numeric progress metrics, best-result tracking, and patience failure.
+
+Progress decisions are stored in `hypagraph.loop.evaluated`. The event contains the metric, improvement result, best metric, best iteration, and no-progress count. Replay does not recalculate them. A missing or invalid current-iteration metric fails the loop with `evaluation_error`. Hard-limit failure has priority over patience failure.
 
 It does not yet support:
 
-- progress metrics or patience;
 - loop cancellation and revision hardening;
 - parallel iterations;
 - nested or overlapping loops.

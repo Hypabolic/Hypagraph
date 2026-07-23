@@ -200,7 +200,7 @@ Hypagraph v0.4 includes:
 
 The v0.4 release was dogfooded through the real Pi product path with a graph that included a command check, a gate, selected and skipped routes, a join, and a declared feedback loop. See the [v0.4 dogfood record](docs/v0.4-dogfood.md).
 
-M4 is in progress. It extends executable bounded loops with multi-iteration repair behavior, progress rules, recovery hardening, and the complete Pi loop surface.
+M4 is in progress. Slices 1 to 5 provide multi-iteration task and check repair loops, hard iteration limits, numeric progress metrics, best-result tracking, and patience failure. Later slices add recovery hardening and the complete Pi loop surface.
 
 ## Develop locally
 
