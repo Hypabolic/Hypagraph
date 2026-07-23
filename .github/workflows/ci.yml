@@ -8,9 +8,61 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  prepare-slice-7:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m4-slice-7-recovery-hardening'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the Slice 7 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m4-slice-7-recovery-hardening
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Apply Slice 7
+        shell: bash
+        run: |
+          set +e
+          {
+            python3 scripts/fix-m4-slice7-anchor.py
+            python3 scripts/apply-m4-slice7.py
+          } > apply.log 2>&1
+          status=$?
+          cat apply.log
+          exit $status
+
+      - name: Upload preparation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-slice7-prepare-log
+          path: apply.log
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run type checks and tests
+        run: npm run check
+
+      - name: Commit Slice 7 product files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs skills src tests
+          if git diff --cached --quiet; then
+            echo "Slice 7 product files are already current."
+          else
+            git commit -m "Implement M4 Slice 7 recovery hardening"
+            git push origin HEAD:agent/m4-slice-7-recovery-hardening
+          fi
+
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
