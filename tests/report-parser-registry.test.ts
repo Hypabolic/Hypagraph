@@ -30,12 +30,15 @@ const coverageReport = JSON.stringify({
   },
 });
 
-describe("M3.1 report parser registry", () => {
+const metricReport = JSON.stringify({ schemaVersion: 1, score: 0.8 });
+
+describe("report parser registry", () => {
   it("publishes a stable parser catalog", () => {
     expect(REPORT_PARSERS).toEqual([
       expect.objectContaining({ name: "vitest-json", version: 1, checkKind: "test-report" }),
       expect.objectContaining({ name: "eslint-json", version: 1, checkKind: "lint-report" }),
       expect.objectContaining({ name: "istanbul-coverage-summary", version: 1, checkKind: "coverage-report" }),
+      expect.objectContaining({ name: "metric-json", version: 1, checkKind: "metric-report" }),
     ]);
   });
 
@@ -51,6 +54,22 @@ describe("M3.1 report parser registry", () => {
     if (!first.ok) return;
     expect(first.value.parser).toBe(name);
     expect(first.value.facts.some((fact) => fact.name === expectedFact)).toBe(true);
+  });
+
+  it("dispatches metric-json with explicit scalar mappings", () => {
+    const options = { metricMappings: [{ source: "score", fact: "evaluation.score", type: "number" as const }] };
+    const first = parseReport("metric-json", 1, metricReport, options);
+    const second = parseReport("metric-json", 1, metricReport, options);
+    expect(second).toEqual(first);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.facts).toEqual([{ name: "evaluation.score", type: "number", value: 0.8 }]);
+  });
+
+  it("rejects a metric parser call without mappings", () => {
+    const parsed = parseReport("metric-json", 1, metricReport);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.diagnostics[0]?.code).toBe("metric_report_mapping_required");
   });
 
   it("rejects unknown parser names and versions before input parsing", () => {
