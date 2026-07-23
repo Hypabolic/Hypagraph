@@ -1,0 +1,199 @@
+import { readFile, stat } from "node:fs/promises";
+import { basename, relative, resolve } from "node:path";
+import type {
+  CheckExecutionRequest,
+  CheckExecutor,
+  CheckResult,
+  FactInput,
+  ReportCheckDefinition,
+} from "../domain/model.js";
+import type { CheckArtifactStore } from "./artifacts.js";
+import { CommandCheckExecutor } from "./command-executor.js";
+import { parseReport } from "./report-parser-registry.js";
+
+const DEFAULT_MAX_REPORT_BYTES = 1_048_576;
+const validNamespace = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)*$/;
+
+export interface ReportCheckExecutorOptions {
+  rootDirectory: string;
+  artifactStore: CheckArtifactStore;
+  producerExecutor?: CheckExecutor;
+  now?: () => Date;
+}
+
+const reportFactName = (fact: FactInput, definition: ReportCheckDefinition): string => {
+  const namespace = definition.namespace;
+  if (fact.name === "passed") return `${namespace}.success`;
+  if (definition.kind === "test-report" && fact.name.startsWith("tests.")) {
+    return `${namespace}.${fact.name.slice("tests.".length)}`;
+  }
+  if (definition.kind === "test-report" && fact.name.startsWith("testSuites.")) {
+    return `${namespace}.suites.${fact.name.slice("testSuites.".length)}`;
+  }
+  if (fact.name.startsWith(`${namespace}.`)) return fact.name;
+  return `${namespace}.${fact.name}`;
+};
+
+const resolveReportPath = (rootDirectory: string, definition: ReportCheckDefinition): string => {
+  const root = resolve(rootDirectory);
+  const workingDirectory = resolve(root, definition.workingDirectory ?? ".");
+  const target = resolve(workingDirectory, definition.reportPath);
+  const local = relative(root, target);
+  if (local === ".." || local.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error("The report path is outside the configured workspace root.");
+  }
+  return target;
+};
+
+const errorResult = (
+  definition: ReportCheckDefinition,
+  request: CheckExecutionRequest,
+  source: CheckResult,
+  completedAt: string,
+  message: string,
+): CheckResult => ({
+  checkKind: definition.kind,
+  attemptId: request.attemptId,
+  startedAt: source.startedAt,
+  completedAt,
+  status: "error",
+  facts: [],
+  evidence: structuredClone(source.evidence),
+  ...(source.exitCode === undefined ? {} : { exitCode: source.exitCode }),
+  ...(source.stdoutRef === undefined ? {} : { stdoutRef: source.stdoutRef }),
+  ...(source.stderrRef === undefined ? {} : { stderrRef: source.stderrRef }),
+  error: message,
+});
+
+export class ReportCheckExecutor implements CheckExecutor {
+  private readonly rootDirectory: string;
+  private readonly artifactStore: CheckArtifactStore;
+  private readonly producerExecutor: CheckExecutor;
+  private readonly now: () => Date;
+
+  constructor(options: ReportCheckExecutorOptions) {
+    this.rootDirectory = resolve(options.rootDirectory);
+    this.artifactStore = options.artifactStore;
+    this.producerExecutor = options.producerExecutor ?? new CommandCheckExecutor({
+      rootDirectory: this.rootDirectory,
+      artifactStore: this.artifactStore,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    this.now = options.now ?? (() => new Date());
+  }
+
+  async execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult> {
+    if (request.definition.kind === "command") {
+      return this.producerExecutor.execute(request, signal);
+    }
+    if (request.definition.kind !== "test-report"
+      && request.definition.kind !== "lint-report"
+      && request.definition.kind !== "coverage-report") {
+      throw new Error(`The report executor cannot run check kind '${request.definition.kind}'.`);
+    }
+
+    const definition = request.definition;
+    if (!validNamespace.test(definition.namespace)) {
+      return {
+        checkKind: definition.kind,
+        attemptId: request.attemptId,
+        startedAt: request.requestedAt,
+        completedAt: this.now().toISOString(),
+        status: "error",
+        facts: [],
+        evidence: [],
+        error: "The report fact namespace is invalid.",
+      };
+    }
+
+    const producerRequest: CheckExecutionRequest = {
+      ...structuredClone(request),
+      definition: {
+        kind: "command",
+        command: definition.command,
+        ...(definition.arguments === undefined ? {} : { arguments: [...definition.arguments] }),
+        ...(definition.workingDirectory === undefined ? {} : { workingDirectory: definition.workingDirectory }),
+        timeoutMs: definition.timeoutMs,
+        ...(definition.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...definition.expectedExitCodes] }),
+        ...(definition.environmentVariables === undefined ? {} : { environmentVariables: [...definition.environmentVariables] }),
+        ...(definition.retry === undefined ? {} : { retry: structuredClone(definition.retry) }),
+        publish: [],
+      },
+    };
+
+    const producer = await this.producerExecutor.execute(producerRequest, signal);
+    if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
+      return {
+        ...structuredClone(producer),
+        checkKind: definition.kind,
+        facts: [],
+      };
+    }
+
+    let reportPath: string;
+    try {
+      reportPath = resolveReportPath(this.rootDirectory, definition);
+    } catch (error) {
+      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+    }
+
+    const maxReportBytes = definition.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
+    try {
+      const metadata = await stat(reportPath);
+      if (!metadata.isFile()) throw new Error("The declared report path is not a file.");
+      if (metadata.size > maxReportBytes) throw new Error("The report exceeds the maximum read size.");
+    } catch (error) {
+      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+    }
+
+    let reportBytes: Uint8Array;
+    let reportText: string;
+    try {
+      reportBytes = new Uint8Array(await readFile(reportPath));
+      reportText = new TextDecoder("utf-8", { fatal: true }).decode(reportBytes);
+    } catch (error) {
+      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+    }
+
+    const reportRef = await this.artifactStore.write({
+      workflowId: request.workflowId,
+      nodeId: request.nodeId,
+      attemptId: request.attemptId,
+      name: basename(reportPath),
+      mediaType: "application/json; charset=utf-8",
+      content: reportBytes,
+    });
+    const evidence = [
+      ...structuredClone(producer.evidence),
+      { ref: reportRef, kind: "file" as const, summary: `${definition.parser.name} report.` },
+    ];
+
+    const parsed = parseReport(definition.parser.name, definition.parser.version, reportText);
+    if (!parsed.ok) {
+      return errorResult(
+        definition,
+        request,
+        { ...producer, evidence },
+        this.now().toISOString(),
+        parsed.diagnostics.map((diagnostic) => diagnostic.message).join(" "),
+      );
+    }
+
+    const facts = parsed.value.facts.map((fact) => ({
+      ...structuredClone(fact),
+      name: reportFactName(fact, definition),
+      evidence: structuredClone(evidence),
+    }));
+    const names = facts.map((fact) => fact.name);
+    if (new Set(names).size !== names.length) {
+      return errorResult(definition, request, { ...producer, evidence }, this.now().toISOString(), "The report parser produced duplicate public fact names.");
+    }
+
+    return {
+      ...structuredClone(producer),
+      checkKind: definition.kind,
+      facts,
+      evidence,
+    };
+  }
+}
