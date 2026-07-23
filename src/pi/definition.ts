@@ -53,7 +53,7 @@ const evaluationFeedbackSchema = Type.Union([
   Type.Object({ mode: Type.Literal("bounded-diagnostics"), maximumDiagnosticItems: Type.Integer({ minimum: 1, maximum: 100 }), exposeRawReport: Type.Optional(Type.Boolean()) }),
 ]);
 const metricEvaluationSchema = Type.Object({
-  kind: StringEnum(["development", "probe", "holdout"] as const),
+  kind: Type.Union([Type.Literal("development"), Type.Literal("probe"), Type.Literal("holdout")]),
   feedback: evaluationFeedbackSchema,
 });
 const metricReportCheckSchema = Type.Object({
