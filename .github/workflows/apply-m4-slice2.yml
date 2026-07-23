@@ -1,0 +1,63 @@
+name: Apply M4 Slice 2
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/m4-slice-2-feedback-iteration'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the Slice 2 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m4-slice-2-feedback-iteration
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Apply Slice 2
+        run: python3 scripts/apply-m4-slice2.py
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run repository checks
+        shell: bash
+        run: |
+          set +e
+          npm run check > check.log 2>&1
+          status=$?
+          cat check.log
+          exit $status
+
+      - name: Upload check diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-slice2-check-log
+          path: check.log
+
+      - name: Commit Slice 2
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs skills src tests
+          if git diff --cached --quiet; then
+            echo "Slice 2 product files are already current."
+          else
+            git commit -m "Implement M4 Slice 2 feedback continuation"
+            git push origin HEAD:agent/m4-slice-2-feedback-iteration
+          fi
