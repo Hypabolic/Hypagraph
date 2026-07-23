@@ -31,21 +31,35 @@ A workflow can define a supported parser adapter, run or read its declared input
 
 ### Slice 1: Add the test-report parser boundary
 
+Status: complete.
+
 - Define the parser result contract.
 - Add a versioned Vitest JSON parser.
 - Normalize suite and test counts into typed facts.
 - Reject malformed, incomplete, and inconsistent reports.
 - Add deterministic parser tests.
 
-This slice is pure. It does not yet run a command or publish facts into a workflow.
-
 ### Slice 2: Integrate test-report checks
 
-- Add the `test-report` check definition.
-- Run the declared command through the existing bounded command runner.
-- Parse the declared report artifact after command completion.
-- Publish pass state, suite counts, test counts, and duration.
-- Preserve command output and the raw report as evidence.
+Status: active.
+
+Completed work:
+
+- Adapt a recorded command result and stored Vitest report into a `test-report` result.
+- Read reports through a bounded artifact-store boundary.
+- Require the report reference in recorded command evidence.
+- Preserve the report evidence on every parsed fact.
+- Create a deterministic `publish-facts` command from validated output.
+- Reject missing, oversized, non-JSON, malformed, mismatched, timed-out, cancelled, interrupted, and errored input.
+- Keep parsing separate from command execution so restore and replay do not rerun the producer command.
+
+Remaining work:
+
+- Add the declarative `test-report` check definition.
+- Validate parser name, parser version, report artifact name, and fact namespace before execution.
+- Dispatch the producer command through the existing bounded command runner.
+- Record the raw producer result before parsing and publication.
+- Add an event-backed end-to-end lifecycle test.
 
 ### Slice 3: Add lint-report adapters
 
