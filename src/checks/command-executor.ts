@@ -84,7 +84,23 @@ export class CommandCheckExecutor implements CheckExecutor {
   }
 
   async execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult> {
-    if (request.definition.kind !== "command") throw new Error(`The command executor cannot run check kind '${request.definition.kind}'.`);
+    if (request.definition.kind === "file-assertion" || request.definition.kind === "git-assertion") {
+      const { AssertionCheckExecutor } = await import("./assertion-check-executor.js");
+      return new AssertionCheckExecutor({
+        rootDirectory: this.rootDirectory,
+        artifactStore: this.artifactStore,
+        now: this.now,
+      }).execute(request, signal);
+    }
+    if (request.definition.kind !== "command") {
+      const { ReportCheckExecutor } = await import("./report-check-executor.js");
+      return new ReportCheckExecutor({
+        rootDirectory: this.rootDirectory,
+        artifactStore: this.artifactStore,
+        producerExecutor: this,
+        now: this.now,
+      }).execute(request, signal);
+    }
 
     const definition = request.definition;
     const startedAt = this.now().toISOString();

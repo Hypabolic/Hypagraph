@@ -53,18 +53,27 @@ export function normalizeCheckResult(request: CheckExecutionRequest, result: Che
   }
 
   const facts: FactInput[] = [];
-  for (const mapping of request.definition.publish) {
-    const value = sourceValue(mapping.source, result);
-    if (value === undefined) {
-      diagnostics.push({ code: "check_source_unavailable", message: `Check source '${mapping.source}' is not available for this result.`, location: `check.publish.${mapping.fact}` });
-      continue;
+  if (request.definition.kind === "command") {
+    for (const mapping of request.definition.publish) {
+      const value = sourceValue(mapping.source, result);
+      if (value === undefined) {
+        diagnostics.push({ code: "check_source_unavailable", message: `Check source '${mapping.source}' is not available for this result.`, location: `check.publish.${mapping.fact}` });
+        continue;
+      }
+      facts.push({
+        name: mapping.fact,
+        type: sourceType(mapping.source),
+        value,
+        evidence: structuredClone(result.evidence),
+      });
     }
-    facts.push({
-      name: mapping.fact,
-      type: sourceType(mapping.source),
-      value,
-      evidence: structuredClone(result.evidence),
-    });
+  } else {
+    for (const fact of result.facts) {
+      facts.push({
+        ...structuredClone(fact),
+        evidence: structuredClone(fact.evidence ?? result.evidence),
+      });
+    }
   }
 
   if (diagnostics.length > 0) return { ok: false, diagnostics };

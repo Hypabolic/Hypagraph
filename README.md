@@ -4,7 +4,7 @@
 
 Hypagraph is a graph-workflow extension for the [Pi coding agent](https://github.com/badlogic/pi-mono). It automatically turns an ordinary coding request or an existing plan into an explicit graph of tasks, checks, decisions, and bounded iteration regions.
 
-Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic checks, selects branches from typed facts, and shows the live graph while the agent works. The user does not have to design the graph or use graph terminology.
+Instead of relying on a long checklist and model memory, Hypagraph keeps the workflow state in Pi. It controls which work is ready, records evidence, runs deterministic commands, parses declared reports, evaluates file and Git assertions, selects branches from typed facts, and shows the live graph while the agent works. The user does not have to design the graph or use graph terminology.
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ Coding agents often start with a reasonable plan, then lose structure as the ses
 - **Route from facts:** gates select branches from typed check output.
 - **Run bounded iteration:** loop regions have typed success conditions, hard limits, optional progress metrics, patience, and explicit outcome policies.
 - **Compose independent work:** a loop can connect to the wider graph or run as an independent top-level component.
-- **Resume safely:** workflow state is stored in the Pi session and rebuilt without rerunning completed commands.
+- **Resume safely:** workflow state is stored in the Pi session and rebuilt without rerunning completed external effects.
 
 Hypagraph is useful for repository changes that have dependencies, conditional paths, mandatory checks, or bounded repeated work.
 
@@ -97,7 +97,7 @@ A typical run works like this:
 2. Hypagraph validates and stores the graph.
 3. Dependency-free nodes and eligible loop entries become ready.
 4. The agent completes tasks and submits evidence.
-5. Checks or task nodes publish typed facts.
+5. Checks publish typed facts from commands, reports, files, or repository state.
 6. Gates select deterministic routes from those facts.
 7. A loop evaluates its typed success condition at its declared boundary.
 8. A false result can follow declared feedback and start another bounded iteration.
@@ -159,9 +159,9 @@ Use examples/command-check-gate.json as the basis for a Hypagraph workflow for t
 | `/hypagraph graph` | Open or focus the live graph pane. |
 | `/hypagraph graph toggle` | Open or close the graph pane. |
 | `/hypagraph graph focus` | Give keyboard focus to the pane. |
-| `/hypagraph graph close` | Close the graph pane. |
-| `/hypagraph check active` | Show the active command check. |
-| `/hypagraph check cancel [node-id]` | Cancel an active command check. |
+| `/hypagraph graph close` | Close the pane. |
+| `/hypagraph check active` | Show the active deterministic check. |
+| `/hypagraph check cancel [node-id]` | Cancel an active check. |
 
 Graph pane controls:
 
@@ -187,6 +187,24 @@ A task describes agent work. It can define acceptance criteria, required evidenc
 
 A command check runs a deterministic local command such as `npm run check`. It supports timeouts, cancellation, bounded output, explicit retry policy, environment-variable allowlists, and result artifacts.
 
+### Report checks
+
+A report check runs a bounded producer command and parses one declared report with a versioned deterministic adapter. Supported formats are:
+
+- Vitest JSON test reports;
+- ESLint JSON reports;
+- Istanbul coverage summaries.
+
+Report paths must remain inside the workspace. Reads are bounded, raw reports are retained as evidence, and malformed reports cannot publish facts.
+
+### File assertions
+
+A file assertion checks one workspace-contained path. It can verify existence, absence, exact size, SHA-256, or bounded text content.
+
+### Git assertions
+
+A Git assertion uses a fixed command allowlist. It can verify clean state, the current branch, the current revision, or an exact or containing set of changed paths. Workflow definitions cannot provide arbitrary Git arguments.
+
 ### Gates
 
 A gate evaluates a typed condition against facts produced by earlier nodes. It selects and persists one route while skipping the other route.
@@ -195,50 +213,70 @@ A gate evaluates a typed condition against facts produced by earlier nodes. It s
 
 A loop declares feedback, an iteration region, a typed success condition, and a hard iteration limit. It can connect to the main graph or form an independent graph component.
 
+## Check facts
+
+Every check declares the facts it can publish. Hypagraph validates the names and types before execution.
+
+Public parser and assertion facts:
+
+- use a declared namespace;
+- use lowercase dotted paths;
+- use kebab-case for multiword segments;
+- retain evidence references;
+- cannot overwrite facts owned by another node.
+
+Examples include `tests.success`, `lint.files.with-errors`, `coverage.lines.percent`, `artifact.size-bytes`, and `repository.changed-paths`.
+
+A valid assertion that evaluates to false is a failed check. Invalid input or an evaluator failure is an error. This distinction is visible in Pi and in the durable attempt record.
+
 ## Session safety and recovery
 
 Hypagraph stores accepted event batches in the Pi session. The event stream is the source of truth, and the current workflow is a deterministic projection of those events.
 
-A command check is stored in this order:
+A deterministic check is stored in this order:
 
 ```text
 store check start
     |
     v
-run command
+run bounded command or assertion
     |
     v
-store facts
+store raw result and evidence
     |
     v
-store raw result
+publish declared facts
     |
     v
 store verification and loop decision
 ```
 
-Hypagraph does not run a command when it cannot first store the check start. Session restore does not rerun a completed command. It closes an interrupted attempt or resumes verification from a stored raw result. Loop decisions and next-iteration resets are committed atomically.
+Hypagraph does not start an external check effect when it cannot first store the check start. Session restore does not rerun a completed command or repeat a completed assertion read. It closes an interrupted attempt or resumes verification from a stored raw result. Loop decisions and next-iteration resets are committed atomically.
 
-Check output artifacts are stored under `.hypagraph/check-artifacts`. Hypagraph stores references in the event stream instead of storing large command output in the Pi session.
+Check artifacts are stored under `.hypagraph/check-artifacts`. Hypagraph stores references in the event stream instead of storing large command output or reports in the Pi session.
 
 ## Current status
 
-Hypagraph v0.5 includes:
+The current implementation includes:
 
 - installable Pi integration and a bundled automatic graph-authoring skill;
-- task, gate, and command-check nodes;
+- task, gate, command-check, report-check, file-assertion, and Git-assertion nodes;
 - a live terminal graph pane;
 - typed facts and deterministic route selection;
 - durable event-based workflow state;
-- command checks with timeout, cancellation, retry policy, and artifact capture;
+- bounded commands with timeout, cancellation, retry policy, environment allowlists, and artifact capture;
+- versioned Vitest, ESLint, and Istanbul report adapters;
+- workspace-contained file assertions and fixed-allowlist Git assertions;
 - generic bounded iteration regions with deterministic feedback;
 - hard limits, numeric progress, best-result tracking, and patience;
 - independent loop components and explicit failure policies;
 - revision invalidation, cancellation blocking, restore recovery, and stale-result rejection;
 - canonical loop summaries and graph-pane loop state;
-- deterministic replay, migration, recovery, and property tests.
+- deterministic replay, migration, recovery, and cross-platform dogfood tests.
 
 The v0.5 release evidence covers refinement and optimization, bounded processing, check-and-repair, disconnected regions, every failure policy, cancellation, restore, hard-limit and patience exhaustion, and stale-result rejection. See the [v0.5 dogfood record](docs/v0.5-dogfood.md).
+
+The M3.1 evidence runs test, lint, coverage, file, and Git checks in one durable workflow and verifies persisted replay. See the [M3.1 implementation record](docs/m3-1-parser-adapters-plan.md).
 
 ## Develop locally
 
@@ -258,18 +296,4 @@ The hosted test matrix runs on Ubuntu, macOS, and Windows with Node.js 22 and 24
 
 - [Product and technical specification](docs/product-spec.md)
 - [Automatic graph authoring model](docs/automatic-graph-authoring.md)
-- [Execution plan and roadmap](docs/execution-roadmap.md)
-- [Loop-region product model](docs/loop-region-product-model.md)
-- [M4 executable bounded iteration regions plan](docs/m4-vertical-slice-plan.md)
-- [Trusted evaluation contracts and loss functions](docs/trusted-evaluation-contract-plan.md)
-- [Hypagoal plan](docs/hypagoal-vertical-slice-plan.md)
-- [Durable lifecycle and Pi session storage](docs/durable-lifecycle-storage.md)
-- [Check execution policy](docs/check-execution-policy.md)
-- [Pi graph visualisation plan](docs/pi-graph-visualisation-plan.md)
-- [v0.5 dogfood record](docs/v0.5-dogfood.md)
-- [v0.4 dogfood record](docs/v0.4-dogfood.md)
-- [Release notes](CHANGELOG.md)
-
-## Repository writing rules
-
-Repository text uses the ASD-STE100 Simplified Technical English method. See [AGENTS.md](AGENTS.md) for the mandatory rules.
+- [M3.1 deterministic parser adapters](docs/m3-1-parser-adapters-plan.md)

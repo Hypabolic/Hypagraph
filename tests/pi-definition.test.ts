@@ -39,32 +39,46 @@ const validInput = (): HypagraphDefineInput => ({
   policy: { mode: "guided", requireEvidence: false },
 });
 
+const requireInputCommandCheck = (input: HypagraphDefineInput) => {
+  const check = input.nodes[0]?.check;
+  if (!check || check.kind !== "command") throw new Error("Expected a command check input.");
+  return check;
+};
+
+const requireCommandCheck = (definition: ReturnType<typeof normalizeDefinition>) => {
+  const check = definition.nodes[0]?.check;
+  if (!check || check.kind !== "command") throw new Error("Expected a command check definition.");
+  return check;
+};
+
 describe("Pi command-check definition", () => {
   it("normalizes a command check without sharing mutable arrays", () => {
     const input = validInput();
     const definition = normalizeDefinition(input);
     const node = definition.nodes[0]!;
+    const inputCheck = requireInputCommandCheck(input);
+    const check = requireCommandCheck(definition);
     expect(node.kind).toBe("check");
-    expect(node.check?.command).toBe("npm");
-    expect(node.check?.arguments).toEqual(["test"]);
-    expect(node.check?.environmentVariables).toEqual(["PATH", "CI"]);
-    expect(node.check?.retry).toEqual({
+    expect(check.command).toBe("npm");
+    expect(check.arguments).toEqual(["test"]);
+    expect(check.environmentVariables).toEqual(["PATH", "CI"]);
+    expect(check.retry).toEqual({
       maxAttempts: 3,
       retryOn: ["failed", "timed_out"],
       backoffMs: 1_000,
     });
-    expect(node.check?.publish).toEqual([
+    expect(check.publish).toEqual([
       { source: "passed", fact: "tests.passed" },
       { source: "status", fact: "tests.status" },
     ]);
-    input.nodes[0]!.check!.arguments![0] = "changed";
-    input.nodes[0]!.check!.environmentVariables![0] = "SECRET";
-    input.nodes[0]!.check!.retry!.retryOn[0] = "error";
-    input.nodes[0]!.check!.publish[0]!.fact = "changed.fact";
-    expect(node.check?.arguments).toEqual(["test"]);
-    expect(node.check?.environmentVariables).toEqual(["PATH", "CI"]);
-    expect(node.check?.retry?.retryOn).toEqual(["failed", "timed_out"]);
-    expect(node.check?.publish[0]?.fact).toBe("tests.passed");
+    inputCheck.arguments![0] = "changed";
+    inputCheck.environmentVariables![0] = "SECRET";
+    inputCheck.retry!.retryOn[0] = "error";
+    inputCheck.publish[0]!.fact = "changed.fact";
+    expect(check.arguments).toEqual(["test"]);
+    expect(check.environmentVariables).toEqual(["PATH", "CI"]);
+    expect(check.retry?.retryOn).toEqual(["failed", "timed_out"]);
+    expect(check.publish[0]?.fact).toBe("tests.passed");
   });
 
   it("passes a valid public command check through domain validation", () => {
@@ -98,7 +112,7 @@ describe("Pi command-check definition", () => {
 
   it("uses the domain validator for invalid public check mappings", () => {
     const input = validInput();
-    input.nodes[0]!.check!.publish[0]!.fact = "tests.undeclared";
+    requireInputCommandCheck(input).publish[0]!.fact = "tests.undeclared";
     const created = createWorkflow(normalizeDefinition(input), at, "workflow-invalid-pi-check");
     expect(created.ok).toBe(false);
     if (created.ok) return;

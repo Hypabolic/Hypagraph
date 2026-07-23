@@ -1,7 +1,7 @@
 # Hypagraph product and technical specification
 
-- Status: proposed
-- Version: 0.1 draft
+- Status: active
+- Version: implementation baseline
 - Delivery: independent Pi package, designed to support additional agent runtimes
 
 ## Executive decision
@@ -15,7 +15,7 @@ The graph makes four concerns executable rather than advisory:
 3. evidence-backed completion;
 4. bounded feedback and iteration regions.
 
-The graph kernel is deterministic. Models may propose graphs and perform work, but the controller validates graph definitions, transitions, evidence, loop boundaries, and revisions.
+The graph kernel is deterministic. Models may propose graphs and perform work, but the controller validates graph definitions, transitions, evidence, check contracts, loop boundaries, and revisions.
 
 ## Product thesis
 
@@ -31,7 +31,7 @@ Hypagraph supports:
 - evidence-gated completion;
 - graph revision and downstream invalidation;
 - strongly connected loop regions with explicit bounds;
-- deterministic check and gate executors;
+- deterministic command, report, file-assertion, Git-assertion, and gate execution;
 - branch-aware session persistence;
 - live graph rendering and replay;
 - delegated node execution through Pi subagents, ACP agents, and named CLI adapters.
@@ -48,7 +48,7 @@ A workflow is a versioned graph plus canonical runtime state.
 
 A node is a bounded work contract containing intent, acceptance criteria, scope, required evidence, consumed and produced facts, runtime state, and attempt history.
 
-Planned node kinds include task, check, gate, approval, and delegated task nodes.
+Implemented node kinds are task, check, and gate. Approval and delegated task nodes remain planned.
 
 ### Edge
 
@@ -60,6 +60,23 @@ Planned node kinds include task, check, gate, approval, and delegated task nodes
 ### Facts and gates
 
 Checks publish typed immutable facts. Gates evaluate deterministic predicates over those facts and workflow metadata. Strict completion cannot depend solely on model judgement.
+
+Public fact names use lowercase dotted paths and kebab-case multiword segments. Each fact must have one declared producer and a matching type contract.
+
+### Deterministic checks
+
+A check is a normal graph node with a versioned definition and the durable attempt lifecycle.
+
+Implemented check kinds are:
+
+- `command`: runs a bounded process without a shell and maps result properties into facts;
+- `test-report`: parses declared Vitest JSON output;
+- `lint-report`: parses declared ESLint JSON output;
+- `coverage-report`: parses a declared Istanbul coverage summary;
+- `file-assertion`: evaluates bounded workspace-contained file properties;
+- `git-assertion`: evaluates a fixed allowlist of repository-state queries.
+
+A valid assertion that evaluates to false is a failed check. Invalid input or an evaluator failure is an error. Reports and assertion evaluations remain evidence and do not mutate canonical state directly.
 
 ### Loop regions
 
@@ -89,32 +106,38 @@ The graph projection can show a loop region as one compound graph element with a
 4. Undeclared cycles are rejected.
 5. Graph revisions invalidate changed work and affected downstream nodes.
 6. Stale or cancelled attempts cannot transition current graph state.
-7. Delegated mutations occur in isolated workspace leases before integration.
-8. A loop has no implicit repair semantics.
-9. An independent loop cannot release, fail, or reset an unrelated graph component.
-10. Loop failure and workflow failure are separate decisions controlled by explicit policy.
+7. External check effects start only after the check-start event is durable.
+8. Parser and assertion results publish only declared, type-correct facts.
+9. Restore and replay do not repeat completed external side effects.
+10. A loop has no implicit repair semantics.
+11. An independent loop cannot release, fail, or reset an unrelated graph component.
+12. Loop failure and workflow failure are separate decisions controlled by explicit policy.
 
 ## Current implementation
 
-The initial implementation provides:
+The implementation provides:
 
 - graph definition and validation;
 - dependency-derived readiness;
-- one-active-node execution;
-- evidence-backed completion;
-- Tarjan SCC detection;
-- exact loop-region validation;
-- downstream invalidation;
-- branch-aware restoration from Pi tool-result snapshots;
-- guided and strict scope enforcement.
+- task, check, and gate nodes;
+- typed facts and deterministic route selection;
+- command, test-report, lint-report, coverage-report, file-assertion, and Git-assertion checks;
+- bounded artifacts, parser registries, assertion evidence, cancellation, and retry policy;
+- append-only event persistence and deterministic replay;
+- Tarjan SCC detection and exact loop-region validation;
+- generic bounded iteration with hard limits, progress metrics, patience, and failure policies;
+- downstream invalidation and stale-result rejection;
+- branch-aware restoration from Pi session snapshots;
+- guided and strict scope enforcement;
+- a live Pi graph pane and check-result presentation.
 
-Multi-iteration loop execution is in progress. Independent-region outcome policy, delegated executors, and bounded parallel scheduling remain planned work.
+Delegated executors, worktree leases, ACP integration, and bounded parallel scheduling remain planned work.
 
 ## Delivery sequence
 
-1. Graph visualisation and shared view model.
-2. Append-only events and replay.
-3. Executor registry and attempt lifecycle.
+1. Graph visualisation and shared view model. Complete.
+2. Append-only events and replay. Complete.
+3. Executor registry and attempt lifecycle. Complete for local deterministic checks.
 4. Isolated Pi subagents.
 5. Worktree leases and integration.
 6. ACP client executor.
