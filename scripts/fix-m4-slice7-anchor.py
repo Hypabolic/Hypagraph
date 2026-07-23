@@ -21,7 +21,7 @@ if old_ui in text:
 elif new_ui not in text:
     raise SystemExit("Could not find the Slice 7 UI migration block.")
 
-snippet = r'''
+snippet = r"""
 # Align existing cancellation and interruption tests with the accepted blocked-region rule.
 replace_once(
     "tests/loop-check-recovery.test.ts",
@@ -51,7 +51,7 @@ replace_once(
     expect(cancelled.state.runtime.loops.region).toMatchObject({ status: "blocked", blockedAttemptId: "work-cancel", blockedReason: "Stop this iteration." });''',
 )
 
-'''
+"""
 marker = "for path in [\n"
 if snippet not in text:
     if marker not in text:
