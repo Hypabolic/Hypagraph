@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`
+- Current implementation baseline: `a6c5b9ee2b9025308e91241570154b0524158258`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, 4, and 5 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, 4, 5, and 6 complete |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -273,8 +273,8 @@ This root is the first member of the accepted future goal-family model.
 3. Graph-aware continuation — complete in PR #67.
 4. Token and turn budgets plus reload safety — complete in PR #69.
 5. Loop and trusted-evaluation continuation — complete in PR #71.
-6. Blockage and bounded revision — current.
-7. Complete Pi product surface.
+6. Blockage and bounded revision — complete in PR #73.
+7. Complete Pi product surface — current.
 8. Dogfood and v0.6 release.
 
 The detailed plan is in `docs/hypagoal-vertical-slice-plan.md`.
@@ -358,7 +358,24 @@ M5B Slice 5 provides:
 
 The merged baseline is `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`. CI #892 and final PR CI #894 pass 89 test files and 382 tests on all six supported OS and Node.js targets.
 
-Slice 6 adds canonical blocker classification and one bounded automatic workflow revision attempt. It must preserve the exact objective and safety contracts, reuse the existing revision and invalidation reducer, reject stale or repeated proposals, charge the revision turn, and stop clearly when no safe runnable path results.
+### Slice 6 result
+
+M5B Slice 6 provides:
+
+- deterministic canonical blocker classification;
+- one durable automatic revision allowance for each root Hypagoal;
+- state-bound revision identity across goal, workflow, revision, sequence, snapshot, blocker, session, branch, operation, and request;
+- byte-exact objective preservation before adapter normalization;
+- non-weakening validation for checks, gates, evidence, acceptance, typed success, evaluator trust, loop policies, limits, budgets, scopes, facts, dependencies, and existing required work;
+- accepted revisions through the existing workflow revision, invalidation, readiness, and stale-result reducer path;
+- exact Slice 4 turn and token accounting for delivered revision turns;
+- safe exhaustion for malformed, rejected, stale, interrupted, no-op, weakening, and still-blocked proposals;
+- reload and branch-change abandonment plus explicit pause without restore-time dispatch;
+- realistic blocked-to-revised-to-completed Pi smoke evidence in `docs/m5b-slice-6-dogfood.md`.
+
+The merged baseline is `a6c5b9ee2b9025308e91241570154b0524158258`. CI #1014 passes 93 test files and 441 tests on all six supported OS and Node.js targets.
+
+Slice 7 completes the Pi product surface. It must make active action, lifecycle control, remaining budget, loop and evaluation state, graph state, and typed stop reasons understandable without event inspection.
 
 ### M5B architecture constraints
 

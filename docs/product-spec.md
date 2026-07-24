@@ -1,8 +1,8 @@
 # Hypagraph product and technical specification
 
 - Status: active
-- Version: implementation baseline through M5B Slice 5
-- Current baseline: `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`
+- Version: implementation baseline through M5B Slice 6
+- Current baseline: `a6c5b9ee2b9025308e91241570154b0524158258`
 - Delivery: independent Pi package, designed to support additional agent runtimes
 - Future execution plan: `docs/goal-family-and-concurrent-execution-plan.md`
 
@@ -167,6 +167,8 @@ M5B Slice 4 implements workflow-local substantive-turn and token budgets, exactl
 
 M5B Slice 5 implements canonical loop and trusted-evaluation continuation guidance, protected model-visible evaluator redaction, explicit validity and typed-success separation, fair independent-component continuation, stale loop-delivery protection, and realistic multi-iteration automatic execution.
 
+M5B Slice 6 implements deterministic canonical blocker classification, one durable automatic revision allowance, state-bound proposal identity, byte-exact objective preservation, non-weakening validation, existing-reducer revision and invalidation, exact revision-turn accounting, stale and interrupted exhaustion, and reload-safe pause.
+
 The v0.6 product supports one root Hypagoal in one Pi session.
 
 ### Goal family
@@ -297,18 +299,26 @@ The implementation provides:
 - protected evaluator redaction in model-visible state and check output;
 - fair continuation across independent bounded regions;
 - stale loop-continuation rejection;
-- realistic multi-iteration automatic continuation with invalid-result rejection and typed success.
+- realistic multi-iteration automatic continuation with invalid-result rejection and typed success;
+- deterministic canonical blocker classification;
+- one durable bounded automatic revision allowance;
+- byte-exact objective and non-weakening revision validation;
+- accepted revision through the existing invalidation reducer;
+- stale, rejected, malformed, interrupted, no-op, weakening, and still-blocked revision exhaustion;
+- exact revision-turn and token accounting;
+- reload and branch-change pause without revision dispatch;
+- realistic positive and negative bounded-revision smoke evidence.
 
 M5A is complete. Its evidence is in `docs/m5a-dogfood.md`.
 
-M5B Slices 1, 2, 3, 4, and 5 are complete in PRs #62, #65, #67, #69, and #71. Slice 6, blockage and bounded revision, is the current implementation target.
+M5B Slices 1, 2, 3, 4, 5, and 6 are complete in PRs #62, #65, #67, #69, #71, and #73. Slice 7, complete Pi product surface, is the current implementation target.
 
 ## Delivery sequence
 
 1. M4 bounded iteration regions — complete.
 2. M3.1 deterministic parser and assertion adapters — complete.
 3. M5A trusted evaluation contracts — complete.
-4. M5B root Hypagoal autonomous controller — active; Slices 1, 2, 3, 4, and 5 complete.
+4. M5B root Hypagoal autonomous controller — active; Slices 1, 2, 3, 4, 5, and 6 complete.
 5. M6 event history, replay, and debugger UI.
 6. M7 goal families, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 7. M8 worktree integration and bounded concurrent scheduling.
@@ -319,10 +329,10 @@ The detailed M7 and M8 architecture is in `docs/goal-family-and-concurrent-execu
 
 ## Validation baseline
 
-CI #892 and final PR CI #894 pass:
+CI #1012 and final PR CI #1014 pass:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The complete suite contains 89 test files and 382 tests.
+The complete suite contains 93 test files and 441 tests.
