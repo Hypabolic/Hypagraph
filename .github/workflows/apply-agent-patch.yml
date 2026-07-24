@@ -1,0 +1,35 @@
+name: Apply agent patch
+
+on:
+  push:
+    branches:
+      - agent/m5b-slice-6-blockage-bounded-revision
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply and validate the agent patch
+        shell: bash
+        run: |
+          if [[ ! -f .agent/apply.py ]]; then
+            echo "No agent patch is present."
+            exit 0
+          fi
+          python .agent/apply.py
+          npm ci
+          npm run check
+          rm -rf .agent
+          rm -f .github/workflows/apply-agent-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add bounded Hypagoal revision"
+          git push
