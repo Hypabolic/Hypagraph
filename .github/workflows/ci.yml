@@ -60,4 +60,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: check-log-${{ matrix.os }}-node-${{ matrix.node-version }}
-          path: check.log
+          path: |
+            check.log
+            src/extension.ts
+            tests/hypagoal-pi.test.ts
