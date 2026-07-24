@@ -1,0 +1,27 @@
+name: Materialize Slice 3 source
+
+on:
+  push:
+    branches:
+      - agent/m5b-slice-3-graph-aware-continuation
+    paths:
+      - .github/workflows/materialize-slice3.yml
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Upload repository source
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice3-source
+          path: |
+            .
+            !.git/**
+            !node_modules/**
