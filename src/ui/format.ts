@@ -46,6 +46,7 @@ export function renderWorkflow(state: HypagraphState): string {
     ...(state.goal === undefined ? [] : [
       `Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`,
       `Goal budget: turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "unlimited"}; tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "unlimited"}`,
+      `Automatic revision: ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}${state.goal.automaticRevision.lastAttempt ? ` - ${state.goal.automaticRevision.lastAttempt.outcome}` : ""}`,
     ]),
   ];
   if (state.definition.loops.length > 0) {

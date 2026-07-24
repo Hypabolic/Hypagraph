@@ -16,7 +16,7 @@ import {
   replacementConfirmationFor,
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
-import { isRunnableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
+import { isDispatchableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
 import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
@@ -139,6 +139,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let suppressContinuationAtNextAgentEnd = false;
   let staleContinuationTurn = false;
   let continuationToolsBeforeDelivery: string[] | undefined;
+  let revisionProposalHandled = false;
   const graphPane = new GraphPaneController();
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
@@ -164,6 +165,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     deliveredContinuation = undefined;
     suppressContinuationAtNextAgentEnd = false;
     staleContinuationTurn = false;
+    revisionProposalHandled = false;
     restoreContinuationTools();
     activeExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
@@ -193,18 +195,44 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
       }
     }
-    if (state?.goal?.status === "active") {
+    const pendingRevision = state?.goal?.pendingContinuation?.action.kind === "request-revision"
+      ? state.goal.pendingContinuation
+      : undefined;
+    if (state?.goal && (state.goal.status === "active" || (state.goal.status === "blocked" && pendingRevision))) {
       const cause = branchChanged ? "branch_change" : "session_reload";
       const reason = branchChanged
         ? "The Pi branch changed. Resume the Hypagoal explicitly after reviewing canonical state."
         : "The Pi session reloaded. Resume the Hypagoal explicitly after reviewing canonical state.";
-      const paused = await applyCommandsAndCommit(eventStore.lease(), state, [{
+      const at = new Date().toISOString();
+      const commands: HypagraphCommand[] = [];
+      if (pendingRevision) {
+        commands.push({
+          type: "abandon-goal-continuation",
+          goalId: state.goal.goalId,
+          workflowId: state.workflowId,
+          expectedRevision: state.revision,
+          expectedSequence: state.sequence,
+          expectedSnapshotHash: state.snapshotHash,
+          continuationOperationId: pendingRevision.operationId,
+          continuationOrdinal: pendingRevision.ordinal,
+          requestSequence: pendingRevision.requestSequence,
+          sessionGeneration: pendingRevision.sessionGeneration,
+          branchGeneration: pendingRevision.branchGeneration,
+          reason: branchChanged
+            ? "The Pi branch changed before the automatic revision turn completed."
+            : "The Pi session reloaded before the automatic revision turn completed.",
+          commandId: `abandon-goal-continuation:${cause}:${randomUUID()}`,
+          at,
+        });
+      }
+      commands.push({
         type: "pause-goal",
         cause,
         reason,
         commandId: `pause-goal:${cause}:${randomUUID()}`,
-        at: new Date().toISOString(),
-      }]);
+        at,
+      });
+      const paused = await applyCommandsAndCommit(eventStore.lease(), state, commands);
       if (paused.ok) {
         state = paused.value.state;
         events.push(...paused.value.events);
@@ -252,8 +280,8 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
     if (pendingContinuation || !state || activeExecutions.hasActive()) return;
     const decision = selectGoalContinuation(state);
-    if (!isRunnableGoalContinuation(decision)) {
-      if (decision.kind === "invariant-error" && state.goal?.status === "active") {
+    if (!isDispatchableGoalContinuation(decision)) {
+      if ((decision.kind === "invariant-error" && state.goal?.status === "active") || decision.kind === "stop-blocked") {
         ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
       }
       return;
@@ -269,7 +297,9 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
       expectedContinuationOrdinal: decision.continuationOrdinal,
       sessionGeneration,
       branchGeneration,
-      action: { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
+       action: decision.kind === "request-revision"
+         ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
+         : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
       commandId: operationId,
       correlationId: operationId,
       at: new Date().toISOString(),
@@ -310,6 +340,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     pendingContinuation = undefined;
     deliveredContinuation = undefined;
     staleContinuationTurn = false;
+    revisionProposalHandled = false;
     restoreContinuationTools();
     activeExecutions.cancelAll();
     graphPane.dispose();
@@ -324,19 +355,80 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
   pi.on("agent_end", async (_event, ctx) => {
     hypagoalAuthoring = undefined;
     staleContinuationTurn = false;
+    revisionProposalHandled = false;
     restoreContinuationTools();
     if (suppressContinuationAtNextAgentEnd) {
       suppressContinuationAtNextAgentEnd = false;
-      await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
-      pendingContinuation = undefined;
-      deliveredContinuation = undefined;
+      const interruptedRevision = deliveredContinuation?.action.kind === "request-revision"
+        ? deliveredContinuation
+        : undefined;
+      if (!interruptedRevision) {
+        await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
+        pendingContinuation = undefined;
+        deliveredContinuation = undefined;
+        updateUi(state, ctx, graphPane);
+        return;
+      }
+      const goal = state?.goal;
+      const revisionRequest = goal?.pendingContinuation;
+      if (state && goal && revisionRequest?.action.kind === "request-revision" && goal.automaticRevision.lastAttempt?.outcome === "pending") {
+        const interrupted = await applyCommandsAndCommit(eventStore.lease(), state, [{
+          type: "abandon-goal-revision",
+          goalId: goal.goalId,
+          workflowId: state.workflowId,
+          expectedRevision: state.revision,
+          expectedSequence: state.sequence,
+          expectedSnapshotHash: state.snapshotHash,
+          revisionOperationId: interruptedRevision.operationId,
+          continuationOperationId: revisionRequest.operationId,
+          continuationOrdinal: revisionRequest.ordinal,
+          requestSequence: revisionRequest.requestSequence,
+          sessionGeneration: revisionRequest.sessionGeneration,
+          branchGeneration: revisionRequest.branchGeneration,
+          outcomeCode: "revision_turn_interrupted",
+          reason: "Interactive input interrupted the delivered automatic revision turn.",
+          commandId: `abandon-goal-revision:interrupted:${randomUUID()}`,
+          correlationId: interruptedRevision.operationId,
+          at: new Date().toISOString(),
+        }]);
+        if (interrupted.ok) {
+          state = interrupted.value.state;
+          events.push(...interrupted.value.events);
+        }
+      }
       updateUi(state, ctx, graphPane);
-      return;
     }
     if (deliveredContinuation) {
       const delivered = deliveredContinuation;
       deliveredContinuation = undefined;
-      if (!state?.goal?.pendingContinuation) return;
+      const goal = state?.goal;
+      const revisionRequest = goal?.pendingContinuation;
+      if (!state || !goal || !revisionRequest) return;
+      if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {
+        const abandoned = await applyCommandsAndCommit(eventStore.lease(), state, [{
+          type: "abandon-goal-revision",
+          goalId: goal.goalId,
+          workflowId: state.workflowId,
+          expectedRevision: state.revision,
+          expectedSequence: state.sequence,
+          expectedSnapshotHash: state.snapshotHash,
+          revisionOperationId: delivered.operationId,
+          continuationOperationId: revisionRequest.operationId,
+          continuationOrdinal: revisionRequest.ordinal,
+          requestSequence: revisionRequest.requestSequence,
+          sessionGeneration: revisionRequest.sessionGeneration,
+          branchGeneration: revisionRequest.branchGeneration,
+          outcomeCode: "revision_turn_no_proposal",
+          reason: "The automatic revision turn ended without one valid replacement definition.",
+          commandId: `abandon-goal-revision:${randomUUID()}`,
+          correlationId: delivered.operationId,
+          at: new Date().toISOString(),
+        }]);
+        if (abandoned.ok) {
+          state = abandoned.value.state;
+          events.push(...abandoned.value.events);
+        }
+      }
       const semanticSequenceBeforeAccounting = state.sequence;
       const normalized = normalizePiGoalUsage(_event.messages);
       if (!normalized.ok) {
@@ -351,10 +443,10 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         ctx.ui.notify(`Hypagoal paused because usage could not be accounted. ${normalized.message}`, "warning");
         return;
       }
-      const canonical = state.goal.pendingContinuation;
+      const canonical = revisionRequest;
       const recorded = await applyCommandsAndCommit(eventStore.lease(), state, [{
         type: "record-goal-turn-usage",
-        goalId: state.goal.goalId,
+        goalId: goal.goalId,
         workflowId: state.workflowId,
         expectedRevision: state.revision,
         expectedSequence: state.sequence,
@@ -420,17 +512,22 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         };
       } else {
         deliveredContinuation = pending;
+        revisionProposalHandled = false;
         continuationToolsBeforeDelivery = [...pi.getActiveTools()];
-        const tools = new Set(continuationToolsBeforeDelivery);
-        for (const tool of requiredContinuationTools(pending.action)) tools.add(tool);
-        pi.setActiveTools([...tools]);
+        if (pending.action.kind === "request-revision") {
+          pi.setActiveTools(requiredContinuationTools(pending.action));
+        } else {
+          const tools = new Set(continuationToolsBeforeDelivery);
+          for (const tool of requiredContinuationTools(pending.action)) tools.add(tool);
+          pi.setActiveTools([...tools]);
+        }
         return {
           systemPrompt: `${event.systemPrompt}\n\n${continuationSystemPrompt(pending, state)}\n\n${renderWorkflow(state)}`,
         };
       }
     }
 
-    if (!state || ["completed", "cancelled", "failed"].includes(state.phase) || state.goal?.status === "budget_limited") return;
+    if (!state || ["completed", "cancelled", "failed", "blocked"].includes(state.phase) || state.goal?.status === "budget_limited" || state.goal?.status === "blocked") return;
     const ready = readyNodeIds(state);
     const at = new Date().toISOString();
     const runnableChecks = state.definition.nodes
@@ -457,6 +554,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       "hypagraph_run_check",
       "hypagraph_cancel_check",
       "hypagraph_revise",
+       "hypagoal_submit_revision",
     ].includes(event.toolName)) {
       return { block: true, reason: "The queued Hypagoal continuation is stale. Read current state before another canonical change." };
     }
@@ -769,6 +867,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       evidence: Type.Optional(Type.Array(evidenceSchema)),
       passed: Type.Optional(Type.Boolean()),
       reason: Type.Optional(Type.String()),
+      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
@@ -808,7 +907,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
             commands.push({ type: "begin-verification", nodeId, attemptId, commandId: randomUUID(), correlationId, at });
           }
           commands.push({ type: "complete-verification", nodeId, attemptId, passed: params.passed ?? true, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
-        } else if (params.action === "block") commands.push({ type: "block-node", nodeId, reason: params.reason ?? "", commandId: randomUUID(), correlationId, at });
+        } else if (params.action === "block") commands.push({ type: "block-node", nodeId, reason: params.reason ?? "", ...(params.blockerKind ? { blockerKind: params.blockerKind } : {}), commandId: randomUUID(), correlationId, at });
         else if (params.action === "unblock") commands.push({ type: "unblock-node", nodeId, commandId: randomUUID(), correlationId, at });
         else {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
@@ -819,6 +918,63 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       await runCommands(commands);
       updateUi(state, ctx, graphPane);
       return textResult(renderWorkflow(state));
+    },
+  });
+
+  pi.registerTool({
+    name: "hypagoal_submit_revision",
+    label: "Submit bounded Hypagoal revision",
+    description: "Submit the one state-bound replacement definition for deterministic automatic-revision validation.",
+    promptSnippet: "Submit one bounded replacement definition",
+    promptGuidelines: ["Use this tool only during a delivered bounded-revision turn. Preserve the exact objective and every existing safeguard."],
+    parameters: definitionSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      ensureNoActiveExecution();
+      const delivered = deliveredContinuation;
+      const canonical = state?.goal?.pendingContinuation;
+      if (!state?.goal || !delivered || delivered.action.kind !== "request-revision" || !canonical) throw new Error("There is no delivered automatic revision request.");
+      revisionProposalHandled = true;
+      const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
+        type: "apply-goal-revision",
+        goalId: state.goal.goalId,
+        workflowId: state.workflowId,
+        expectedRevision: state.revision,
+        expectedSequence: state.sequence,
+        expectedSnapshotHash: state.snapshotHash,
+        revisionOperationId: delivered.operationId,
+        continuationOperationId: canonical.operationId,
+        continuationOrdinal: canonical.ordinal,
+        requestSequence: canonical.requestSequence,
+        sessionGeneration: canonical.sessionGeneration,
+        branchGeneration: canonical.branchGeneration,
+        blocker: structuredClone(delivered.action.blocker),
+        definition: { ...normalizeDefinition(params), goal: params.goal },
+        commandId: `apply-goal-revision:${randomUUID()}`,
+        correlationId: delivered.operationId,
+        at: new Date().toISOString(),
+      }]);
+      if (!result.ok) {
+        return {
+          content: [{ type: "text" as const, text: `The automatic revision proposal is stale or unsafe. Canonical workflow state is unchanged.
+${formatDiagnostics(result.diagnostics)}` }],
+          details: { hypagraph: persisted(), revision: { kind: "rejected", diagnostics: structuredClone(result.diagnostics) } },
+          terminate: true,
+        };
+      }
+      state = result.value.state;
+      events.push(...result.value.events);
+      updateUi(state, ctx, graphPane);
+      const attempt = state.goal?.automaticRevision.lastAttempt;
+      const accepted = attempt?.outcome === "applied";
+      return {
+        content: [{ type: "text" as const, text: accepted
+          ? `${renderWorkflow(state)}
+
+Hypagraph accepted the bounded automatic revision through the canonical revision reducer.`
+          : `Hypagraph rejected the bounded automatic revision. ${attempt?.reason ?? "The proposal did not preserve the required contracts or did not restore a runnable path."}` }],
+        details: { hypagraph: persisted(), revision: structuredClone(attempt) },
+        terminate: true,
+      };
     },
   });
 

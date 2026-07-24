@@ -1,7 +1,7 @@
 import type { Condition } from "./conditions.js";
 import type { FactContract, FactRecord, FactType, FactValue } from "./facts.js";
 
-export const HYPAGRAPH_SCHEMA_VERSION = 4 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 5 as const;
 export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
 export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
@@ -57,17 +57,42 @@ export interface GoalBudgetRuntime {
   stop?: GoalBudgetStop;
 }
 
-export type GoalContinuationActionKind =
+export type GoalWorkContinuationActionKind =
   | "continue-active-task"
   | "start-ready-task"
   | "run-ready-check"
   | "evaluate-ready-gate";
 
-export interface GoalContinuationAction {
-  kind: GoalContinuationActionKind;
+export type GoalBlockerKind =
+  | "blocked-node"
+  | "blocked-loop"
+  | "loop-dependants"
+  | "legacy-definition"
+  | "definition-no-path"
+  | "external-dependency"
+  | "terminal-policy";
+
+export interface GoalBlockerIdentity {
+  kind: GoalBlockerKind;
+  id: string;
+  reason: string;
+  sourceRevision: number;
+  sourceSequence: number;
+  sourceSnapshotHash: string;
+}
+
+export interface GoalWorkContinuationAction {
+  kind: GoalWorkContinuationActionKind;
   nodeId: string;
   loopId?: string;
 }
+
+export interface GoalRevisionContinuationAction {
+  kind: "request-revision";
+  blocker: GoalBlockerIdentity;
+}
+
+export type GoalContinuationAction = GoalWorkContinuationAction | GoalRevisionContinuationAction;
 
 export interface GoalContinuationRequestRuntime {
   operationId: string;
@@ -82,12 +107,38 @@ export interface GoalContinuationRequestRuntime {
   requestedAt: string;
 }
 
+export type GoalAutomaticRevisionOutcome = "pending" | "applied" | "rejected" | "abandoned";
+
+export interface GoalAutomaticRevisionAttempt {
+  operationId: string;
+  blocker: GoalBlockerIdentity;
+  sourceRevision: number;
+  sourceSequence: number;
+  sourceSnapshotHash: string;
+  requestSequence: number;
+  sessionGeneration: number;
+  branchGeneration: number;
+  requestedAt: string;
+  outcome: GoalAutomaticRevisionOutcome;
+  outcomeCode?: string;
+  reason?: string;
+  completedAt?: string;
+  appliedRevision?: number;
+}
+
+export interface GoalAutomaticRevisionRuntime {
+  maximumAttempts: 1;
+  consumedAttempts: number;
+  lastAttempt?: GoalAutomaticRevisionAttempt;
+}
+
 export interface GoalRuntime {
   goalId: string;
   workflowId: string;
   status: GoalStatus;
   continuationOrdinal: number;
   budget: GoalBudgetRuntime;
+  automaticRevision: GoalAutomaticRevisionRuntime;
   pendingContinuation?: GoalContinuationRequestRuntime;
   pauseCause?: GoalPauseCause;
   startedAt: string;
@@ -478,6 +529,8 @@ export interface AttemptRuntime {
   iteration?: number;
 }
 
+export type NodeBlockerKind = "repository-work" | "external-dependency" | "safeguard" | "unknown";
+
 export interface NodeRuntime {
   status: NodeStatus;
   attemptCount: number;
@@ -485,6 +538,7 @@ export interface NodeRuntime {
   attempts: Record<string, AttemptRuntime>;
   evidence: EvidenceReference[];
   blockedReason?: string;
+  blockerKind?: NodeBlockerKind;
 }
 
 export interface RouteSelection {
@@ -542,6 +596,10 @@ export type EventType =
   | "hypagraph.goal.continuation-abandoned"
   | "hypagraph.goal.turn-recorded"
   | "hypagraph.goal.budget-limited"
+  | "hypagraph.goal.revision-requested"
+  | "hypagraph.goal.revision-rejected"
+  | "hypagraph.goal.revision-abandoned"
+  | "hypagraph.goal.revision-applied"
   | "hypagraph.node.ready"
   | "hypagraph.node.skipped"
   | "hypagraph.node.invalidated"
@@ -604,7 +662,7 @@ export type HypagraphCommand =
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
   | (CommandBase & { type: "begin-verification"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "complete-verification"; nodeId: string; attemptId: string; passed: boolean; reason?: string })
-  | (CommandBase & { type: "block-node"; nodeId: string; reason: string })
+  | (CommandBase & { type: "block-node"; nodeId: string; reason: string; blockerKind?: NodeBlockerKind })
   | (CommandBase & { type: "unblock-node"; nodeId: string })
   | (CommandBase & { type: "cancel-attempt"; nodeId: string; attemptId: string; reason?: string })
   | (CommandBase & { type: "pause-workflow" })
@@ -638,6 +696,38 @@ export type HypagraphCommand =
     sessionGeneration: number;
     branchGeneration: number;
     reason: string;
+  })
+  | (CommandBase & {
+    type: "apply-goal-revision";
+    goalId: string;
+    workflowId: string;
+    expectedRevision: number;
+    expectedSequence: number;
+    expectedSnapshotHash: string;
+    revisionOperationId: string;
+    continuationOperationId: string;
+    continuationOrdinal: number;
+    requestSequence: number;
+    sessionGeneration: number;
+    branchGeneration: number;
+    blocker: GoalBlockerIdentity;
+    definition: HypagraphDefinition;
+  })
+  | (CommandBase & {
+    type: "abandon-goal-revision";
+    goalId: string;
+    workflowId: string;
+    expectedRevision: number;
+    expectedSequence: number;
+    expectedSnapshotHash: string;
+    revisionOperationId: string;
+    continuationOperationId: string;
+    continuationOrdinal: number;
+    requestSequence: number;
+    sessionGeneration: number;
+    branchGeneration: number;
+    reason: string;
+    outcomeCode: string;
   })
   | (CommandBase & {
     type: "record-goal-turn-usage";

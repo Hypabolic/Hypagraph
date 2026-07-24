@@ -62,7 +62,7 @@ const isCustomEntry = (entry: unknown): entry is CustomEntry => {
 const isStoredSnapshot = (value: unknown): value is StoredSnapshotShape => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<StoredSnapshotShape>;
-  return (candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION || candidate.schemaVersion === 3 || candidate.schemaVersion === 2)
+  return (candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION || candidate.schemaVersion === 4 || candidate.schemaVersion === 3 || candidate.schemaVersion === 2)
     && typeof candidate.workflowId === "string"
     && typeof candidate.revision === "number"
     && typeof candidate.sequence === "number"
@@ -191,9 +191,19 @@ export function validateRestoredGoalState(state: HypagraphState): void {
     }
     if (!last.selectedSnapshotHash.trim() || validateGoalTokenUsage(last.usage).length > 0) throw new Error(`Restored goal '${goal.goalId}' has invalid last accounted turn usage.`);
   }
+  const revision = goal.automaticRevision;
+  if (!revision || revision.maximumAttempts !== 1 || !Number.isSafeInteger(revision.consumedAttempts) || revision.consumedAttempts < 0 || revision.consumedAttempts > 1) throw new Error(`Restored goal '${goal.goalId}' has invalid automatic revision state.`);
+  const revisionAttempt = revision.lastAttempt;
+  if (revisionAttempt) {
+    if (revision.consumedAttempts !== 1 || !revisionAttempt.operationId.trim() || !revisionAttempt.sourceSnapshotHash.trim() || !Number.isFinite(Date.parse(revisionAttempt.requestedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid automatic revision attempt identity.`);
+    for (const [name, value] of Object.entries({ sourceRevision: revisionAttempt.sourceRevision, sourceSequence: revisionAttempt.sourceSequence, requestSequence: revisionAttempt.requestSequence, sessionGeneration: revisionAttempt.sessionGeneration, branchGeneration: revisionAttempt.branchGeneration })) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Restored goal '${goal.goalId}' has invalid automatic revision field '${name}'.`);
+    }
+    if (revisionAttempt.outcome !== "pending" && (!revisionAttempt.completedAt || !Number.isFinite(Date.parse(revisionAttempt.completedAt)))) throw new Error(`Restored goal '${goal.goalId}' has an automatic revision outcome without a completion time.`);
+  }
   const pending = goal.pendingContinuation;
   if (pending) {
-    if (!["active", "completed", "failed"].includes(goal.status)) throw new Error(`Restored goal '${goal.goalId}' has a pending continuation in status '${goal.status}'.`);
+    if (!["active", "blocked", "completed", "failed"].includes(goal.status)) throw new Error(`Restored goal '${goal.goalId}' has a pending continuation in status '${goal.status}'.`);
     if (!pending.operationId.trim() || !Number.isSafeInteger(pending.ordinal) || pending.ordinal !== goal.continuationOrdinal) throw new Error(`Restored goal '${goal.goalId}' has invalid pending continuation identity.`);
     for (const [name, value] of Object.entries({ selectedRevision: pending.selectedRevision, selectedSequence: pending.selectedSequence, requestSequence: pending.requestSequence, sessionGeneration: pending.sessionGeneration, branchGeneration: pending.branchGeneration })) {
       if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Restored goal '${goal.goalId}' has invalid pending continuation field '${name}'.`);

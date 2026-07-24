@@ -1,11 +1,11 @@
-import { checkCanStartWithoutWaiting } from "./check-policy.js";
 import type {
+  GoalBlockerIdentity,
   GoalContinuationAction,
+  GoalWorkContinuationAction,
   HypagraphState,
-  NodeDefinition,
 } from "./model.js";
-
-const ACTIVE_STATUSES = new Set(["starting", "running", "awaiting_evidence", "verifying"]);
+import { blockerIdentityMatches, classifyGoalBlockage } from "./goal-blockage.js";
+import { enumerateRootWorkActions, rootWorkActionIsRunnable } from "./goal-runnable.js";
 
 export interface GoalContinuationStateIdentity {
   goalId: string;
@@ -16,10 +16,12 @@ export interface GoalContinuationStateIdentity {
   continuationOrdinal: number;
 }
 
-export type GoalRunnableContinuation = GoalContinuationStateIdentity & GoalContinuationAction;
+export type GoalRunnableContinuation = GoalContinuationStateIdentity & GoalWorkContinuationAction;
+export type GoalRevisionContinuation = GoalContinuationStateIdentity & { kind: "request-revision"; blocker: GoalBlockerIdentity };
+export type GoalDispatchableContinuation = GoalRunnableContinuation | GoalRevisionContinuation;
 
 export type GoalContinuationDecision =
-  | GoalRunnableContinuation
+  | GoalDispatchableContinuation
   | (GoalContinuationStateIdentity & { kind: "stop-completed" })
   | (GoalContinuationStateIdentity & { kind: "stop-paused"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-blocked"; reason: string })
@@ -49,47 +51,18 @@ const stateIdentity = (state: HypagraphState): GoalContinuationStateIdentity | u
   };
 };
 
-const loopIdForNode = (state: HypagraphState, nodeId: string): string | undefined =>
-  state.definition.loops.find((loop) => loop.nodes.includes(nodeId))?.id;
-
-const actionForReadyNode = (
-  state: HypagraphState,
-  node: NodeDefinition,
-): GoalContinuationAction | undefined => {
-  const runtime = state.runtime.nodes[node.id];
-  if (!runtime) return undefined;
-  const kind = node.kind ?? "task";
-  const loopId = loopIdForNode(state, node.id);
-  if (kind === "task" && runtime.status === "ready") {
-    return { kind: "start-ready-task", nodeId: node.id, ...(loopId ? { loopId } : {}) };
-  }
-  if (kind === "gate" && runtime.status === "ready") {
-    return { kind: "evaluate-ready-gate", nodeId: node.id, ...(loopId ? { loopId } : {}) };
-  }
-  if (kind === "check" && node.check && checkCanStartWithoutWaiting(runtime, node.check)) {
-    return { kind: "run-ready-check", nodeId: node.id, ...(loopId ? { loopId } : {}) };
-  }
-  return undefined;
-};
-
 export function enumerateGoalContinuationCandidates(state: HypagraphState): GoalRunnableContinuation[] {
   const identity = stateIdentity(state);
   if (!identity || state.goal?.status !== "active" || state.phase !== "running") return [];
-
-  const active = state.definition.nodes.filter((node) => ACTIVE_STATUSES.has(state.runtime.nodes[node.id]?.status ?? "pending"));
-  if (active.length === 1) {
-    const node = active[0]!;
-    if ((node.kind ?? "task") !== "task") return [];
-    const loopId = loopIdForNode(state, node.id);
-    return [{ ...identity, kind: "continue-active-task", nodeId: node.id, ...(loopId ? { loopId } : {}) }];
-  }
-  if (active.length > 1) return [];
-
-  return state.definition.nodes.flatMap((node) => {
-    const action = actionForReadyNode(state, node);
-    return action ? [{ ...identity, ...action }] : [];
-  });
+  return enumerateRootWorkActions(state).map((action) => ({ ...identity, ...action }));
 }
+
+const revisionDecision = (state: HypagraphState, identity: GoalContinuationStateIdentity): GoalRevisionContinuation | { kind: "stop-blocked"; reason: string } | undefined => {
+  const blockage = classifyGoalBlockage(state);
+  if (blockage.kind === "revision-eligible") return { ...identity, kind: "request-revision", blocker: blockage.blocker };
+  if (blockage.kind === "revision-not-allowed" || blockage.kind === "revision-exhausted") return { kind: "stop-blocked", reason: blockage.reason };
+  return undefined;
+};
 
 export function selectGoalContinuation(state: HypagraphState): GoalContinuationDecision {
   const identity = stateIdentity(state);
@@ -103,67 +76,57 @@ export function selectGoalContinuation(state: HypagraphState): GoalContinuationD
       snapshotHash: state.snapshotHash,
     };
   }
-  if (state.goal.workflowId !== state.workflowId) {
-    return { ...identity, kind: "invariant-error", reason: "The goal belongs to a different workflow." };
-  }
+  if (state.goal.workflowId !== state.workflowId) return { ...identity, kind: "invariant-error", reason: "The goal belongs to a different workflow." };
 
   switch (state.goal.status) {
     case "completed": return { ...identity, kind: "stop-completed" };
     case "paused": return { ...identity, kind: "stop-paused", reason: state.goal.stopReason ?? "The goal is paused." };
-    case "blocked": return { ...identity, kind: "stop-blocked", reason: state.goal.stopReason ?? "The goal is blocked." };
+    case "blocked": {
+      const revision = revisionDecision(state, identity);
+      return revision ? { ...identity, ...revision } : { ...identity, kind: "stop-blocked", reason: state.goal.stopReason ?? "The goal is blocked." };
+    }
     case "failed": return { ...identity, kind: "stop-failed", reason: state.goal.stopReason ?? "The goal failed." };
     case "cancelled": return { ...identity, kind: "stop-cancelled", reason: state.goal.stopReason ?? "The goal was cancelled." };
     case "budget_limited": return { ...identity, kind: "stop-budget-limited", reason: state.goal.stopReason ?? "The goal budget is exhausted." };
   }
 
-  if (state.phase !== "running") {
-    return { ...identity, kind: "invariant-error", reason: `The active goal does not match workflow phase '${state.phase}'.` };
-  }
-
-  const active = state.definition.nodes.filter((node) => ACTIVE_STATUSES.has(state.runtime.nodes[node.id]?.status ?? "pending"));
-  if (active.length > 1) {
-    return { ...identity, kind: "invariant-error", reason: "More than one node has an active attempt." };
-  }
-  if (active.length === 1 && (active[0]!.kind ?? "task") !== "task") {
-    return { ...identity, kind: "invariant-error", reason: `Active node '${active[0]!.id}' is not a task continuation.` };
-  }
-
+  if (state.phase !== "running") return { ...identity, kind: "invariant-error", reason: `The active goal does not match workflow phase '${state.phase}'.` };
   const candidates = enumerateGoalContinuationCandidates(state);
   if (candidates.length === 0) {
-    return { ...identity, kind: "invariant-error", reason: "The active goal has no runnable continuation action." };
+    const revision = revisionDecision(state, identity);
+    return revision ? { ...identity, ...revision } : { ...identity, kind: "invariant-error", reason: "The active goal has no runnable continuation action." };
   }
   return candidates[state.goal.continuationOrdinal % candidates.length]!;
 }
 
-export function continuationActionMatches(
-  left: GoalContinuationAction,
-  right: GoalContinuationAction,
-): boolean {
-  return left.kind === right.kind
-    && left.nodeId === right.nodeId
-    && (left.loopId ?? null) === (right.loopId ?? null);
+export function continuationActionMatches(left: GoalContinuationAction, right: GoalContinuationAction): boolean {
+  if (left.kind === "request-revision" || right.kind === "request-revision") {
+    return left.kind === "request-revision" && right.kind === "request-revision" && blockerIdentityMatches(left.blocker, right.blocker);
+  }
+  return left.kind === right.kind && left.nodeId === right.nodeId && (left.loopId ?? null) === (right.loopId ?? null);
 }
 
-export function continuationActionIsRunnable(
-  state: HypagraphState,
-  action: GoalContinuationAction,
-): boolean {
-  if (!state.goal || state.goal.status !== "active" || state.phase !== "running") return false;
-  const node = state.definition.nodes.find((candidate) => candidate.id === action.nodeId);
-  const runtime = state.runtime.nodes[action.nodeId];
-  if (!node || !runtime || loopIdForNode(state, action.nodeId) !== action.loopId) return false;
-  const kind = node.kind ?? "task";
-  if (action.kind === "continue-active-task") return kind === "task" && ACTIVE_STATUSES.has(runtime.status);
-  if (action.kind === "start-ready-task") return kind === "task" && runtime.status === "ready";
-  if (action.kind === "evaluate-ready-gate") return kind === "gate" && runtime.status === "ready";
-  return kind === "check" && !!node.check && checkCanStartWithoutWaiting(runtime, node.check);
+export function continuationActionIsRunnable(state: HypagraphState, action: GoalContinuationAction): boolean {
+  if (action.kind === "request-revision") {
+    const goal = state.goal;
+    const pending = goal?.pendingContinuation;
+    const automatic = goal?.automaticRevision.lastAttempt;
+    return goal?.status === "blocked"
+      && pending?.action.kind === "request-revision"
+      && automatic?.outcome === "pending"
+      && automatic.operationId === pending.operationId
+      && blockerIdentityMatches(pending.action.blocker, action.blocker);
+  }
+  return state.goal?.status === "active" && state.phase === "running" && rootWorkActionIsRunnable(state, action);
 }
 
-export function isRunnableGoalContinuation(
-  decision: GoalContinuationDecision,
-): decision is GoalRunnableContinuation {
+export function isRunnableGoalContinuation(decision: GoalContinuationDecision): decision is GoalRunnableContinuation {
   return decision.kind === "continue-active-task"
     || decision.kind === "start-ready-task"
     || decision.kind === "run-ready-check"
     || decision.kind === "evaluate-ready-gate";
+}
+
+export function isDispatchableGoalContinuation(decision: GoalContinuationDecision): decision is GoalDispatchableContinuation {
+  return isRunnableGoalContinuation(decision) || decision.kind === "request-revision";
 }

@@ -26,7 +26,10 @@ import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./wo
 import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEvaluationKind } from "./evaluation-policy.js";
 import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";
 import { goalIsTerminal, goalOutcomeFromWorkflow } from "./goal-policy.js";
-import { continuationActionMatches, isRunnableGoalContinuation, selectGoalContinuation } from "./goal-continuation.js";
+import { continuationActionMatches, isDispatchableGoalContinuation, selectGoalContinuation } from "./goal-continuation.js";
+import { blockerIdentityMatches } from "./goal-blockage.js";
+import { enumerateRootWorkActions } from "./goal-runnable.js";
+import { validateAutomaticRevision } from "./goal-revision-policy.js";
 import { formatGoalBudgetStop, goalBudgetStop, validateGoalBudgetDefinition, validateGoalTokenUsage } from "./goal-budget.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
@@ -176,7 +179,9 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
   }).map((contract) => contract.name);
 };
 
-const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => ACTIVE_ATTEMPT_STATUSES.has(item.status));
+const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) =>
+  ACTIVE_ATTEMPT_STATUSES.has(item.status)
+  || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying"));
 
 const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
   if (result.attemptId !== attemptId) return reject("stale_check_result", "The check result does not match the current attempt.");
@@ -323,7 +328,7 @@ const exhaustedLoopForNode = (state: HypagraphState, nodeId: string): LoopDefini
   });
 
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
-  if (command.type !== "revise" && command.type !== "record-goal-turn-usage" && ["completed", "failed", "cancelled"].includes(state.phase)) {
+  if (command.type !== "revise" && command.type !== "record-goal-turn-usage" && command.type !== "apply-goal-revision" && command.type !== "abandon-goal-revision" && ["completed", "failed", "cancelled"].includes(state.phase)) {
     if (state.phase === "failed" && "nodeId" in command) {
       const exhausted = exhaustedLoopForNode(state, command.nodeId);
       if (exhausted) return reject("loop_exhausted", `Loop '${exhausted.id}' reached its limit of ${exhausted.maxIterations} iterations. It cannot start another iteration.`);
@@ -343,9 +348,16 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   }
   if (command.type === "pause-goal") {
     if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    const automatic = state.goal.automaticRevision.lastAttempt;
+    if (automatic?.outcome === "pending") {
+      next = append(next, events, command, {
+        type: "hypagraph.goal.revision-abandoned",
+        data: { goalId: state.goal.goalId, operationId: automatic.operationId, outcomeCode: "goal_paused", reason: command.reason?.trim() || "The goal was paused before the automatic revision completed." },
+      });
+    }
     if (goalIsTerminal(state.goal) && command.cause !== "usage_invalid") return reject("terminal_goal", `The goal is ${state.goal.status}.`);
     if (state.goal.status === "paused") return reject("goal_already_paused", "The goal is already paused.");
-    if (state.goal.status === "blocked") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
+    if (state.goal.status === "blocked" && command.cause !== "session_reload" && command.cause !== "branch_change") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
     next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly.", cause: command.cause ?? "explicit" } });
     return { ok: true, state: next, events };
   }
@@ -372,7 +384,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   }
   if (command.type === "request-goal-continuation") {
     if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
-    if (state.goal.status !== "active") return reject("goal_not_active", `The goal is ${state.goal.status}.`);
+    if (state.goal.status !== "active" && !(state.goal.status === "blocked" && command.action.kind === "request-revision")) return reject("goal_not_active", `The goal is ${state.goal.status}.`);
     if (state.goal.pendingContinuation) return reject("goal_continuation_pending", "The goal already has a durable pending continuation.");
     if (!Number.isSafeInteger(command.sessionGeneration) || command.sessionGeneration < 0 || !Number.isSafeInteger(command.branchGeneration) || command.branchGeneration < 0) return reject("invalid_goal_continuation_generation", "Continuation generations must be non-negative safe integers.");
     if (command.goalId !== state.goal.goalId) return reject("stale_goal_continuation", "The continuation belongs to a different goal.", "goalId");
@@ -387,15 +399,33 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       return { ok: true, state: next, events };
     }
     const selected = selectGoalContinuation(state);
-    if (!isRunnableGoalContinuation(selected)) {
+    if (!isDispatchableGoalContinuation(selected)) {
       return reject("goal_continuation_not_runnable", selected.kind === "invariant-error" ? selected.reason : `The goal cannot continue from '${selected.kind}'.`);
     }
     if (!continuationActionMatches(selected, command.action)) return reject("stale_goal_continuation", "The selected continuation action changed before the request was stored.", "action");
+    if (command.action.kind === "request-revision") {
+      if (state.goal.status === "active") {
+        next = append(next, events, command, { type: "hypagraph.goal.blocked", data: { goalId: state.goal.goalId, reason: command.action.blocker.reason } });
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.goal.revision-requested",
+        data: {
+          goalId: state.goal.goalId,
+          operationId: command.commandId,
+          blocker: structuredClone(command.action.blocker),
+          sourceRevision: command.action.blocker.sourceRevision,
+          sourceSequence: command.action.blocker.sourceSequence,
+          sourceSnapshotHash: command.action.blocker.sourceSnapshotHash,
+          sessionGeneration: command.sessionGeneration,
+          branchGeneration: command.branchGeneration,
+        },
+      });
+    }
     const ordinal = state.goal.continuationOrdinal + 1;
     next = append(next, events, command, {
       type: "hypagraph.goal.continuation-requested",
-      nodeId: command.action.nodeId,
-      ...(command.action.loopId ? { loopId: command.action.loopId } : {}),
+      ...(command.action.kind === "request-revision" ? {} : { nodeId: command.action.nodeId }),
+      ...(command.action.kind !== "request-revision" && command.action.loopId ? { loopId: command.action.loopId } : {}),
       data: {
         goalId: state.goal.goalId,
         operationId: command.commandId,
@@ -415,7 +445,61 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     if (!state.goal || !pending) return reject("goal_continuation_not_pending", "The goal has no durable pending continuation.");
     if (command.goalId !== state.goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_continuation", "The continuation state changed before abandonment.");
     if (command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration) return reject("stale_goal_continuation", "The continuation identity changed before abandonment.");
+    const automatic = state.goal.automaticRevision.lastAttempt;
+    if (pending.action.kind === "request-revision" && automatic?.operationId === pending.operationId && automatic.outcome === "pending") {
+      next = append(next, events, command, { type: "hypagraph.goal.revision-abandoned", data: { goalId: state.goal.goalId, operationId: automatic.operationId, outcomeCode: "continuation_abandoned", reason: command.reason } });
+    }
     next = append(next, events, command, { type: "hypagraph.goal.continuation-abandoned", data: { goalId: state.goal.goalId, operationId: pending.operationId, reason: command.reason } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "apply-goal-revision" || command.type === "abandon-goal-revision") {
+    const goal = state.goal;
+    const pending = goal?.pendingContinuation;
+    const automatic = goal?.automaticRevision.lastAttempt;
+    if (!goal || !pending || pending.action.kind !== "request-revision" || !automatic) return reject("goal_revision_not_pending", "The goal has no pending automatic revision request.");
+    const staleReason = command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash
+      ? "The workflow changed before the revision proposal was processed."
+      : state.sequence !== pending.requestSequence
+        ? "The workflow sequence changed after the revision request."
+        : command.revisionOperationId !== automatic.operationId || command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration
+          ? "The automatic revision identity changed before the proposal was processed."
+          : !blockerIdentityMatches(command.type === "apply-goal-revision" ? command.blocker : pending.action.blocker, pending.action.blocker)
+            ? "The canonical blocker changed before the proposal was processed."
+            : undefined;
+    if (staleReason) {
+      const belongsToConsumedAttempt = command.type === "apply-goal-revision"
+        && automatic.outcome === "pending"
+        && automatic.operationId === command.revisionOperationId;
+      if (!belongsToConsumedAttempt) return reject("stale_goal_revision", staleReason);
+      next = append(next, events, command, {
+        type: "hypagraph.goal.revision-abandoned",
+        data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: "stale_goal_revision", reason: staleReason },
+      });
+      return { ok: true, state: next, events };
+    }
+    if (automatic.outcome !== "pending") return reject("goal_revision_already_resolved", "The automatic revision request already has an outcome.");
+    if (command.type === "abandon-goal-revision") {
+      next = append(next, events, command, { type: "hypagraph.goal.revision-abandoned", data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: command.outcomeCode, reason: command.reason } });
+      return { ok: true, state: next, events };
+    }
+    if (activeAttemptExists(state)) return reject("active_revision_not_allowed", "An active attempt or check must finish or be cancelled before revision.");
+    const safeguards = validateAutomaticRevision(state.definition, command.definition);
+    const structural = validateDefinition(command.definition);
+    const rejection = [...safeguards, ...structural];
+    if (rejection.length > 0) {
+      next = append(next, events, command, { type: "hypagraph.goal.revision-rejected", data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: rejection[0]!.code, reason: rejection[0]!.message, diagnostics: structuredClone(rejection) } });
+      return { ok: true, state: next, events };
+    }
+    const revised = handleCommand(state, { type: "revise", definition: command.definition, commandId: `${command.commandId}:workflow`, correlationId: command.correlationId ?? command.commandId, at: command.at });
+    if (!revised.ok) return revised;
+    if (revised.state.phase !== "running" || enumerateRootWorkActions(revised.state).length === 0) {
+      next = append(next, events, command, { type: "hypagraph.goal.revision-rejected", data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: "automatic_revision_still_blocked", reason: "The proposed definition leaves no valid runnable path." } });
+      return { ok: true, state: next, events };
+    }
+    next = revised.state;
+    events.push(...revised.events);
+    next = append(next, events, command, { type: "hypagraph.goal.revision-applied", data: { goalId: goal.goalId, operationId: automatic.operationId, appliedRevision: next.revision } });
+    next = append(next, events, command, { type: "hypagraph.goal.resumed", data: { goalId: goal.goalId, reason: "The bounded automatic revision restored a runnable path." } });
     return { ok: true, state: next, events };
   }
   if (command.type === "record-goal-turn-usage") {
@@ -441,6 +525,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   if (command.type === "revise") {
     const activeLoop = activeLoopForRevision(state);
     if (activeLoop) return reject("active_loop_revision_not_allowed", `Loop '${activeLoop.id}' has an active attempt. Cancel or finish it before revision.`, `loops.${activeLoop.id}`);
+    if (activeAttemptExists(state)) return reject("active_revision_not_allowed", "An active attempt or check must finish or be cancelled before revision.");
     const diagnostics = validateDefinition(command.definition); if (diagnostics.length > 0) return { ok: false, diagnostics };
     const directChanges = directlyChangedNodes(state.definition, command.definition);
     const invalidatedLoops = invalidatedLoopIds(state.definition, command.definition, directChanges);
@@ -686,7 +771,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if ((verificationPassed || evaluation !== undefined) && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
     }
-    case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim() } }); break; }
+    case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim(), blockerKind: command.blockerKind ?? "unknown" } }); break; }
     case "unblock-node": { if (node.status !== "blocked") return reject("node_not_blocked", `Node '${command.nodeId}' is not blocked.`); next = append(next, events, command, { type: "hypagraph.node.unblocked", nodeId: command.nodeId }); next = appendReadyEvents(next, events, command); break; }
     case "cancel-attempt": {
       if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_attempt", "The cancellation does not match the current attempt.");
