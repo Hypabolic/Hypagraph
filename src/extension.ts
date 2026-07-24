@@ -24,6 +24,8 @@ import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } f
 import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
+import { projectModelVisibleGraphView, projectModelVisibleWorkflowSummary } from "./pi/model-visible-state.js";
+import { formatPiCheckCommand } from "./pi/check-runner.js";
 import {
   continuationSystemPrompt,
   createPendingGoalContinuation,
@@ -641,8 +643,8 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       const text = params.view === "full"
         ? renderWorkflow(state)
         : params.view === "graph"
-          ? JSON.stringify(projectGraphView(state), null, 2)
-          : JSON.stringify(workflowSummary(state), null, 2);
+          ? JSON.stringify(projectModelVisibleGraphView(state), null, 2)
+          : JSON.stringify(projectModelVisibleWorkflowSummary(state), null, 2);
       return textResult(text);
     },
   });
@@ -663,7 +665,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       const attemptId = randomUUID();
       const requestedAt = new Date().toISOString();
       const runnable = requireRunnableCommandCheck(runState, nodeId, attemptId, requestedAt);
-      const commandText = [runnable.definition.command, ...(runnable.definition.arguments ?? [])].join(" ");
+      const commandText = formatPiCheckCommand(runnable.definition);
       const executor = new CommandCheckExecutor({
         rootDirectory: ctx.cwd,
         artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),

@@ -14,6 +14,7 @@ import {
   selectGoalContinuation,
 } from "../src/domain/goal-continuation.js";
 import { validateRestoredGoalState } from "../src/persistence/session-rebuild.js";
+import { createPendingGoalContinuation, validatePendingGoalContinuation } from "../src/pi/hypagoal-continuation.js";
 
 const at = "2026-07-24T08:30:00.000Z";
 
@@ -281,6 +282,27 @@ describe("Hypagoal continuation selection", () => {
       kind: "start-ready-task",
       nodeId: "independent",
       continuationOrdinal: 1,
+    });
+  });
+
+  it("rejects a queued loop continuation after the loop iteration changes", () => {
+    const value = createGoal(loopAndIndependent());
+    const events = [...value.events];
+    const selected = selectGoalContinuation(value.state);
+    if (!isRunnableGoalContinuation(selected)) throw new Error(`Unexpected decision: ${selected.kind}`);
+    const stored = requestContinuation(value.state, events, selected, "loop-stale");
+    const pending = createPendingGoalContinuation(selected, stored, { sessionGeneration: 0, branchGeneration: 0 }, "continue-loop-stale");
+    const progressed = apply(stored, events, {
+      type: "start-node",
+      nodeId: "loop-entry",
+      attemptId: "loop-entry-stale-1",
+      commandId: "start-loop-entry-stale",
+      at,
+    });
+    expect(progressed.runtime.loops["work-loop"]?.currentIteration).toBe(1);
+    expect(validatePendingGoalContinuation(pending, progressed, { sessionGeneration: 0, branchGeneration: 0 })).toMatchObject({
+      ok: false,
+      code: "stale_continuation_sequence",
     });
   });
 

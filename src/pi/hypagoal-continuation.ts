@@ -1,5 +1,9 @@
 import type { HypagraphState } from "../domain/model.js";
 import {
+  projectGoalLoopContinuationGuidance,
+  renderGoalLoopContinuationGuidance,
+} from "./hypagoal-loop-guidance.js";
+import {
   continuationActionIsRunnable,
   type GoalRunnableContinuation,
 } from "../domain/goal-continuation.js";
@@ -39,8 +43,10 @@ const actionLabel = (action: GoalRunnableContinuation): string => {
 
 export function buildGoalContinuationPrompt(
   action: GoalRunnableContinuation,
+  state: HypagraphState,
   operationId: string,
 ): string {
+  const loop = projectGoalLoopContinuationGuidance(state, action);
   return [
     "Hypagraph automatic continuation.",
     `Operation: ${operationId}`,
@@ -49,6 +55,8 @@ export function buildGoalContinuationPrompt(
     `Revision: ${action.revision}`,
     `Selected action: ${actionLabel(action)}`,
     ...(action.loopId ? [`Loop: ${action.loopId}`] : []),
+    ...(loop ? [`Loop iteration: ${loop.iteration}/${loop.maximumIterations}`, `Loop status: ${loop.status}`] : []),
+    ...(loop?.evaluation ? [`Evaluation purpose: ${loop.evaluation.purpose}`, `Evaluation feedback: ${loop.evaluation.feedbackMode}`] : []),
     "Continue only the selected canonical action. Use the Hypagraph lifecycle tools. Do not mark the goal complete directly.",
   ].join("\n");
 }
@@ -75,7 +83,7 @@ export function createPendingGoalContinuation(
     committedSnapshotHash: committedState.snapshotHash,
     sessionGeneration: generations.sessionGeneration,
     branchGeneration: generations.branchGeneration,
-    prompt: buildGoalContinuationPrompt(action, operationId),
+    prompt: buildGoalContinuationPrompt(action, committedState, operationId),
   };
 }
 
@@ -111,6 +119,7 @@ export function continuationSystemPrompt(
     `Operation '${pending.operationId}' selected ${actionLabel(action)}.`,
     `Goal '${action.goalId}', workflow '${action.workflowId}', revision ${action.revision}, sequence ${state.sequence}, continuation ordinal ${pending.requestedOrdinal}.`,
     ...(action.loopId ? [`The selected action belongs to loop '${action.loopId}'.`] : []),
+    ...renderGoalLoopContinuationGuidance(state, action),
   ];
   if (action.kind === "continue-active-task") {
     common.push(`Continue only task '${action.nodeId}'. Publish declared facts, submit evidence, and use a separate verification action. Do not start another node.`);

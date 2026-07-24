@@ -63,6 +63,25 @@ Each delivered continuation is charged once against the root Hypagoal budget. Do
 
 A reload or branch change pauses an active Hypagoal and dispatches no work. Continue only after the user explicitly runs `/hypagoal resume`. Resume does not reset consumed turns or tokens.
 
+When the selected action belongs to a loop, use only the loop and evaluation context that Hypagraph supplies. Keep these values separate:
+
+- evaluation validity;
+- current accepted metric;
+- best accepted metric;
+- typed success;
+- patience or no-progress count;
+- invalid-evaluation count;
+- evaluation-attempt budget;
+- goal turn and token budgets.
+
+An invalid evaluation cannot update current or best progress. It cannot reset patience or satisfy typed success. Do not infer success from a score alone.
+
+Do not reveal protected evaluator commands, paths, hashes, raw reports, standard output, standard error, hidden assertions, or holdout details. Use only the declared feedback mode and the public evaluator identity that Hypagraph supplies.
+
+The reducer applies the declared loop failure policy. Do not replace a hard limit, patience stop, invalid-evaluation limit, evaluation-budget stop, evaluator failure, or goal-budget stop with a success claim.
+
+Independent runnable components remain eligible after each loop turn. Do not continue the same loop only because it produced the latest metric or evaluation event.
+
 ## Evaluation-contract authoring
 
 Use an evaluation contract only when the objective has a defensible deterministic measurement.
