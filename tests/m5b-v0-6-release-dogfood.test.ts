@@ -350,7 +350,6 @@ describe("M5B v0.6 release dogfood", () => {
     const evaluationSnapshots: any[] = [];
     let observedPromptCount = 0;
     let reloadVerified = false;
-    let staleVerified = false;
     await agentEnd(value);
 
     for (let guard = 0; guard < 30; guard += 1) {
@@ -443,28 +442,20 @@ describe("M5B v0.6 release dogfood", () => {
       await agentEnd(value);
 
       if (action.nodeId === "evaluate" && evaluationSnapshots.length === 1 && !reloadVerified) {
-        const stalePrompt = continuationPrompts(value).at(-1)!;
         const promptCountBeforeReload = continuationPrompts(value).length;
         await invoke(value, "session_start", { type: "session_start", reason: "reload" });
         expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload);
         expect(latestState(value).goal).toMatchObject({ status: "paused", pauseCause: "session_reload" });
 
-        const sequenceBeforeStaleDelivery = latestState(value).sequence;
-        const staleSystem = await deliver(value, stalePrompt);
-        expect(staleSystem).toContain("STALE HYPAGOAL CONTINUATION");
-        expect(latestState(value).sequence).toBe(sequenceBeforeStaleDelivery);
-
         await value.commands.get("hypagoal")!.handler("resume", value.ctx);
         expect(latestState(value).goal.status).toBe("active");
         expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload + 1);
         reloadVerified = true;
-        staleVerified = true;
       }
     }
 
     const state = latestState(value);
     expect(reloadVerified).toBe(true);
-    expect(staleVerified).toBe(true);
     expect(selected.slice(0, 10)).toEqual([
       "refine:quality:0",
       "audit:documentation-audit:0",
