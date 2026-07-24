@@ -2,6 +2,11 @@ import type { CheckDefinition, CheckExecutor, CheckResult, HypagraphState } from
 import { runDurableCheckLifecycle } from "../checks/durable-lifecycle.js";
 import type { AutomaticCheckLifecycleResult, CheckLifecycleTransition } from "../checks/lifecycle.js";
 import { evaluateCheckStart } from "../domain/check-policy.js";
+import {
+  evaluationResultClaim,
+  evaluationResultClaimLabel,
+  shortEvaluatorFingerprint,
+} from "../domain/evaluation-presentation.js";
 import type { WorkflowEventStore } from "../persistence/event-store.js";
 
 export interface PiCheckRunInput {
@@ -65,6 +70,14 @@ const protectsEvaluatorOutput = (definition: CheckDefinition | undefined): boole
   && definition.evaluation !== undefined
   && definition.evaluation.feedback.exposeRawReport !== true;
 
+const evaluatorAdapter = (result: CheckResult): string | undefined => {
+  const reference = result.evidence.find((item) => item.ref.startsWith("evaluator-adapter://"))?.ref;
+  if (!reference) return undefined;
+  const identity = reference.slice("evaluator-adapter://".length);
+  const slash = identity.lastIndexOf("/");
+  return slash < 1 ? identity : `${identity.slice(0, slash)} v${identity.slice(slash + 1)}`;
+};
+
 const definitionLines = (definition: CheckDefinition | undefined): string[] => {
   if (!definition) return ["Kind: unknown"];
   const lines = [`Kind: ${definition.kind}`];
@@ -83,13 +96,16 @@ const definitionLines = (definition: CheckDefinition | undefined): string[] => {
     lines.push(`Parser: ${definition.parser.name} v${definition.parser.version}`);
     lines.push(`Metric mappings: ${definition.mappings.length}`);
     if (definition.evaluation) {
+      const trustLevel = definition.evaluation.integrity?.trustLevel;
+      const claim = evaluationResultClaim(definition.evaluation.kind, trustLevel);
       lines.push(`Evaluation purpose: ${definition.evaluation.kind}`);
+      lines.push(`Result claim: ${evaluationResultClaimLabel(claim)}`);
       lines.push(`Feedback: ${definition.evaluation.feedback.mode}`);
       if (definition.evaluation.feedback.maximumDiagnosticItems !== undefined) lines.push(`Diagnostic limit: ${definition.evaluation.feedback.maximumDiagnosticItems}`);
       lines.push(`Raw report: ${definition.evaluation.feedback.exposeRawReport === true ? "public" : "protected"}`);
+      lines.push(`Evaluator trust: ${trustLevel ?? "undeclared"}`);
       const integrity = definition.evaluation.integrity;
       if (integrity) {
-        lines.push(`Evaluator trust: ${integrity.trustLevel}`);
         lines.push(`Evaluator version: ${integrity.evaluatorVersion?.value ?? "derived fingerprint"}`);
         lines.push(`Protected paths: ${integrity.protectedPaths?.length ?? 0}`);
         const gitConstraintCount = integrity.git === undefined
@@ -130,8 +146,14 @@ export function formatPiCheckResult(state: HypagraphState, nodeId: string, resul
   if (facts.length === 0) lines.push("- none");
   else for (const fact of facts) lines.push(`- ${fact.name} = ${formatValue(fact.value)}`);
   if (result.evaluation) {
+    const trustLevel = result.evaluation.integrity?.trustLevel
+      ?? (definition?.kind === "metric-report" ? definition.evaluation?.integrity?.trustLevel : undefined);
+    const claim = evaluationResultClaim(result.evaluation.kind, trustLevel);
     lines.push(`Evaluation purpose: ${result.evaluation.kind}`);
+    lines.push(`Result claim: ${evaluationResultClaimLabel(claim)}`);
     lines.push(`Feedback mode: ${result.evaluation.feedbackMode}`);
+    const adapter = evaluatorAdapter(result);
+    if (adapter) lines.push(`Evaluator adapter: ${adapter}`);
     lines.push("Diagnostics:");
     if (result.evaluation.diagnostics.length === 0) lines.push("- none");
     else for (const diagnostic of result.evaluation.diagnostics) lines.push(`- ${diagnostic.code}: ${diagnostic.message}`);
@@ -141,10 +163,13 @@ export function formatPiCheckResult(state: HypagraphState, nodeId: string, resul
       const verified = integrity.protectedEvidence.filter((item) => item.status === "verified").length;
       lines.push(`Evaluator trust: ${integrity.trustLevel}`);
       lines.push(`Evaluator version: ${integrity.evaluatorVersion ?? "none"}`);
-      lines.push(`Evaluator fingerprint: ${integrity.evaluatorFingerprint}`);
+      lines.push(`Evaluator fingerprint: ${shortEvaluatorFingerprint(integrity.evaluatorFingerprint)}`);
       lines.push(`Evaluator integrity: ${integrity.status}`);
       lines.push(`Integrity diagnostic: ${integrity.diagnosticCodes[0] ?? "none"}`);
       lines.push(`Protected evidence: ${verified}/${integrity.protectedEvidence.length} verified`);
+    } else {
+      lines.push(`Evaluator trust: ${trustLevel ?? "undeclared"}`);
+      lines.push("Evaluator integrity: undeclared");
     }
   }
   lines.push(`Stdout: ${result.stdoutRef ?? "none"}`);
