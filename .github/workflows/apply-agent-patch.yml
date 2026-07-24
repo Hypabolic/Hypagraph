@@ -19,11 +19,11 @@ jobs:
       - name: Apply and validate the agent patch
         shell: bash
         run: |
-          if ! compgen -G '.agent/apply.py.b64.*' > /dev/null; then
-            echo "No agent patch is present."
+          if ! compgen -G '.agent/apply.py.gz.b64.*' > /dev/null; then
+            echo "No complete compressed agent patch is present."
             exit 0
           fi
-          cat .agent/apply.py.b64.* | base64 --decode > .agent/apply.py
+          cat .agent/apply.py.gz.b64.* | base64 --decode | gzip --decompress > .agent/apply.py
           python .agent/apply.py
           npm ci
           npm run check
