@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `80766e51636cbd065cd08632546d3ff39419624c`
+- Current implementation baseline: `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, and 4 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, 4, and 5 complete |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -272,8 +272,8 @@ This root is the first member of the accepted future goal-family model.
 2. Atomic `/hypagoal` creation — complete in PR #65.
 3. Graph-aware continuation — complete in PR #67.
 4. Token and turn budgets plus reload safety — complete in PR #69.
-5. Loop and trusted-evaluation continuation — current.
-6. Blockage and bounded revision.
+5. Loop and trusted-evaluation continuation — complete in PR #71.
+6. Blockage and bounded revision — current.
 7. Complete Pi product surface.
 8. Dogfood and v0.6 release.
 
@@ -342,7 +342,23 @@ M5B Slice 4 provides:
 
 The merged baseline is `80766e51636cbd065cd08632546d3ff39419624c`. CI #871 and final PR CI #873 pass 87 test files and 374 tests on all six supported OS and Node.js targets.
 
-Slice 5 adds loop-aware and trusted-evaluation-aware continuation guidance. It must reuse the existing loop and evaluation runtime, preserve protected evaluator boundaries, keep all bounded stop reasons distinct, and continue to select fairly across independent root components.
+### Slice 5 result
+
+M5B Slice 5 provides:
+
+- canonical loop and evaluation continuation guidance;
+- distinct validity, current metric, best metric, and typed-success presentation;
+- progress, patience, invalid-evaluation, evaluation-budget, trust, isolation, feedback, integrity, and failure-policy context;
+- protected evaluator redaction across model-visible state and check surfaces;
+- fair continuation across independent bounded components;
+- stale loop-continuation rejection;
+- a realistic four-evaluation Pi smoke with one invalid observation, three improvements, and typed success;
+- exact goal accounting and restore without dispatch;
+- complete evidence in `docs/m5b-slice-5-dogfood.md`.
+
+The merged baseline is `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`. CI #892 and final PR CI #894 pass 89 test files and 382 tests on all six supported OS and Node.js targets.
+
+Slice 6 adds canonical blocker classification and one bounded automatic workflow revision attempt. It must preserve the exact objective and safety contracts, reuse the existing revision and invalidation reducer, reject stale or repeated proposals, charge the revision turn, and stop clearly when no safe runnable path results.
 
 ### M5B architecture constraints
 
