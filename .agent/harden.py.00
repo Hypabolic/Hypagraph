@@ -1,0 +1,87 @@
+from pathlib import Path
+
+
+def replace(path: str, old: str, new: str, count: int = 1) -> None:
+    target = Path(path)
+    text = target.read_text()
+    actual = text.count(old)
+    if actual != count:
+        raise RuntimeError(f"{path}: expected {count} matches, found {actual}: {old[:100]!r}")
+    target.write_text(text.replace(old, new, count))
+
+
+replace(
+    "src/domain/goal-blockage.ts",
+    '''  if (enumerateRootWorkActions(state).length > 0) return { kind: "not-blocked" };
+  if (state.definition.nodes.some((node) => ACTIVE_ROOT_STATUSES.has(state.runtime.nodes[node.id]?.status ?? "pending"))) {
+    return { kind: "not-blocked" };
+  }
+
+  for (const node of state.definition.nodes) {''',
+    '''  if (enumerateRootWorkActions(state).length > 0) return { kind: "not-blocked" };
+  if (state.definition.nodes.some((node) => ACTIVE_ROOT_STATUSES.has(state.runtime.nodes[node.id]?.status ?? "pending"))) {
+    return { kind: "not-blocked" };
+  }
+  const unsafeAttempt = state.definition.nodes.find((node) => {
+    const runtime = state.runtime.nodes[node.id];
+    const attempt = runtime?.currentAttemptId ? runtime.attempts[runtime.currentAttemptId] : undefined;
+    return attempt?.status === "running" || attempt?.status === "submitted" || attempt?.status === "verifying";
+  });
+  if (unsafeAttempt) {
+    const blocker = identity(state, "terminal-policy", `active-attempt:${unsafeAttempt.id}`, `Node '${unsafeAttempt.id}' retains an active attempt or check which cannot be safely invalidated.`);
+    return { kind: "revision-not-allowed", blocker, reason: blocker.reason };
+  }
+
+  for (const node of state.definition.nodes) {''',
+)
+
+replace(
+    "src/domain/reducer.ts",
+    '''    const stale = staleGoalRevisionReason(state, command);
+    if (stale) return stale;
+    if (command.type === "abandon-goal-revision") {''',
+    '''    const stale = staleGoalRevisionReason(state, command);
+    if (stale) {
+      const attempt = state.goal?.automaticRevision.lastAttempt;
+      const belongsToConsumedAttempt = command.type === "apply-goal-revision"
+        && attempt?.outcome === "pending"
+        && attempt.operationId === command.revisionOperationId;
+      if (!belongsToConsumedAttempt || !state.goal) return stale;
+      next = append(next, events, command, {
+        type: "hypagraph.goal.revision-abandoned",
+        data: {
+          goalId: state.goal.goalId,
+          operationId: attempt.operationId,
+          outcomeCode: "stale_goal_revision",
+          reason: stale.diagnostics[0]?.message ?? "The automatic revision proposal is stale.",
+        },
+      });
+      return { ok: true, state: next, events };
+    }
+    if (command.type === "abandon-goal-revision") {''',
+)
+
+replace(
+    "src/domain/goal-revision-policy.ts",
+    '''export function validateAutomaticRevision(previous: HypagraphDefinition, next: HypagraphDefinition): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (next.goal !== previous.goal) diagnostics.push(diagnostic("automatic_revision_objective_changed", "An automatic revision must preserve the exact objective byte-for-byte.", "goal"));''',
+    '''export function validateAutomaticRevision(previous: HypagraphDefinition, next: HypagraphDefinition): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const proposed = next as unknown as Record<string, unknown>;
+  for (const key of ["budget", "goalBudget", "maximumTurns", "maximumTokens"] as const) {
+    if (Object.prototype.hasOwnProperty.call(proposed, key)) diagnostics.push(diagnostic("automatic_revision_goal_budget_changed", `Automatic revision cannot reset, add, or raise goal budget field '${key}'.`, key));
+  }
+  for (const key of ["status", "completed", "outcome"] as const) {
+    if (Object.prototype.hasOwnProperty.call(proposed, key)) diagnostics.push(diagnostic("automatic_revision_control_claim", `Automatic revision cannot claim control-plane outcome field '${key}'.`, key));
+  }
+  if (next.goal !== previous.goal) diagnostics.push(diagnostic("automatic_revision_objective_changed", "An automatic revision must preserve the exact objective byte-for-byte.", "goal"));''',
+)
+
+replace(
+    "src/extension.ts",
+    '''        definition: normalizeDefinition(params),
+        commandId: `apply-goal-revision:${randomUUID()}`,''',
+    '''        definition: { ...normalizeDefinition(params), goal: params.goal },
+        commandId: `apply-goal-revision:${randomUUID()}`,''',
+)
