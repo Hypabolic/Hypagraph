@@ -449,8 +449,8 @@ describe("M5A complete evaluation-contract dogfood", () => {
       status: "failed",
       exitReason: "evaluation_budget",
       invalidEvaluationCount: 1,
-      bestMetric: undefined,
     });
+    expect(state.runtime.loops.quality?.bestMetric).toBeUndefined();
     expect(state.runtime.evaluations).toMatchObject({ total: 1, development: 1 });
     expect(replayEvents(events)).toEqual(state);
     expect(restoredSnapshot(events, state)).toEqual(state);
