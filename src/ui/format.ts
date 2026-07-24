@@ -1,3 +1,4 @@
+import { assessEvaluationAuthoring, formatEvaluationAuthoringAdvisories } from "../domain/evaluation-authoring.js";
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
@@ -29,6 +30,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
     loops: loopSurfaceSummaries(state),
+    evaluationAuthoringAdvisories: assessEvaluationAuthoring(state.definition),
     snapshotHash: state.snapshotHash,
   };
 }
@@ -44,6 +46,10 @@ export function renderWorkflow(state: HypagraphState): string {
   if (state.definition.loops.length > 0) {
     lines.push("Loops:");
     for (const line of renderLoopStatus(state).split("\n")) lines.push(`- ${line}`);
+  }
+  const authoringAdvisories = assessEvaluationAuthoring(state.definition);
+  if (authoringAdvisories.length > 0) {
+    lines.push(formatEvaluationAuthoringAdvisories(authoringAdvisories));
   }
   lines.push("Nodes:");
   for (const node of state.definition.nodes) {
