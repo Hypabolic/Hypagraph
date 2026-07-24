@@ -31,6 +31,7 @@ jobs:
           set +e
           {
             cat .agent/apply.py.gz.b64.* | base64 --decode | gzip --decompress > .agent/apply.py
+            sed -i 's/""", count=2)/""", count=3)/' .agent/apply.py
             python .agent/apply.py
             npm ci
             npm run check
