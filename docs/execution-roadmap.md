@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`
+- Current implementation baseline: `836ac10ea8c13c6b0839902d175f718359d1bd07`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1 and 2 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, and 3 complete |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -270,8 +270,8 @@ This root is the first member of the accepted future goal-family model.
 
 1. Canonical goal lifecycle — complete in PR #62.
 2. Atomic `/hypagoal` creation — complete in PR #65.
-3. Graph-aware continuation — current.
-4. Token and turn budgets plus reload safety.
+3. Graph-aware continuation — complete in PR #67.
+4. Token and turn budgets plus reload safety — current.
 5. Loop and trusted-evaluation continuation.
 6. Blockage and bounded revision.
 7. Complete Pi product surface.
@@ -308,6 +308,22 @@ M5B Slice 2 provides:
 - complete dogfood evidence in `docs/m5b-slice-2-dogfood.md`.
 
 Slice 3 must select deterministically across every runnable root component. It must include goal and workflow identity on continuation actions, support disconnected and independent loop components, avoid recency-based component ownership, and preserve a direct lift into the later family scheduler.
+
+### Slice 3 result
+
+M5B Slice 3 provides:
+
+- a pure workflow-local continuation selector;
+- stable enumeration across every runnable root component;
+- event-backed round-robin fairness;
+- explicit goal, workflow, revision, sequence, snapshot, ordinal, node, and loop identity;
+- durable continuation requests before Pi follow-ups;
+- one Pi scheduling authority;
+- stale request and delivery rejection;
+- user-message priority and no-progress stopping;
+- replay, restore, independent-loop fairness, and routed Pi smoke evidence in `docs/m5b-slice-3-dogfood.md`.
+
+Slice 4 adds workflow-local token and turn budgets plus reload and branch-change pause behavior. Usage contracts must be additive so a later family aggregate can sum descendant and executor usage without rewriting root workflow history.
 
 ### M5B architecture constraints
 

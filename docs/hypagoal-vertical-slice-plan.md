@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1 and 2 complete; Slice 3 current
+- Status: active implementation; Slices 1, 2, and 3 complete; Slice 4 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -257,25 +257,29 @@ CI #722 passes 83 test files and 333 tests on Ubuntu, macOS, and Windows with No
 
 The one-root rule remains a v0.6 Pi product boundary. The workflow domain remains compatible with later family persistence.
 
-### Slice 3 - Graph-aware continuation
+### Slice 3 - Graph-aware continuation — complete
 
-Add:
+PR #67 delivered:
 
-- pure continuation decisions;
-- goal, workflow, revision, and node identity on each runnable action;
-- one queued Pi follow-up;
-- `agent_end` delivery;
-- active-task guidance;
-- ready-task, check, and gate guidance;
-- dynamic tool exposure;
-- stale-continuation rejection;
-- deterministic selection between independent runnable components.
+- pure workflow-local continuation decisions;
+- explicit goal, workflow, revision, sequence, snapshot, ordinal, node, and loop identity;
+- stable definition-order candidate enumeration;
+- event-backed round-robin selection through `GoalRuntime.continuationOrdinal`;
+- durable `hypagraph.goal.continuation-requested` events;
+- one queued Pi follow-up through `agent_end`;
+- state-bound delivery and stale rejection in `before_agent_start`;
+- user-message priority and no-progress stop behavior;
+- dynamic tool exposure and restoration;
+- deterministic selection across disconnected branches and independent loop components;
+- replay, restore, and realistic Pi smoke coverage.
 
-The selector must not assume that the last active component owns the next turn. It must consider all runnable work in the root workflow, including disconnected loop components.
+The merge baseline is `836ac10ea8c13c6b0839902d175f718359d1bd07`.
 
-Done when a multi-node workflow with an independent component completes without manual continuation prompts or starvation.
+CI #770 and final PR CI #772 pass 85 test files and 357 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-### Slice 4 - Budgets and reload safety
+The selector remains workflow-local and can later become one candidate source for the family scheduler without changing its action contract.
+
+### Slice 4 - Budgets and reload safety — current
 
 Add token accounting, turn accounting, final-turn accounting, budget events, wrap-up guidance, reload pause, branch-change pause, explicit resume, and session-generation tests.
 
@@ -417,4 +421,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slice 1 is complete. Slice 2 is the current implementation target.
+M5B is active. Slices 1, 2, and 3 are complete. Slice 4 is the current implementation target.
