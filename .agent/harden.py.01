@@ -50,7 +50,8 @@ insert = '''
     ["outcome", "success", "automatic_revision_control_claim"],
   ] as const)("rejects model-owned control field %s", (field, value, code) => {
     const proposal = acceptedProposal() as HypagraphDefinition & Record<string, unknown>;
-    proposal[field] = value;
+    const proposedRecord = proposal as unknown as Record<string, unknown>;
+    proposedRecord[field] = value;
     expect(validateAutomaticRevision(base(), proposal)).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
   });
 '''
