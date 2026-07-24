@@ -89,3 +89,14 @@ replace(
     '''        definition: { ...normalizeDefinition(params), goal: params.goal },
         commandId: `apply-goal-revision:${randomUUID()}`,''',
 )
+
+replace(
+    "src/domain/projection.ts",
+    '''      if (typeof event.data.appliedRevision === "number") attempt.appliedRevision = event.data.appliedRevision;
+      next.goal.updatedAt = event.timestamp;
+      break;''',
+    '''      if (typeof event.data.appliedRevision === "number") attempt.appliedRevision = event.data.appliedRevision;
+      if (next.goal.pendingContinuation?.operationId === attempt.operationId) delete next.goal.pendingContinuation;
+      next.goal.updatedAt = event.timestamp;
+      break;''',
+)
