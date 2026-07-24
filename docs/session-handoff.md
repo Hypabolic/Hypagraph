@@ -1,280 +1,326 @@
-# Session handoff: M5A Slice 4 closeout to Slice 5
+# Session handoff: M5A complete to M5B Slice 1
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Last merged baseline: `22aad1500af71d137ee4deab5ac92ba99d8b7437`
-- Last merged pull request: #55
-- Active implementation pull request: #56
-- Active branch: `agent/m5a-slice-4-closeout`
-- Active milestone: M5A trusted evaluation contracts
-- Next feature slice: M5A Slice 5, evaluation-contract authoring
-- Tracking issue: #30
-- Hypagoal issue: #25
+- M5A implementation baseline: `9d529e2cc549c5d2508a190b267a07361f302659`
+- M5A final implementation pull request: #60
+- M5A tracking issue: #30
+- Active milestone: M5B Hypagoal
+- Next slice: M5B Slice 1, canonical goal lifecycle
+- Hypagoal tracking issue: #25
+- Release marker: v0.6 after M5B dogfood and release evidence
 
 ## 1. Read first
 
 Read:
 
 - `AGENTS.md`;
-- `docs/trusted-evaluation-contract-plan.md`;
 - `docs/hypagoal-vertical-slice-plan.md`;
+- `docs/trusted-evaluation-contract-plan.md`;
+- `docs/m5a-dogfood.md`;
 - `docs/automatic-graph-authoring.md`;
 - `docs/loop-region-product-model.md`;
 - `docs/product-spec.md`.
 
-Issue #30 is the authoritative M5A checklist.
+Use issue #25 as the authoritative M5B checklist.
 
-Issue #25 is the authoritative M5B Hypagoal checklist.
+Issue #30 is the completed M5A implementation record.
 
 ## 2. Product decisions that must not change
 
-### One canonical workflow
+### 2.1 One canonical workflow
 
 Hypagraph has one executable workflow graph.
 
-Hypagoal must control that workflow. It must not add a second work model or let a model mark the goal complete.
+Hypagoal must control that workflow. It must not add:
 
-### Generic bounded iteration
+- a goal node;
+- a second task model;
+- a parallel completion state machine;
+- a model tool that marks a goal complete.
 
-A loop is a generic bounded iteration region. Repair is one possible pattern.
+The runtime derives goal completion from canonical workflow state.
 
-The same model supports refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, migration, and repair.
+### 2.2 Goal control is continuation control
 
-A loop can connect to the main graph or run as an independent top-level component. Each loop has explicit failure policy.
+Hypagoal decides whether Pi may request another agent turn.
 
-### Pure reducer
+It does not decide that semantic task work is complete.
 
-The reducer must not run commands, inspect files, invoke Git, read the clock, generate IDs, call a model, access the network, or calculate semantic scores.
+The continuation decision must be pure. The Pi adapter performs the external continuation side effect only after the decision is durable and current.
 
-External executors and deterministic parsers produce observations. The reducer validates commands and applies events.
+### 2.3 Generic bounded iteration
 
-### Separate success, progress, validity, and trust
+A loop is a generic bounded iteration region.
 
-Success controls completion.
+It can perform refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, migration, or repair.
 
-Progress compares valid numeric observations.
+Repair is one pattern, not the default purpose.
 
-Evaluation validity controls whether the runtime may use an observation.
+A loop can connect to the wider graph or run as an independent top-level component. Each loop has explicit failure policy.
 
-Evaluator trust describes the boundary: transparent, protected, or isolated.
+### 2.4 Trusted evaluation is complete foundation work
 
-Evaluation purpose describes use: development, probe, or holdout.
+M5A keeps these concepts separate:
 
-Only isolated evaluation can support a strong trusted holdout claim.
+- success;
+- progress;
+- evaluation validity;
+- evaluation purpose;
+- evaluator trust;
+- evaluator transport.
 
-## 3. Completed milestones
+Hypagoal must consume the existing evaluation and loop state. It must not add a second loss or evaluator model.
+
+Only isolated execution can support trusted holdout acceptance.
+
+### 2.5 Restore must not run autonomous work
+
+Session restore rebuilds canonical state only.
+
+An active goal must pause after reload or branch change. The user must resume it explicitly.
+
+A stale continuation or stale turn must not affect the current goal generation.
+
+## 3. Completed foundation
 
 ### M3.1 deterministic checks
 
 Complete:
 
 - command checks;
-- Vitest, ESLint, and Istanbul report adapters;
+- Vitest, ESLint, and Istanbul report checks;
 - file assertions;
 - Git assertions;
-- canonical typed fact publication;
 - durable lifecycle, retry, cancellation, restore, and replay.
 
 ### M4 bounded iteration regions
 
 Complete:
 
-- typed success conditions;
+- typed success;
 - multiple iterations;
 - feedback edges;
 - hard limits;
 - numeric progress;
-- best metric and best iteration;
+- best metric and iteration;
 - patience;
-- explicit failure policies;
 - independent loop components;
+- explicit failure policy;
 - cancellation and revision recovery;
 - stale-result rejection;
-- optimistic sequence conflicts;
-- Pi and graph product surfaces;
-- dogfood evidence.
+- Pi and graph surfaces.
 
-### M5A Slice 1: metric reports
+### M5A trusted evaluation contracts
 
-PR #52 added versioned scalar metric reports through the existing report executor.
+Complete:
 
-### M5A Slice 2: evaluation validity
+- metric-report checks;
+- typed evaluation validity;
+- invalid-observation limits;
+- bounded feedback;
+- protected evaluator output;
+- event-backed total and per-purpose budgets;
+- transparent and protected evaluator integrity;
+- evaluator versions and fingerprints;
+- cancellation and integrity deadlines;
+- transport-neutral evaluator adapters;
+- evaluation-contract authoring guidance;
+- deterministic authoring advisories;
+- accurate purpose, trust, claim, adapter, and integrity presentation;
+- complete product-path dogfood;
+- restore and replay on every supported target.
 
-PR #53 added typed validity, invalid-observation counts, progress protection, and `invalid_evaluations` termination.
+The M5A dogfood record is `docs/m5a-dogfood.md`.
 
-### M5A Slice 3: feedback and budgets
+## 4. M5A final evidence
 
-PR #54 added evaluation purpose, aggregate or bounded-diagnostic feedback, protected output, total and per-purpose event-backed budgets, and `evaluation_budget` termination.
+PR #60 adds `tests/m5a-dogfood.test.ts`.
 
-### M5A Slice 4: evaluator integrity
+The three executable scenarios prove:
 
-PR #55 added:
+1. prose-derived evaluation authoring, an inner typed gate, three improving development evaluations, typed acceptance, and a generalization probe;
+2. protected evaluator change detection, rejection of a high invalid score, best-result and patience protection, and later `no_progress` termination;
+3. `evaluation_budget` termination, restore, replay, and stale evaluator result rejection.
 
-- separate evaluator trust;
-- SHA-256 protected paths;
-- exact Git revision, clean-worktree, and protected-path constraints;
-- declared evaluator version facts;
-- versioned integrity observations;
-- evaluator fingerprints;
-- runtime-enforced integrity validity before success and progress;
-- replay and restore validation;
-- Pi, graph, and loop integrity status;
-- protected-output redaction.
-
-PR #56 closes the Slice 4 hardening gaps:
-
-- evaluator integrity now receives the active `AbortSignal`;
-- Git integrity subprocesses are cancellable;
-- integrity work has a bounded deadline;
-- cancellation and timeout produce stable coarse diagnostics;
-- protected file instruments reject symbolic links;
-- bounded reads use no-follow descriptor opens where supported;
-- the opened file identity is verified before content is accepted;
-- normalization-error paths retain required integrity observations;
-- focused hardening tests cover cancellation, deadline expiry, and symbolic links.
-
-## 4. Current code map
-
-### Domain
-
-- `src/domain/model.ts`: evaluation definitions and persisted observations.
-- `src/domain/validate.ts`: authoring contract validation.
-- `src/domain/integrity-policy.ts`: canonical protected paths and integrity-result validation.
-- `src/domain/evaluation-policy.ts`: event-backed budget logic.
-- `src/domain/reducer.ts`: canonical validity, success, progress, patience, and terminal decisions.
-- `src/domain/projection.ts`: replay and runtime projection.
-
-### Checks
-
-- `src/checks/metric-report-parser.ts`: versioned metric JSON parser.
-- `src/checks/report-check-executor.ts`: existing report execution path and integrity integration.
-- `src/checks/evaluation-integrity.ts`: external deterministic integrity evaluation.
-- `src/checks/file-assertion.ts`: bounded protected file reads.
-- `src/checks/git-assertion.ts`: fixed-allowlist Git instruments.
-- `src/checks/durable-lifecycle.ts`: persisted check lifecycle.
-
-### Product surface
-
-- `src/pi/definition.ts`: Pi authoring schema and normalization.
-- `src/pi/check-runner.ts`: protected check result presentation.
-- `src/graph/projection.ts`: evaluator summary projection.
-- `src/ui/loop-surface.ts`: canonical loop and evaluation summary.
-
-## 5. Current validation state
-
-The last merged Slice 4 matrix passed on:
+CI #621 passes:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-PR #56 must pass the same six jobs before it is merged.
+The suite contains 79 test files and 300 tests.
 
-The repository-local validation command is:
+## 5. Current architecture map
 
-```bash
-npm ci
-npm run check
-```
+### Domain and reducer
 
-Do not mark Slice 4 complete in issue #30 until PR #56 is green and merged.
+- `src/domain/model.ts`: canonical workflow, loop, evaluation, and event types.
+- `src/domain/reducer.ts`: canonical workflow decisions.
+- `src/domain/projection.ts`: event replay and runtime projection.
+- `src/domain/evaluation-policy.ts`: event-backed evaluation budgets.
+- `src/domain/integrity-policy.ts`: evaluator-integrity validation.
+- `src/domain/evaluation-authoring.ts`: non-blocking authoring assessment.
+- `src/domain/evaluation-presentation.ts`: honest evaluator result claims.
 
-## 6. Important release warning
+### Check and evaluator path
 
-Issue #23 remains open because tag creation was deferred.
+- `src/checks/durable-lifecycle.ts`: durable check effect ordering.
+- `src/checks/report-check-executor.ts`: report parsing and fact publication.
+- `src/checks/evaluator-adapter.ts`: transport-neutral evaluator boundary.
+- `src/checks/evaluation-integrity.ts`: external integrity instruments.
 
-The intended v0.5 release commit is:
+### Pi and product surfaces
 
-```text
-88ec3950bcbc07ce7148d940d0c65f6b176f3bc9
-```
+- `src/extension.ts`: Pi tools and commands.
+- `src/pi/definition.ts`: authoring schemas and normalization.
+- `src/pi/check-runner.ts`: check and evaluator result presentation.
+- `src/graph/projection.ts`: canonical graph view model.
+- `src/ui/loop-surface.ts`: canonical loop and evaluation summaries.
 
-Do not tag current `main` as `v0.5.0`.
+### Persistence and session behavior
 
-M3.1 and M5A commits are later than the intended v0.5 release baseline.
+- `src/persistence/event-store.ts`: optimistic event persistence.
+- `src/persistence/session-rebuild.ts`: restore from Pi session history.
+- `src/pi/session-branch.ts`: branch generation and stale-result protection.
 
-The v0.6 tag must wait until both M5A and M5B release evidence is green.
-
-## 7. Next task: M5A Slice 5
-
-The next feature slice is evaluation-contract authoring.
+## 6. Next task: M5B Slice 1
 
 ### User result
 
-A user gives an ordinary optimization, refinement, or evaluation objective. The bundled skill builds the evaluation contract without requiring graph or metric-schema terminology.
+A normal Hypagraph workflow can have durable goal-control state whose terminal status is derived from workflow state.
 
-### Required authoring sequence
+This slice is domain-first. It does not yet add `/hypagoal` automatic creation or Pi continuation.
 
-1. Determine whether a defensible deterministic metric exists.
-2. Define the target separately from successful completion.
-3. Convert every enforceable constraint into an instrument and typed fact.
-4. Select development, probe, or holdout purpose.
-5. Select transparent, protected, or isolated trust.
-6. Define typed evaluation validity.
-7. Define progress direction and minimum improvement.
-8. Define typed success.
-9. Bound feedback and evaluation attempts.
-10. Add probe or anti-gaming instruments when an obvious shortcut exists.
+### Add
 
-When no defensible metric exists, omit progress. Use typed checks, evidence, hard limits, explicit outcome policy, and user review.
+- `GoalStatus` and `GoalRuntime` domain types;
+- optional goal-control state in `HypagraphState`;
+- goal commands:
+  - `start-goal`;
+  - `pause-goal`;
+  - `resume-goal`;
+  - `cancel-goal`;
+- goal events in the `hypagraph.goal.*` namespace;
+- pure workflow-to-goal status derivation;
+- event projection;
+- snapshot schema migration or explicit compatibility behavior;
+- replay and snapshot-hash coverage;
+- workflow-derived completion, failure, cancellation, and blockage.
 
-### Required implementation
+Do not add token or turn accounting yet. That belongs to Slice 4.
 
-- extend `skills/hypagraph/SKILL.md`;
-- extend `docs/automatic-graph-authoring.md`;
-- add a pure evaluation-contract assessment or lint module;
-- expose warnings through `hypagraph_define` results;
-- warn about undeclared trust, local holdout claims, missing instruments, unbounded diagnostics, missing budgets, and unenforced textual constraints;
-- add authoring fixtures for optimization, development plus probe, and a non-metric objective;
-- add normalization and validation tests;
-- run a real Pi authoring smoke test from prose.
+Do not add automatic Pi continuation yet. That belongs to Slice 3.
+
+Do not add `/hypagoal` creation yet. That belongs to Slice 2.
+
+### Required rules
+
+- Goal state cannot exist without a workflow.
+- There can be at most one goal-control state in one Pi session for the first release.
+- The model cannot complete a goal.
+- There is no `complete-goal` command.
+- Every goal status transition has a durable event.
+- The reducer remains pure.
+- Replaying the same events produces the same goal status and stop reason.
+- Workflow terminal state is authoritative over model narrative.
+
+### Recommended initial types
+
+```ts
+export type GoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface GoalRuntime {
+  goalId: string;
+  workflowId: string;
+  status: GoalStatus;
+  continuationOrdinal: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  stopReason?: string;
+}
+```
+
+Budget-limited state and usage counters can be added in Slice 4 unless implementation evidence shows they must exist in the initial persisted schema.
 
 ### Done when
 
-A prose objective produces typed score, validity, success, progress, feedback, budget, and accurate trust semantics, or deliberately produces a non-metric graph.
+A manually driven workflow with goal control:
+
+- completes only when the workflow completes;
+- fails only when the workflow fails;
+- cancels only through canonical cancellation;
+- pauses and resumes through explicit commands;
+- blocks when the workflow has no executable path;
+- restores and replays the same goal state;
+- cannot be completed by any model-visible command.
 
 Suggested branch:
 
 ```text
-agent/m5a-slice-5-evaluation-authoring
+agent/m5b-slice-1-goal-lifecycle
 ```
 
 Suggested pull request title:
 
 ```text
-Implement M5A evaluation-contract authoring
+Implement M5B canonical goal lifecycle
 ```
 
-## 8. Work after Slice 5
+## 7. Work after Slice 1
 
-Continue M5A in this order:
+Continue M5B in this order:
 
-1. Slice 6: transport-neutral evaluator adapter.
-2. Slice 7: complete evaluation product surface.
-3. Slice 8: dogfood and close M5A.
-4. Reconfirm issue #25 and begin M5B Slice 1.
+1. Slice 2: atomic `/hypagoal` creation.
+2. Slice 3: graph-aware continuation.
+3. Slice 4: token and turn budgets plus reload safety.
+4. Slice 5: loop and trusted-evaluation continuation.
+5. Slice 6: blockage and bounded revision.
+6. Slice 7: complete Pi product surface.
+7. Slice 8: dogfood and v0.6 release.
 
-Do not start M5B before the required M5A authoring contract is stable.
+## 8. Important release warning
+
+The package version remains `0.5.0` during M5A and M5B development.
+
+Do not tag current `main` as `v0.5.0`.
+
+The intended historical v0.5 tag target remains:
+
+```text
+88ec3950bcbc07ce7148d940d0c65f6b176f3bc9
+```
+
+The v0.6 version and tag must wait until M5B dogfood and release evidence pass on a tested main commit.
 
 ## 9. Known hazards
 
-- TypeBox literal unions must remain narrow. Avoid widening discriminants to `string`.
-- Every integrity result must remain replayable without file or Git access.
-- Protected commands, paths, hashes, raw reports, stdout, stderr, and Git output must not enter model-visible messages.
-- Evaluation budget is consumed before the external side effect starts.
+- Do not create a second goal definition that duplicates the graph.
+- Do not make model text authoritative for completion.
+- Do not queue autonomous work during restore.
+- Do not infer repair semantics for generic loops.
+- Do not weaken M5A validity, trust, budget, or protected-output rules.
+- Preserve event ordering and optimistic sequence checks.
+- Keep branch generation and stale-continuation identity explicit.
 - Connector-authored commits can suppress push-triggered Actions. Use the PR `ready_for_review` trigger when required.
-- Temporary workflow files must not remain in the final diff.
-- A protected local evaluator is not isolated and does not provide answer secrecy.
+- Temporary patch workflows must remove themselves and must not remain in final diffs.
 
 ## 10. Successful next handoff
 
 The next handoff is ready when:
 
-- PR #56 is merged;
-- issue #30 marks Slice 4 complete with final CI and test counts;
-- Slice 5 is merged;
-- prose authoring can produce or deliberately omit an evaluation contract;
-- trust claims remain accurate;
+- M5B Slice 1 is merged;
+- issue #25 marks Slice 1 complete;
+- goal-control state is event-backed and replayable;
+- workflow state derives every goal terminal result;
+- no model or public command can complete a goal;
 - all six CI jobs pass;
-- this file points to Slice 6.
+- this document points to atomic `/hypagoal` creation.

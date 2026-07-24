@@ -1,12 +1,15 @@
 # Trusted evaluation contracts and loss functions
 
-- Status: active implementation
+- Status: complete
 - Roadmap phase: M5A
+- Completion date: 2026-07-24
+- Final implementation baseline: `9d529e2cc549c5d2508a190b267a07361f302659`
+- Final implementation pull request: #60
+- Tracking issue: #30
+- Dogfood record: `docs/m5a-dogfood.md`
 - Release marker: v0.6 with M5B Hypagoal
 - Prerequisites: M3 deterministic checks and M4 executable bounded iteration regions
-- Tracking issue: #30
 - Research source: https://github.com/elvisun/loss-function-development
-- Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
 
@@ -23,15 +26,15 @@ M5A adds a controlled evaluation contract around the existing M4 loop model. The
 - which trust boundary applies;
 - which typed condition controls acceptance.
 
-The reducer must consume typed facts and persisted observations only. It must not run an evaluator, inspect files, invoke Git, call a model, or calculate a semantic score.
+The reducer consumes typed facts and persisted observations only. It does not run evaluators, inspect files, invoke Git, call a model, or calculate semantic scores.
 
-This capability applies to optimization, refinement, search, repeated evaluation, reconciliation, migration, polling, and repair. Repair is not the default loop purpose.
+The capability applies to optimization, refinement, search, repeated evaluation, reconciliation, migration, polling, and repair. Repair is not the default loop purpose.
 
-## 2. Core decisions
+## 2. Architectural decisions
 
-### 2.1 Keep one progress model
+### 2.1 Keep the M4 progress model
 
-Hypagraph keeps the M4 progress model:
+Hypagraph uses:
 
 - one numeric progress fact;
 - minimize or maximize direction;
@@ -42,76 +45,76 @@ Hypagraph keeps the M4 progress model:
 
 M5A does not add arbitrary JavaScript or TypeScript loss functions to the reducer.
 
-### 2.2 Keep success, progress, and validity separate
+### 2.2 Separate success, progress, validity, purpose, trust, and transport
 
-Success answers whether a loop may complete.
+Success answers whether a region may complete.
 
-Progress answers whether a valid observation is better than the best prior valid observation.
+Progress answers whether a valid observation is better than the prior best observation.
 
-Evaluation validity answers whether the runtime may use the observation as an honest measurement.
+Validity answers whether the runtime may use the observation.
 
-A numeric result can be invalid. An invalid result must not:
+Purpose is development, probe, or holdout.
+
+Trust is transparent, protected, or isolated.
+
+Transport is the evaluator adapter that obtains the report.
+
+A numeric result can be invalid. An invalid result cannot:
 
 - complete a loop;
-- update the accepted current metric;
+- update the accepted metric;
 - replace the best metric;
 - replace the best iteration;
 - reset or increment patience.
 
-### 2.3 Keep evaluation purpose and trust separate
+### 2.3 Keep trust labels accurate
 
-Evaluation purpose is one of:
+A transparent evaluator can expose its logic and data.
 
-- `development`;
-- `probe`;
-- `holdout`.
+A protected evaluator proves that declared local evaluator artifacts did not change. It does not hide readable answers from a model or process in the same workspace.
 
-Evaluator trust is one of:
+An isolated evaluator keeps evaluator logic or expected results outside the model workspace.
 
-- `transparent`;
-- `protected`;
-- `isolated`.
+Only isolated execution can support trusted holdout acceptance.
 
-A protected local evaluator can prove that declared artifacts did not change. It does not hide readable answers from a model or process in the same workspace.
-
-Only an isolated evaluator boundary can support a strong trusted holdout claim.
+A local holdout-purpose evaluator without isolated trust is labelled as holdout purpose only.
 
 ### 2.4 Keep feedback explicit
 
-A metric evaluator declares one feedback mode:
+Metric evaluators use:
 
-- `aggregate`;
-- `bounded-diagnostics`.
+- aggregate feedback; or
+- bounded diagnostics.
 
 Aggregate feedback exposes mapped scalar facts only.
 
-Bounded diagnostics expose only validated `{code, message}` items up to a declared limit.
+Bounded diagnostics expose validated `{code, message}` items up to a declared limit.
 
-Raw reports, stdout, stderr, protected commands, protected paths, expected hashes, and raw Git output remain protected evidence unless the contract explicitly permits public report exposure.
+Raw reports, stdout, stderr, protected commands, protected paths, expected hashes, and raw Git output remain protected unless the contract explicitly permits public report exposure.
 
-A holdout evaluator must use aggregate feedback.
+Holdout-purpose evaluation uses aggregate feedback.
 
 ### 2.5 Consume budget at external start
 
 An evaluation attempt consumes budget when the external evaluator starts.
 
-Passed, failed, invalid, timed-out, cancelled, interrupted, errored, and retried attempts consume budget.
+Passed, failed, invalid, timed-out, cancelled, interrupted, errored, and retried attempts count.
 
-The event stream records total and per-purpose counts before the external side effect starts.
+The event stream records total and per-purpose counts before the external side effect begins.
 
 ## 3. Implemented contract
 
 ### 3.1 Metric reports
 
-A `metric-report` check runs through the existing bounded command lifecycle and reads one workspace-contained JSON report.
+A `metric-report` check obtains one bounded JSON report through an evaluator adapter and parses it with the versioned `metric-json` parser.
 
-The report must use `schemaVersion: 1`.
+The report uses `schemaVersion: 1`.
 
-The definition maps declared scalar source paths to declared typed facts. Supported types are Boolean, integer, finite number, and string.
+The definition maps declared scalar paths to declared facts. Supported values are Boolean, integer, finite number, and string.
 
-The parser rejects malformed JSON, unsupported versions, unsafe paths, prototype traversal, missing required mappings, non-finite numbers, type mismatches, duplicate mappings, undeclared facts, and report-size violations.
+The parser rejects malformed JSON, unsupported versions, unsafe paths, prototype traversal, missing required mappings, non-finite numbers, type mismatches, duplicate mappings, undeclared facts, and excessive report size.
 
-### 3.2 Loop evaluation validity
+### 3.2 Evaluation validity
 
 A loop can declare:
 
@@ -122,9 +125,13 @@ evaluation: {
 }
 ```
 
-The runtime evaluates validity before success and progress. It records invalid observations and stops with `invalid_evaluations` at the declared limit.
+Validity runs before success and progress.
 
-### 3.3 Feedback and evaluation budgets
+Invalid observations remain in iteration evidence and count against their limit and evaluation budget.
+
+The region stops with `invalid_evaluations` when the invalid-observation limit is reached.
+
+### 3.3 Feedback and budgets
 
 A metric evaluator can declare:
 
@@ -152,7 +159,9 @@ evaluation: {
 }
 ```
 
-A required next evaluation is rejected when either the total limit or the relevant per-purpose limit is exhausted. A loop stops with `evaluation_budget` when it cannot start another required evaluator.
+A required evaluator start is rejected when the total or relevant per-purpose budget is exhausted.
+
+A loop stops with `evaluation_budget` when it cannot start another required evaluator.
 
 ### 3.4 Evaluator integrity
 
@@ -180,180 +189,181 @@ evaluation: {
 }
 ```
 
-The current runtime supports transparent and protected trust. It rejects isolated trust until the evaluator adapter boundary exists.
+The current local runtime supports transparent and protected trust. It rejects isolated trust until a production isolated adapter exists.
 
-Protected path instruments:
+Protected file instruments:
 
-- require workspace-relative canonical paths;
+- require canonical workspace-relative paths;
 - require exact SHA-256 values;
 - use bounded descriptor reads;
 - reject symbolic links;
-- use no-follow opens where the platform supports them;
-- verify the opened file identity before hashing;
-- obey evaluator cancellation;
+- use no-follow opens where supported;
+- verify opened file identity;
+- obey cancellation;
 - stop at a bounded integrity deadline.
 
-Git instruments use a fixed argument allowlist. They can require:
+Git instruments can require:
 
 - an exact commit revision;
 - a clean worktree;
-- declared protected paths unchanged from an exact base revision.
+- protected paths unchanged from an exact base revision.
 
-An unrelated path change does not fail the protected-path constraint.
-
-The executor stores a versioned integrity observation in `CheckResult`. The observation contains:
+The executor stores a versioned integrity observation containing:
 
 - trust level;
 - valid or invalid status;
 - stable coarse diagnostic codes;
-- declared evaluator version when present;
-- a derived evaluator fingerprint;
-- coarse protected-evidence states.
+- evaluator version when declared;
+- evaluator fingerprint;
+- coarse protected-evidence state.
 
-Replay validates and reuses this observation. Replay does not reread protected files or rerun Git.
+Replay validates and reuses the stored observation. It does not reread files or rerun Git.
 
-An integrity-invalid result consumes evaluation budget and remains available for audit. It cannot update success or progress state.
+### 3.5 Evaluator adapter boundary
+
+Metric acquisition uses an injectable `EvaluatorAdapter`.
+
+The request contains workflow, revision, node, attempt, requested time, evaluator profile, and metric definition.
+
+The response separates:
+
+- producer lifecycle result;
+- bounded report bytes and media type;
+- adapter identity and version;
+- trust evidence;
+- local-workspace or isolated boundary;
+- terminal producer and adapter errors.
+
+`LocalCommandReportEvaluatorAdapter` preserves the existing bounded local command/report behavior.
+
+Metric parsing, fact publication, integrity, budgets, persistence, replay, and loop decisions do not depend on evaluator transport.
+
+### 3.6 Evaluation-contract authoring
+
+The bundled skill determines whether a defensible deterministic metric exists before adding numeric progress.
+
+When a metric exists, authoring separates:
+
+- target;
+- constraints and instruments;
+- typed success;
+- numeric progress;
+- evaluation validity;
+- purpose;
+- trust;
+- feedback;
+- budgets;
+- probes and anti-gaming checks.
+
+When no defensible metric exists, authoring omits progress and uses deterministic checks, typed success, evidence, hard limits, outcome policy, and user review.
+
+A pure structural assessment returns non-blocking advisories for:
+
+- undeclared evaluation policy;
+- undeclared trust;
+- non-isolated holdout purpose;
+- missing evaluation budgets;
+- missing typed validity;
+- progress outside a metric-report boundary;
+- missing probe guidance;
+- public raw evaluator reports.
+
+### 3.7 Product presentation
+
+Pi and structured graph surfaces show:
+
+- evaluation purpose;
+- honest result claim;
+- feedback mode;
+- adapter identity and version;
+- trust level;
+- evaluator version;
+- compact normal fingerprint and full structured fingerprint;
+- integrity status and coarse diagnostic;
+- protected-evidence count;
+- current and best metric;
+- evaluation counts and remaining budgets;
+- terminal evaluation reason.
+
+The product distinguishes:
+
+- development score;
+- probe score;
+- holdout purpose only;
+- trusted isolated holdout.
 
 ## 4. Runtime decision order
 
-At an evaluation boundary, Hypagraph uses this order:
+At an evaluation boundary, Hypagraph:
 
-1. Validate the executor result and required fact contracts.
-2. Validate the persisted evaluator integrity observation.
-3. Apply evaluator integrity validity.
-4. Evaluate the typed user validity condition.
-5. Record an invalid evaluation when either validity layer fails.
-6. Stop when the invalid-evaluation limit is reached.
-7. Evaluate typed success for a valid observation.
-8. Read and record numeric progress for a valid observation.
-9. Update the best metric and best iteration.
-10. Complete when success is true and verification passed.
-11. Stop at the hard iteration limit.
-12. Stop after no progress when patience is exhausted.
-13. Stop when another required evaluator cannot start within budget.
-14. Otherwise start the next iteration.
+1. validates the executor result and fact contract;
+2. validates the persisted integrity observation;
+3. applies integrity validity;
+4. evaluates typed user validity;
+5. records an invalid observation when either layer fails;
+6. stops at the invalid-evaluation limit;
+7. evaluates typed success for a valid observation;
+8. reads numeric progress for a valid observation;
+9. updates best metric and iteration;
+10. completes when success is true and verification passed;
+11. stops at the hard iteration limit;
+12. stops after no progress when patience is exhausted;
+13. stops when another required evaluator cannot start within budget;
+14. otherwise starts the next iteration.
 
-Replay must reproduce this order and the same terminal reason.
+Replay reproduces the same order and terminal reason.
 
-## 5. Remaining vertical slices
+## 5. Completed vertical slices
 
-Each slice crosses the domain model, validation, executor, persistence, Pi adapter, graph projection, tests, and documentation where those layers are affected.
+1. Metric-report checks — PR #52.
+2. Evaluation validity — PR #53.
+3. Feedback and evaluation budgets — PR #54.
+4. Evaluator integrity — PRs #55 and #56.
+5. Evaluation-contract authoring — PR #57.
+6. Transport-neutral evaluator adapter — PR #58.
+7. Complete evaluation product surface — PR #59.
+8. Executable dogfood — PR #60.
 
-### Slice 5 - Evaluation-contract authoring
+## 6. Dogfood and validation
 
-Add automatic authoring guidance and contract linting for:
+The complete dogfood record is `docs/m5a-dogfood.md`.
 
-- target selection;
-- constraint identification;
-- deterministic instruments;
-- typed validity;
-- typed success;
-- numeric progress when defensible;
-- feedback limits;
-- evaluation budgets;
-- probe strategy;
-- anti-gaming analysis;
-- explicit trust selection;
-- warnings when no isolated holdout exists.
+The executable tests prove:
 
-The authoring model must omit progress when no defensible deterministic metric exists. It must not invent a semantic score.
-
-Done when an ordinary prose objective produces a valid evaluation-backed graph, or deliberately produces a non-metric graph with typed checks, evidence, hard bounds, and user review.
-
-### Slice 6 - Transport-neutral evaluator adapter
-
-Add:
-
-- `EvaluatorAdapter` interface;
-- normalized request and response types;
-- adapter identity and version;
-- evaluation purpose;
-- trust evidence;
-- public and protected outputs;
-- timeout and cancellation rules;
-- a local command/report reference adapter;
-- isolated-adapter contract tests.
-
-The existing parser, durable check lifecycle, reducer, and loop runtime must not depend on evaluator transport.
-
-A production secure isolated transport remains part of the later executor milestone.
-
-Done when transport can change without changing canonical evaluation semantics.
-
-### Slice 7 - Complete the Pi product surface
-
-Show:
-
-- evaluation purpose;
-- declared trust boundary;
-- feedback mode;
-- validity and integrity state;
-- current and best metric;
-- evaluation counts and remaining budgets;
-- evaluator version;
-- probe or generalization facts when declared;
-- terminal evaluation reason;
-- protected evidence count.
-
-Normal summaries should use a shortened fingerprint. Full fingerprints belong in detailed inspection.
-
-Pi must label holdout as evaluation purpose. It must not present a non-isolated result as trusted holdout acceptance.
-
-Done when a user can understand the measurement and trust boundary without reading raw events.
-
-### Slice 8 - Dogfood and close M5A
-
-Use focused scenarios:
-
-1. Successful optimization from prose with an inner deterministic gate, at least three valid improving iterations, a probe fact, and typed acceptance.
-2. Integrity-invalid evaluation that cannot update best progress or complete the loop.
-3. Patience termination.
-4. Evaluation-budget termination.
-5. Restore between iterations.
-6. Deterministic replay.
-7. Stale-result rejection.
-8. Accurate transparent and protected trust labels.
-9. No trusted holdout claim without isolated execution.
-
-Store the prose objective, generated graph, event-backed results, Pi screenshots, replay evidence, and final CI counts in `docs`.
-
-Done when issue #30 can close and M5B can use one stable evaluation contract.
-
-## 6. Test strategy
-
-Tests must cover:
-
-- parser determinism and rejection cases;
-- valid and invalid observations;
-- progress and patience protection;
-- event-backed budget accounting;
-- feedback caps and protected output filtering;
-- exact file and Git integrity instruments;
-- symbolic-link rejection;
-- cancellation and integrity deadlines;
+- prose-derived authoring;
+- an inner typed gate;
+- three improving development evaluations;
+- typed acceptance;
+- a generalization probe;
+- protected evaluator change rejection;
+- best-result and patience protection;
+- `no_progress` termination;
+- `evaluation_budget` termination;
+- restore and replay;
 - stale-result rejection;
-- restore without repeated external effects;
-- replay equality;
-- accurate trust labels;
-- source compatibility for workflows without evaluation contracts.
+- protected-output filtering;
+- accurate purpose, trust, adapter, and result claims.
 
-The supported CI matrix is:
+CI #621 passes:
 
-- Ubuntu, macOS, and Windows;
-- Node.js 22 and 24.
+- Ubuntu with Node.js 22 and 24;
+- macOS with Node.js 22 and 24;
+- Windows with Node.js 22 and 24.
 
-## 7. Out of scope for v0.6
+The complete suite contains 79 test files and 300 tests.
 
-The first M5A release does not include:
+## 7. Out of scope for M5A
+
+M5A does not include:
 
 - arbitrary loss code in the reducer;
 - model-scored success or loss;
-- automatic semantic strategy-difference detection;
 - a universal evaluator generator;
-- a secrecy claim based only on local path protection;
-- a built-in remote holdout service;
+- semantic strategy-difference detection;
+- secrecy based only on local path protection;
+- a production remote holdout service;
 - parallel evaluator execution;
-- restoration of the best workspace state;
+- automatic restoration of the best workspace state;
 - automatic collection of private reference data.
 
 ## 8. Roadmap integration
@@ -361,7 +371,7 @@ The first M5A release does not include:
 | Phase | Release marker | Result |
 | --- | --- | --- |
 | M4 | v0.5 | Typed loop success, numeric progress, best result, patience, hard limits, and explicit outcome policy |
-| M5A | v0.6 | Trusted metric production, validity, feedback, budgets, integrity, authoring, and adapter contract |
+| M5A | v0.6 | Trusted metric production, validity, feedback, budgets, integrity, authoring, adapters, and dogfood — complete |
 | M5B | v0.6 | Hypagoal autonomous controller over one canonical Hypagraph workflow |
 | M6 | v0.7 | Event history, replay, and debugger UI |
 | M7 | v0.8 | Executor abstraction and production isolated evaluation |
@@ -369,4 +379,10 @@ The first M5A release does not include:
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-The v0.6 tag must point to a tested main commit after both M5A and M5B release criteria pass.
+The v0.6 tag waits until M5B dogfood and release evidence pass on a tested main commit.
+
+## 9. Completion decision
+
+M5A is complete.
+
+M5B Hypagoal is the next milestone. It must reuse one canonical Hypagraph workflow and the completed M5A evaluation contract rather than introducing a second goal, loop, loss, or evaluator model.
