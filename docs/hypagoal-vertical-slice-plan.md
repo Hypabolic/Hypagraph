@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1, 2, 3, and 4 complete; Slice 5 current
+- Status: active implementation; Slices 1, 2, 3, 4, and 5 complete; Slice 6 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -302,38 +302,49 @@ CI #871 and final PR CI #873 pass 87 test files and 374 tests on Ubuntu, macOS, 
 
 The budget contract is workflow-local and additive. A later family controller can aggregate descendant and executor usage without rewriting this event history.
 
-### Slice 5 - Loop and trusted-evaluation continuation — current
+### Slice 5 - Loop and trusted-evaluation continuation — complete
 
-Add canonical loop and evaluation guidance for:
+PR #71 delivered:
 
-- current iteration and hard limit;
-- typed success;
-- current and best accepted metric;
-- progress direction;
-- patience and no-progress count;
-- invalid-evaluation count and limit;
-- evaluation attempt budget;
-- evaluation purpose, trust, isolation, and feedback mode;
-- protected evaluator information;
-- all bounded stop reasons;
-- explicit loop failure policy;
-- independent loop components.
+- canonical loop guidance for iteration, hard limit, typed success, current and best accepted metric, progress direction, patience, and invalid-evaluation state;
+- evaluation purpose, feedback, trust, isolation, attempt budgets, public evaluator identity, integrity, and failure-policy guidance;
+- explicit separation of validity, numeric progress, and typed success;
+- protected evaluator redaction in model-visible graph, summary, continuation, check-start, and check-result surfaces;
+- one unchanged root selector and scheduling authority;
+- stale loop-continuation rejection after canonical iteration change;
+- fair interleaving between an optimization region and an independent bounded auxiliary region;
+- a realistic four-evaluation Pi smoke with one invalid observation, three valid improvements, and typed success;
+- exact goal turn and token accounting during loop work;
+- replay and restore without dispatch.
 
-Reuse the existing loop-region and trusted-evaluation runtime. Do not add a second loop controller or evaluation state model.
+The merge baseline is `2f5ca9dbdc5664f7bcdf455939881d420fb6363e`.
 
-The continuation selector must keep every runnable root component eligible. A loop cannot own the next turn because it produced the latest event.
+CI #892 and final PR CI #894 pass 89 test files and 382 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-Done when Hypagoal runs an optimization or refinement region and an independent auxiliary region without manual continuation, rejects an invalid score without updating the best metric, improves a valid metric over at least three iterations, preserves state isolation, and completes through typed success.
+Evidence is in `docs/m5b-slice-5-dogfood.md`.
 
-### Slice 6 - Blockage and bounded revision
+### Slice 6 - Blockage and bounded revision — current
 
-Add blocked-goal projection, revision guidance, original-objective preservation, one bounded automatic revision attempt, stale-result protection, and clear diagnostics.
+Add canonical blocker classification and one workflow-local automatic revision allowance.
 
-A revision cannot silently change the user objective. The first release must not replan without bound.
+The automatic path must:
 
-The v0.6 response to newly discovered bounded work is workflow revision. A later release can choose a bounded child goal when independent ownership, scope, budget, and return contracts are justified.
+- run only after canonical goal blockage and only when no unrelated root action remains runnable;
+- preserve the exact user objective;
+- bind the request and proposal to goal, workflow, revision, sequence, snapshot, blocker, session, branch, operation, and request identity;
+- consume at most one automatic revision attempt in v0.6;
+- charge the revision turn through the existing goal turn and token accounting path;
+- reject stale, duplicate, unsafe, over-budget, or second proposals;
+- prevent automatic weakening of protected evaluation contracts, typed loop success, failure policy, and hard bounds;
+- reuse the existing `revise` transition, node invalidation, loop invalidation, readiness, history, and stale-result semantics;
+- resume only when the revised graph has a valid path;
+- stop with a clear blocker when revision is invalid, unsafe, exhausted, or still blocked;
+- keep manual user revision separate from the automatic allowance;
+- perform no revision work during replay or restore.
 
-Done when a blocked graph either returns to a valid path through one revision or stops with a clear blocker.
+The v0.6 response to newly discovered bounded work is workflow revision. A later release can create a child goal when work needs separate ownership, budget, workspace, or return semantics.
+
+Done when one blocked graph returns to a valid path through one safe automatic revision, a non-revisable blocker stops without a proposal, a second automatic attempt is impossible, and the complete matrix passes.
 
 ### Slice 7 - Complete Pi product surface
 
@@ -449,4 +460,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slices 1, 2, 3, and 4 are complete. Slice 5 is the current implementation target.
+M5B is active. Slices 1, 2, 3, 4, and 5 are complete. Slice 6 is the current implementation target.
