@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1, 2, 3, 4, and 5 complete; Slice 6 current
+- Status: active implementation; Slices 1, 2, 3, 4, 5, and 6 complete; Slice 7 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -323,30 +323,30 @@ CI #892 and final PR CI #894 pass 89 test files and 382 tests on Ubuntu, macOS, 
 
 Evidence is in `docs/m5b-slice-5-dogfood.md`.
 
-### Slice 6 - Blockage and bounded revision — current
+### Slice 6 - Blockage and bounded revision — complete
 
-Add canonical blocker classification and one workflow-local automatic revision allowance.
+PR #73 delivered:
 
-The automatic path must:
+- deterministic blocker classification for typed node, loop, legacy-definition, no-path, external, safeguard, and terminal-policy cases;
+- one event-backed automatic revision attempt for each root Hypagoal;
+- exact state-bound request and proposal identity;
+- allowance consumption when the revision turn is requested, including malformed, rejected, stale, interrupted, no-op, weakening, and still-blocked outcomes;
+- byte-exact objective preservation before adapter normalization;
+- explicit non-weakening validation for protected evaluation, typed success, checks, gates, evidence, acceptance, facts, dependencies, scopes, loop policy, hard limits, and goal or evaluation budgets;
+- accepted revision through the existing `revise` command and canonical invalidation reducer;
+- preservation of unaffected completed work and rejection of pre-revision stale results;
+- exact turn and token accounting through the Slice 4 path;
+- reload and branch-change abandonment and pause without semantic dispatch;
+- realistic positive and negative Pi smoke coverage;
+- complete evidence in `docs/m5b-slice-6-dogfood.md`.
 
-- run only after canonical goal blockage and only when no unrelated root action remains runnable;
-- preserve the exact user objective;
-- bind the request and proposal to goal, workflow, revision, sequence, snapshot, blocker, session, branch, operation, and request identity;
-- consume at most one automatic revision attempt in v0.6;
-- charge the revision turn through the existing goal turn and token accounting path;
-- reject stale, duplicate, unsafe, over-budget, or second proposals;
-- prevent automatic weakening of protected evaluation contracts, typed loop success, failure policy, and hard bounds;
-- reuse the existing `revise` transition, node invalidation, loop invalidation, readiness, history, and stale-result semantics;
-- resume only when the revised graph has a valid path;
-- stop with a clear blocker when revision is invalid, unsafe, exhausted, or still blocked;
-- keep manual user revision separate from the automatic allowance;
-- perform no revision work during replay or restore.
+The merge baseline is `a6c5b9ee2b9025308e91241570154b0524158258`.
 
-The v0.6 response to newly discovered bounded work is workflow revision. A later release can create a child goal when work needs separate ownership, budget, workspace, or return semantics.
+CI #1014 passes 93 test files and 441 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-Done when one blocked graph returns to a valid path through one safe automatic revision, a non-revisable blocker stops without a proposal, a second automatic attempt is impossible, and the complete matrix passes.
+The v0.6 response to newly discovered bounded work remains workflow revision. A later release can create a child goal when work needs separate ownership, budget, workspace, or return semantics.
 
-### Slice 7 - Complete Pi product surface
+### Slice 7 - Complete Pi product surface — current
 
 Add compact lifecycle messages, `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, `/hypagoal graph`, graph-pane goal details, budget/loop/evaluation/stop summaries, and narrow and wide terminal coverage.
 
@@ -460,4 +460,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slices 1, 2, 3, 4, and 5 are complete. Slice 6 is the current implementation target.
+M5B is active. Slices 1, 2, 3, 4, 5, and 6 are complete. Slice 7 is the current implementation target.
