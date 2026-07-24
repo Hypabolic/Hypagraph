@@ -31,7 +31,8 @@ jobs:
       - name: Execute the temporary patch
         shell: bash
         run: |
-          python - <<'PY'
+          set +e
+          python - <<'PY' > goal-patch.log 2>&1
           from pathlib import Path
           from textwrap import dedent
 
@@ -42,6 +43,16 @@ jobs:
           block = workflow.split(marker, 1)[1].split('\n          PY', 1)[0]
           exec(dedent(block), {'__name__': '__main__'})
           PY
+          status=$?
+          cat goal-patch.log
+          exit $status
+
+      - name: Upload patch log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal-lifecycle-patch-log
+          path: goal-patch.log
 
       - name: Restore CI and commit the product patch
         shell: bash
