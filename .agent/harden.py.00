@@ -82,10 +82,10 @@ replace(
 
 replace(
     "src/extension.ts",
-    '''        blocker: pending.action.blocker,
+    '''        blocker: structuredClone(delivered.action.blocker),
         definition: normalizeDefinition(params),
         commandId: `apply-goal-revision:${randomUUID()}`,''',
-    '''        blocker: pending.action.blocker,
+    '''        blocker: structuredClone(delivered.action.blocker),
         definition: { ...normalizeDefinition(params), goal: params.goal },
         commandId: `apply-goal-revision:${randomUUID()}`,''',
 )
