@@ -103,3 +103,5 @@ closing = "\n});\n"
 if not text.endswith(closing):
     raise RuntimeError("Pi revision test closing marker was not found")
 path.write_text(text[:-len(closing)] + insert + closing)
+
+# This file is temporary and is removed by the branch-local validation workflow.
