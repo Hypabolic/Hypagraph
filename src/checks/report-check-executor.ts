@@ -13,6 +13,11 @@ import type {
 import type { CheckArtifactStore } from "./artifacts.js";
 import { CommandCheckExecutor } from "./command-executor.js";
 import { evaluateEvaluationIntegrity } from "./evaluation-integrity.js";
+import {
+  LocalCommandReportEvaluatorAdapter,
+  type EvaluatorAdapter,
+  type EvaluatorAdapterTrustEvidence,
+} from "./evaluator-adapter.js";
 import { parseReport } from "./report-parser-registry.js";
 
 const DEFAULT_MAX_REPORT_BYTES = 1_048_576;
@@ -24,6 +29,7 @@ export interface ReportCheckExecutorOptions {
   rootDirectory: string;
   artifactStore: CheckArtifactStore;
   producerExecutor?: CheckExecutor;
+  evaluatorAdapter?: EvaluatorAdapter;
   now?: () => Date;
 }
 
@@ -50,7 +56,7 @@ const reportFactName = (fact: FactInput, definition: ExecutableReportCheckDefini
   return `${namespace}.${publicPath(fact.name)}`;
 };
 
-const resolveReportPath = (rootDirectory: string, definition: ExecutableReportCheckDefinition): string => {
+const resolveReportPath = (rootDirectory: string, definition: ReportCheckDefinition): string => {
   const root = resolve(rootDirectory);
   const workingDirectory = resolve(root, definition.workingDirectory ?? ".");
   const target = resolve(workingDirectory, definition.reportPath);
@@ -84,6 +90,12 @@ const protectEvidence = (evidence: readonly EvidenceReference[], protectedOutput
   ...structuredClone(item),
   ...(protectedOutput ? { visibility: "protected" as const } : {}),
 }));
+
+const adapterEvidence = (trust: EvaluatorAdapterTrustEvidence): EvidenceReference => ({
+  ref: `evaluator-adapter://${trust.adapterId}/${trust.adapterVersion}`,
+  kind: "note",
+  summary: `Evaluator adapter ${trust.adapterId} v${trust.adapterVersion}; profile ${trust.profile}; boundary ${trust.boundary}; trust ${trust.trustLevel}.`,
+});
 
 const filteredSource = (
   source: CheckResult,
@@ -119,10 +131,29 @@ const errorResult = (
   error: message,
 });
 
+const producerRequest = (
+  request: CheckExecutionRequest,
+  definition: ExecutableReportCheckDefinition,
+): CheckExecutionRequest => ({
+  ...structuredClone(request),
+  definition: {
+    kind: "command",
+    command: definition.command,
+    ...(definition.arguments === undefined ? {} : { arguments: [...definition.arguments] }),
+    ...(definition.workingDirectory === undefined ? {} : { workingDirectory: definition.workingDirectory }),
+    timeoutMs: definition.timeoutMs,
+    ...(definition.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...definition.expectedExitCodes] }),
+    ...(definition.environmentVariables === undefined ? {} : { environmentVariables: [...definition.environmentVariables] }),
+    ...(definition.retry === undefined ? {} : { retry: structuredClone(definition.retry) }),
+    publish: [],
+  },
+});
+
 export class ReportCheckExecutor implements CheckExecutor {
   private readonly rootDirectory: string;
   private readonly artifactStore: CheckArtifactStore;
   private readonly producerExecutor: CheckExecutor;
+  private readonly evaluatorAdapter: EvaluatorAdapter;
   private readonly now: () => Date;
 
   constructor(options: ReportCheckExecutorOptions) {
@@ -132,6 +163,10 @@ export class ReportCheckExecutor implements CheckExecutor {
       rootDirectory: this.rootDirectory,
       artifactStore: this.artifactStore,
       ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    this.evaluatorAdapter = options.evaluatorAdapter ?? new LocalCommandReportEvaluatorAdapter({
+      rootDirectory: this.rootDirectory,
+      producerExecutor: this.producerExecutor,
     });
     this.now = options.now ?? (() => new Date());
   }
@@ -154,9 +189,7 @@ export class ReportCheckExecutor implements CheckExecutor {
   }
 
   async execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult> {
-    if (request.definition.kind === "command") {
-      return this.producerExecutor.execute(request, signal);
-    }
+    if (request.definition.kind === "command") return this.producerExecutor.execute(request, signal);
     if (request.definition.kind !== "test-report"
       && request.definition.kind !== "lint-report"
       && request.definition.kind !== "coverage-report"
@@ -178,49 +211,64 @@ export class ReportCheckExecutor implements CheckExecutor {
       };
     }
 
-    const producerRequest: CheckExecutionRequest = {
-      ...structuredClone(request),
-      definition: {
-        kind: "command",
-        command: definition.command,
-        ...(definition.arguments === undefined ? {} : { arguments: [...definition.arguments] }),
-        ...(definition.workingDirectory === undefined ? {} : { workingDirectory: definition.workingDirectory }),
-        timeoutMs: definition.timeoutMs,
-        ...(definition.expectedExitCodes === undefined ? {} : { expectedExitCodes: [...definition.expectedExitCodes] }),
-        ...(definition.environmentVariables === undefined ? {} : { environmentVariables: [...definition.environmentVariables] }),
-        ...(definition.retry === undefined ? {} : { retry: structuredClone(definition.retry) }),
-        publish: [],
-      },
-    };
-
-    const producer = await this.producerExecutor.execute(producerRequest, signal);
-    if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
-      return this.applyEvaluationIntegrity(definition, filteredSource(producer, definition), signal);
-    }
-
-    let reportPath: string;
-    try {
-      reportPath = resolveReportPath(this.rootDirectory, definition);
-    } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
-    }
-
-    const maxReportBytes = definition.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
-    try {
-      const metadata = await stat(reportPath);
-      if (!metadata.isFile()) throw new Error("The declared report path is not a file.");
-      if (metadata.size > maxReportBytes) throw new Error("The report exceeds the maximum read size.");
-    } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
-    }
-
+    let producer: CheckResult;
     let reportBytes: Uint8Array;
+    let reportName: string;
+    const transportEvidence: EvidenceReference[] = [];
+
+    if (definition.kind === "metric-report") {
+      const response = await this.evaluatorAdapter.evaluate({
+        profile: this.evaluatorAdapter.id,
+        workflowId: request.workflowId,
+        revision: request.revision,
+        nodeId: request.nodeId,
+        attemptId: request.attemptId,
+        requestedAt: request.requestedAt,
+        definition,
+      }, signal);
+      producer = response.producer;
+      transportEvidence.push(adapterEvidence(response.trust));
+      const source = { ...producer, evidence: [...producer.evidence, ...transportEvidence] };
+      if (response.outcome === "producer-terminal") {
+        return this.applyEvaluationIntegrity(definition, filteredSource(source, definition), signal);
+      }
+      if (response.outcome === "adapter-error") {
+        return this.applyEvaluationIntegrity(
+          definition,
+          errorResult(definition, request, source, this.now().toISOString(), response.message),
+          signal,
+        );
+      }
+      reportBytes = response.report.content;
+      reportName = response.report.name;
+    } else {
+      producer = await this.producerExecutor.execute(producerRequest(request, definition), signal);
+      if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
+        return filteredSource(producer, definition);
+      }
+
+      let reportPath: string;
+      try {
+        reportPath = resolveReportPath(this.rootDirectory, definition);
+        const metadata = await stat(reportPath);
+        if (!metadata.isFile()) throw new Error("The declared report path is not a file.");
+        if (metadata.size > (definition.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES)) throw new Error("The report exceeds the maximum read size.");
+        reportBytes = new Uint8Array(await readFile(reportPath));
+        reportName = basename(reportPath);
+      } catch (error) {
+        return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+      }
+    }
+
     let reportText: string;
     try {
-      reportBytes = new Uint8Array(await readFile(reportPath));
       reportText = new TextDecoder("utf-8", { fatal: true }).decode(reportBytes);
     } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
+      return this.applyEvaluationIntegrity(
+        definition,
+        errorResult(definition, request, { ...producer, evidence: [...producer.evidence, ...transportEvidence] }, this.now().toISOString(), error instanceof Error ? error.message : String(error)),
+        signal,
+      );
     }
 
     const protectedOutput = protectsOutput(definition);
@@ -228,12 +276,12 @@ export class ReportCheckExecutor implements CheckExecutor {
       workflowId: request.workflowId,
       nodeId: request.nodeId,
       attemptId: request.attemptId,
-      name: basename(reportPath),
+      name: reportName,
       mediaType: "application/json; charset=utf-8",
       content: reportBytes,
     });
     const evidence: EvidenceReference[] = [
-      ...protectEvidence(producer.evidence, protectedOutput),
+      ...protectEvidence([...producer.evidence, ...transportEvidence], protectedOutput),
       {
         ref: reportRef,
         kind: "file",
