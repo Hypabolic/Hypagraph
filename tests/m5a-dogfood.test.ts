@@ -464,7 +464,7 @@ describe("M5A complete evaluation-contract dogfood", () => {
         kind: "check",
         requires: [],
         acceptance: [],
-        produces: [{ name: "evaluation.score", type: "number", required: false }],
+        produces: [{ name: "evaluation.score", type: "number", required: true }],
         check: metricCheck("development", "metric.json", [{ source: "score", fact: "evaluation.score", type: "number" }]),
       }],
       loops: [],
