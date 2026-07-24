@@ -1,0 +1,45 @@
+name: Patch Slice 8 order
+
+on:
+  push:
+    branches:
+      - agent/m5b-slice-8-dogfood-release
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-8-dogfood-release
+          fetch-depth: 0
+      - name: Update expected continuation order
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('tests/m5b-v0-6-release-dogfood.test.ts')
+          text = path.read_text()
+          old = '''      "evaluate:quality:1",
+      "audit-result:documentation-audit:1",
+      "refine:quality:2",
+      "evaluate:quality:2",'''
+          new = '''      "evaluate:quality:1",
+      "refine:quality:2",
+      "audit-result:documentation-audit:1",
+      "evaluate:quality:2",'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one order block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+      - name: Commit patch and remove workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/patch-slice8-order.yml
+          git add tests/m5b-v0-6-release-dogfood.test.ts
+          git commit -m "Correct release dogfood continuation order"
+          git push origin HEAD:agent/m5b-slice-8-dogfood-release
