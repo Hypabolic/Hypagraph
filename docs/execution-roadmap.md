@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `a6c5b9ee2b9025308e91241570154b0524158258`
+- Current implementation baseline: `90c54214c5337be01e455145a36232a392172fae`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, 4, 5, and 6 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1 through 7 complete; Slice 8 current |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -274,8 +274,8 @@ This root is the first member of the accepted future goal-family model.
 4. Token and turn budgets plus reload safety — complete in PR #69.
 5. Loop and trusted-evaluation continuation — complete in PR #71.
 6. Blockage and bounded revision — complete in PR #73.
-7. Complete Pi product surface — current.
-8. Dogfood and v0.6 release.
+7. Complete Pi product surface — complete in PR #75.
+8. Dogfood and v0.6 release — current.
 
 The detailed plan is in `docs/hypagoal-vertical-slice-plan.md`.
 
@@ -375,7 +375,24 @@ M5B Slice 6 provides:
 
 The merged baseline is `a6c5b9ee2b9025308e91241570154b0524158258`. CI #1014 passes 93 test files and 441 tests on all six supported OS and Node.js targets.
 
-Slice 7 completes the Pi product surface. It must make active action, lifecycle control, remaining budget, loop and evaluation state, graph state, and typed stop reasons understandable without event inspection.
+### Slice 7 result
+
+M5B Slice 7 provides:
+
+- one pure Hypagoal product projection over canonical workflow, goal, budget, loop, evaluation, blocker, and revision state;
+- `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, and `/hypagoal graph`;
+- lifecycle mutations through existing pause, resume, cancel, and continuation reducers only;
+- compact automatic lifecycle notifications for completion, failure, cancellation, blockage, budgets, pauses, stale continuation, invalid usage, and interrupted revision work;
+- exact objective, current action, next action, ready work, remaining turn and token budgets, loop and evaluation state, revision allowance, and stop-code presentation;
+- explicit distinction between workflow phase, goal status, pause cause, blockage, revision eligibility, revision exhaustion, and terminal outcome;
+- exact bounded-loop exit presentation for hard limit, no progress, invalid evaluations, and evaluation budget;
+- root-goal metadata in model-visible state and the graph pane;
+- verified narrow and wide terminal rendering;
+- complete evidence in `docs/m5b-slice-7-dogfood.md`.
+
+The merged baseline is `90c54214c5337be01e455145a36232a392172fae`. CI #1075 and final PR CI #1077 pass 94 test files and 460 tests on all six supported OS and Node.js targets.
+
+Slice 8 is the final integrated dogfood and v0.6 release slice. It must validate the complete root-Hypagoal product path on the tested main commit before version alignment, tagging, and release.
 
 ### M5B architecture constraints
 
