@@ -109,8 +109,8 @@ const weakOptimization = (): HypagraphDefinition => {
   const evaluator = definition.nodes.find((node) => node.id === "evaluate")?.check;
   if (evaluator?.kind !== "metric-report" || !evaluator.evaluation) throw new Error("The evaluator is missing.");
   delete evaluator.evaluation.integrity;
-  definition.loops[0]!.evaluation = undefined;
-  definition.evaluation = undefined;
+  delete definition.loops[0]!.evaluation;
+  delete definition.evaluation;
   return definition;
 };
 
@@ -166,8 +166,8 @@ describe("M5A evaluation-contract authoring assessment", () => {
     const advisories = assessEvaluationAuthoring(definition);
     expect(advisories.map((item) => item.code)).toEqual([
       "evaluation_budget_undeclared",
-      "evaluation_validity_undeclared",
       "probe_evaluation_undeclared",
+      "evaluation_validity_undeclared",
       "evaluation_trust_undeclared",
     ]);
     expect(formatEvaluationAuthoringAdvisories(advisories)).toContain("warning evaluation_budget_undeclared");
