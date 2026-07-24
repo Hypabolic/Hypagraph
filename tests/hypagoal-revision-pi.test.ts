@@ -142,4 +142,22 @@ describe("Hypagoal bounded revision Pi smoke", () => {
     expect(state.goal.status).toBe("blocked");
     expect(state.goal.automaticRevision).toMatchObject({ consumedAttempts: 1, lastAttempt: { outcome: "rejected", outcomeCode: "automatic_revision_objective_changed" } });
   });
+
+  it("rejects a whitespace-mutated objective before definition normalization", async () => {
+    const value = harness();
+    await create(value);
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await transition(value, "inventory", "block", { reason: "A bounded repository step is missing.", blockerKind: "repository-work" });
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    const changed = definition();
+    changed.goal = ` ${objective} `;
+    await value.tools.get("hypagoal_submit_revision")!.execute("whitespace-revise", changed, undefined, undefined, value.ctx);
+    const state = latest(value);
+    expect(state.revision).toBe(1);
+    expect(state.definition.goal).toBe(objective);
+    expect(state.goal.automaticRevision.lastAttempt).toMatchObject({ outcome: "rejected", outcomeCode: "automatic_revision_objective_changed" });
+  });
+
 });

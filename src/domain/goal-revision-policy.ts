@@ -56,6 +56,13 @@ const budgetKeys: Array<keyof EvaluationBudgetDefinition> = [
 
 export function validateAutomaticRevision(previous: HypagraphDefinition, next: HypagraphDefinition): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  const proposed = next as unknown as Record<string, unknown>;
+  for (const key of ["budget", "goalBudget", "maximumTurns", "maximumTokens"] as const) {
+    if (Object.prototype.hasOwnProperty.call(proposed, key)) diagnostics.push(diagnostic("automatic_revision_goal_budget_changed", `Automatic revision cannot reset, add, or raise goal budget field '${key}'.`, key));
+  }
+  for (const key of ["status", "completed", "outcome"] as const) {
+    if (Object.prototype.hasOwnProperty.call(proposed, key)) diagnostics.push(diagnostic("automatic_revision_control_claim", `Automatic revision cannot claim control-plane outcome field '${key}'.`, key));
+  }
   if (next.goal !== previous.goal) diagnostics.push(diagnostic("automatic_revision_objective_changed", "An automatic revision must preserve the exact objective byte-for-byte.", "goal"));
   if (exact(previous, next)) diagnostics.push(diagnostic("automatic_revision_no_op", "The proposed definition does not change the workflow."));
   if (previous.policy.requireEvidence && !next.policy.requireEvidence) diagnostics.push(diagnostic("automatic_revision_evidence_weakened", "An automatic revision cannot remove required evidence.", "policy.requireEvidence"));

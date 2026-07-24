@@ -455,10 +455,26 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     const pending = goal?.pendingContinuation;
     const automatic = goal?.automaticRevision.lastAttempt;
     if (!goal || !pending || pending.action.kind !== "request-revision" || !automatic) return reject("goal_revision_not_pending", "The goal has no pending automatic revision request.");
-    if (command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_revision", "The workflow changed before the revision proposal was processed.");
-    if (state.sequence !== pending.requestSequence) return reject("stale_goal_revision", "The workflow sequence changed after the revision request.");
-    if (command.revisionOperationId !== automatic.operationId || command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration) return reject("stale_goal_revision", "The automatic revision identity changed before the proposal was processed.");
-    if (!blockerIdentityMatches(command.type === "apply-goal-revision" ? command.blocker : pending.action.blocker, pending.action.blocker)) return reject("stale_goal_revision", "The canonical blocker changed before the proposal was processed.");
+    const staleReason = command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash
+      ? "The workflow changed before the revision proposal was processed."
+      : state.sequence !== pending.requestSequence
+        ? "The workflow sequence changed after the revision request."
+        : command.revisionOperationId !== automatic.operationId || command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration
+          ? "The automatic revision identity changed before the proposal was processed."
+          : !blockerIdentityMatches(command.type === "apply-goal-revision" ? command.blocker : pending.action.blocker, pending.action.blocker)
+            ? "The canonical blocker changed before the proposal was processed."
+            : undefined;
+    if (staleReason) {
+      const belongsToConsumedAttempt = command.type === "apply-goal-revision"
+        && automatic.outcome === "pending"
+        && automatic.operationId === command.revisionOperationId;
+      if (!belongsToConsumedAttempt) return reject("stale_goal_revision", staleReason);
+      next = append(next, events, command, {
+        type: "hypagraph.goal.revision-abandoned",
+        data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: "stale_goal_revision", reason: staleReason },
+      });
+      return { ok: true, state: next, events };
+    }
     if (automatic.outcome !== "pending") return reject("goal_revision_already_resolved", "The automatic revision request already has an outcome.");
     if (command.type === "abandon-goal-revision") {
       next = append(next, events, command, { type: "hypagraph.goal.revision-abandoned", data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: command.outcomeCode, reason: command.reason } });

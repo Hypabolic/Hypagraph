@@ -889,7 +889,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         sessionGeneration: canonical.sessionGeneration,
         branchGeneration: canonical.branchGeneration,
         blocker: structuredClone(delivered.action.blocker),
-        definition: normalizeDefinition(params),
+        definition: { ...normalizeDefinition(params), goal: params.goal },
         commandId: `apply-goal-revision:${randomUUID()}`,
         correlationId: delivered.operationId,
         at: new Date().toISOString(),

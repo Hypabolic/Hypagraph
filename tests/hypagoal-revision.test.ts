@@ -4,6 +4,7 @@ import { classifyGoalBlockage } from "../src/domain/goal-blockage.js";
 import { isDispatchableGoalContinuation, selectGoalContinuation } from "../src/domain/goal-continuation.js";
 import { replayEvents } from "../src/domain/projection.js";
 import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
+import { validateAutomaticRevision } from "../src/domain/goal-revision-policy.js";
 import { validateRestoredGoalState } from "../src/persistence/session-rebuild.js";
 
 const at = "2026-07-24T12:00:00.000Z";
@@ -203,14 +204,17 @@ describe("bounded Hypagoal revision", () => {
     expect(blocked.state.goal?.automaticRevision.lastAttempt).toMatchObject({ outcome: "rejected", outcomeCode: "automatic_revision_still_blocked" });
   });
 
-  it("rejects stale proposal identity without mutating canonical state", () => {
+  it("durably exhausts the consumed allowance for a stale proposal without revising canonical workflow state", () => {
     const value = block(createGoal());
     requestRevision(value);
     const command = proposalCommand(value.state, acceptedProposal()) as Extract<HypagraphCommand, { type: "apply-goal-revision" }>;
     command.expectedSequence += 1;
     const result = handleCommand(value.state, command);
-    expect(result).toMatchObject({ ok: false, diagnostics: [{ code: "stale_goal_revision" }] });
-    expect(value.state.revision).toBe(1);
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    expect(result.state.revision).toBe(1);
+    expect(result.events.map((event) => event.type)).not.toContain("hypagraph.workflow.revised");
+    expect(result.state.goal?.automaticRevision.lastAttempt).toMatchObject({ outcome: "abandoned", outcomeCode: "stale_goal_revision" });
+    expect(result.state.goal?.pendingContinuation).toMatchObject({ action: { kind: "request-revision" } });
   });
 
   it("rejects revision while a task or check attempt is active", () => {
@@ -237,4 +241,26 @@ describe("bounded Hypagoal revision", () => {
     const stale = handleCommand(accepted.state, { type: "submit-result", nodeId: "prepare", attemptId: "old-attempt", evidence: [], commandId: "stale-result", at });
     expect(stale).toMatchObject({ ok: false });
   });
+
+  it("does not classify a blocked node with an active attempt or check as automatically revisable", () => {
+    const value = block(createGoal());
+    const unsafe = structuredClone(value.state);
+    unsafe.runtime.nodes.prepare!.currentAttemptId = "unsafe-attempt";
+    unsafe.runtime.nodes.prepare!.attempts["unsafe-attempt"] = { status: "running" } as any;
+    expect(classifyGoalBlockage(unsafe)).toMatchObject({ kind: "revision-not-allowed", blocker: { kind: "terminal-policy", id: "active-attempt:prepare" } });
+    expect(selectGoalContinuation(unsafe)).toMatchObject({ kind: "stop-blocked" });
+  });
+
+  it.each([
+    ["maximumTurns", 99, "automatic_revision_goal_budget_changed"],
+    ["goalBudget", { maximumTokens: 9999 }, "automatic_revision_goal_budget_changed"],
+    ["status", "completed", "automatic_revision_control_claim"],
+    ["outcome", "success", "automatic_revision_control_claim"],
+  ] as const)("rejects model-owned control field %s", (field, value, code) => {
+    const proposal = acceptedProposal() as HypagraphDefinition & Record<string, unknown>;
+    const proposedRecord = proposal as unknown as Record<string, unknown>;
+    proposedRecord[field] = value;
+    expect(validateAutomaticRevision(base(), proposal)).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+  });
+
 });
