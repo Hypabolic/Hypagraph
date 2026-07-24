@@ -2,6 +2,7 @@ import { createHypagoalWorkflow } from "../domain/hypagoal-creation.js";
 import type {
   Diagnostic,
   DomainEvent,
+  GoalStatus,
   HypagraphDefinition,
   HypagraphState,
 } from "../domain/model.js";
@@ -28,11 +29,7 @@ export interface RootCanonicalIdentity extends RootGenerationIdentity {
   eventSequence: number;
   snapshotHash: string;
   workflowPhase: HypagraphState["phase"];
-  goalStatus: HypagraphState["goal"] extends infer T
-    ? T extends { status: infer S }
-      ? S
-      : never
-    : never;
+  goalStatus: GoalStatus | null;
 }
 
 export interface RootReplacementConfirmation extends RootGenerationIdentity {
@@ -96,7 +93,7 @@ export function rootCanonicalIdentity(
     sessionGeneration: generations.sessionGeneration,
     branchGeneration: generations.branchGeneration,
     workflowPhase: state.phase,
-    goalStatus: state.goal?.status,
+    goalStatus: state.goal?.status ?? null,
   };
 }
 
