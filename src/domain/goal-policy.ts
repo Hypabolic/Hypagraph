@@ -11,7 +11,7 @@ export interface GoalWorkflowOutcome {
   reason: string;
 }
 
-const terminalGoalStatuses = new Set<GoalStatus>(["completed", "failed", "cancelled"]);
+const terminalGoalStatuses = new Set<GoalStatus>(["budget_limited", "completed", "failed", "cancelled"]);
 
 export function goalIsTerminal(goal: GoalRuntime | undefined): boolean {
   return goal !== undefined && terminalGoalStatuses.has(goal.status);

@@ -43,7 +43,10 @@ export function renderWorkflow(state: HypagraphState): string {
     `Goal: ${state.definition.goal}`,
     `Active: ${String(summary.active ?? "none")}`,
     `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,
-    ...(state.goal === undefined ? [] : [`Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`]),
+    ...(state.goal === undefined ? [] : [
+      `Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`,
+      `Goal budget: turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "unlimited"}; tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "unlimited"}`,
+    ]),
   ];
   if (state.definition.loops.length > 0) {
     lines.push("Loops:");
@@ -73,7 +76,7 @@ export function renderWidget(state: HypagraphState): string[] {
   const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}` : ""}`,
-    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
+    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${state.goal ? ` | Budget turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "∞"}, tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "∞"}` : ""}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
   ];
 }
 

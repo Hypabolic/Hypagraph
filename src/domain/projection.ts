@@ -16,6 +16,7 @@ import type {
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
 import { validateEvaluationIntegrityResult } from "./integrity-policy.js";
 import { workflowBlockedByFailedLoop, workflowCanComplete } from "./workflow-outcome.js";
+import { addGoalTokenUsage, createGoalBudgetRuntime } from "./goal-budget.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
   ...state,
@@ -156,6 +157,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         workflowId: next.workflowId,
         status: "active",
         continuationOrdinal: 0,
+        budget: createGoalBudgetRuntime(event.data.budget as import("./model.js").GoalBudgetDefinition | undefined),
         startedAt: event.timestamp,
         updatedAt: event.timestamp,
       };
@@ -168,8 +170,65 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       if (!Number.isInteger(ordinal) || ordinal !== next.goal.continuationOrdinal + 1) {
         throw new Error("A continuation-requested event has a non-contiguous ordinal.");
       }
-      next.goal.continuationOrdinal = ordinal;
+      next.goal.continuationOrdinal = ordinal as number;
+      next.goal.pendingContinuation = {
+        operationId: String(event.data.operationId),
+        ordinal: ordinal as number,
+        action: structuredClone(event.data.action as import("./model.js").GoalContinuationAction),
+        selectedRevision: Number(event.data.selectedRevision),
+        selectedSequence: Number(event.data.selectedSequence),
+        selectedSnapshotHash: String(event.data.selectedSnapshotHash),
+        requestSequence: event.sequence,
+        sessionGeneration: Number(event.data.sessionGeneration),
+        branchGeneration: Number(event.data.branchGeneration),
+        requestedAt: event.timestamp,
+      };
       next.goal.updatedAt = event.timestamp;
+      break;
+    }
+    case "hypagraph.goal.continuation-abandoned": {
+      if (!next.goal?.pendingContinuation) throw new Error("A continuation-abandoned event requires a pending continuation.");
+      if (event.data.operationId !== next.goal.pendingContinuation.operationId) throw new Error("A continuation-abandoned event belongs to a different continuation.");
+      delete next.goal.pendingContinuation;
+      next.goal.updatedAt = event.timestamp;
+      break;
+    }
+    case "hypagraph.goal.turn-recorded": {
+      if (!next.goal?.pendingContinuation) throw new Error("A turn-recorded event requires a pending continuation.");
+      const pending = next.goal.pendingContinuation;
+      if (event.data.continuationOperationId !== pending.operationId || event.data.continuationOrdinal !== pending.ordinal) {
+        throw new Error("A turn-recorded event belongs to a different continuation.");
+      }
+      const usage = structuredClone(event.data.usage as import("./model.js").GoalTokenUsage);
+      next.goal.budget.consumedTurns += 1;
+      next.goal.budget.consumedTokens = addGoalTokenUsage(next.goal.budget.consumedTokens, usage);
+      next.goal.budget.lastAccountedTurn = {
+        turnId: String(event.data.turnId),
+        continuationOperationId: pending.operationId,
+        continuationOrdinal: pending.ordinal,
+        requestSequence: pending.requestSequence,
+        selectedSequence: pending.selectedSequence,
+        selectedSnapshotHash: pending.selectedSnapshotHash,
+        sessionGeneration: pending.sessionGeneration,
+        branchGeneration: pending.branchGeneration,
+        source: event.data.source as import("./model.js").GoalTurnUsageSource,
+        usage,
+        accountedAt: event.timestamp,
+      };
+      delete next.goal.pendingContinuation;
+      next.goal.updatedAt = event.timestamp;
+      break;
+    }
+    case "hypagraph.goal.budget-limited": {
+      if (!next.goal) throw new Error("A goal-budget-limited event requires existing goal-control state.");
+      const stop = structuredClone(event.data.stop as import("./model.js").GoalBudgetStop);
+      next.goal.status = "budget_limited";
+      next.goal.budget.stop = stop;
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The goal budget is exhausted.");
+      delete next.goal.pendingContinuation;
+      delete next.goal.pauseCause;
       break;
     }
     case "hypagraph.goal.paused": {
@@ -177,6 +236,8 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.status = "paused";
       next.goal.updatedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The goal is paused.");
+      next.goal.pauseCause = (event.data.cause ?? "explicit") as import("./model.js").GoalPauseCause;
+      delete next.goal.pendingContinuation;
       delete next.goal.completedAt;
       break;
     }
@@ -186,6 +247,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.status = "active";
       next.goal.updatedAt = event.timestamp;
       delete next.goal.stopReason;
+      delete next.goal.pauseCause;
       delete next.goal.completedAt;
       break;
     }
@@ -194,6 +256,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.status = "blocked";
       next.goal.updatedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The workflow is blocked.");
+      delete next.goal.pendingContinuation;
       delete next.goal.completedAt;
       break;
     }
@@ -219,6 +282,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.updatedAt = event.timestamp;
       next.goal.completedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The goal was cancelled.");
+      delete next.goal.pendingContinuation;
       break;
     }
     case "hypagraph.node.ready": if (node) node.status = "ready"; break;

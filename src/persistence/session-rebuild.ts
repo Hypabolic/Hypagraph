@@ -8,6 +8,7 @@ import {
 } from "../domain/model.js";
 import { sha256 } from "../domain/hash.js";
 import { dependenciesAreSatisfied } from "../domain/readiness.js";
+import { validateGoalBudgetDefinition, validateGoalTokenUsage } from "../domain/goal-budget.js";
 import { replayEvents } from "../domain/projection.js";
 import {
   HYPAGRAPH_EVENT_BATCH_TYPE,
@@ -61,7 +62,7 @@ const isCustomEntry = (entry: unknown): entry is CustomEntry => {
 const isStoredSnapshot = (value: unknown): value is StoredSnapshotShape => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<StoredSnapshotShape>;
-  return (candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION || candidate.schemaVersion === 2)
+  return (candidate.schemaVersion === HYPAGRAPH_SCHEMA_VERSION || candidate.schemaVersion === 3 || candidate.schemaVersion === 2)
     && typeof candidate.workflowId === "string"
     && typeof candidate.revision === "number"
     && typeof candidate.sequence === "number"
@@ -177,13 +178,39 @@ export function validateRestoredGoalState(state: HypagraphState): void {
   if (!Number.isInteger(goal.continuationOrdinal) || goal.continuationOrdinal < 0) throw new Error(`Restored goal '${goal.goalId}' has an invalid continuation ordinal.`);
   if (!Number.isFinite(Date.parse(goal.startedAt)) || !Number.isFinite(Date.parse(goal.updatedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid timestamps.`);
   if (Date.parse(goal.updatedAt) < Date.parse(goal.startedAt)) throw new Error(`Restored goal '${goal.goalId}' was updated before it started.`);
-  const terminal = goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled";
+  if (validateGoalBudgetDefinition(goal.budget.limits).length > 0 && (goal.budget.limits.maximumTurns !== undefined || goal.budget.limits.maximumTokens !== undefined)) {
+    throw new Error(`Restored goal '${goal.goalId}' has invalid budget limits.`);
+  }
+  if (!Number.isSafeInteger(goal.budget.consumedTurns) || goal.budget.consumedTurns < 0) throw new Error(`Restored goal '${goal.goalId}' has invalid consumed turn count.`);
+  if (validateGoalTokenUsage(goal.budget.consumedTokens).length > 0) throw new Error(`Restored goal '${goal.goalId}' has invalid consumed token usage.`);
+  const last = goal.budget.lastAccountedTurn;
+  if (last) {
+    if (!last.turnId.trim() || !last.continuationOperationId.trim() || last.source !== "pi-assistant-usage-v1" || !Number.isFinite(Date.parse(last.accountedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid last accounted turn metadata.`);
+    for (const [name, value] of Object.entries({ continuationOrdinal: last.continuationOrdinal, requestSequence: last.requestSequence, selectedSequence: last.selectedSequence, sessionGeneration: last.sessionGeneration, branchGeneration: last.branchGeneration })) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Restored goal '${goal.goalId}' has invalid last accounted turn field '${name}'.`);
+    }
+    if (!last.selectedSnapshotHash.trim() || validateGoalTokenUsage(last.usage).length > 0) throw new Error(`Restored goal '${goal.goalId}' has invalid last accounted turn usage.`);
+  }
+  const pending = goal.pendingContinuation;
+  if (pending) {
+    if (!["active", "completed", "failed"].includes(goal.status)) throw new Error(`Restored goal '${goal.goalId}' has a pending continuation in status '${goal.status}'.`);
+    if (!pending.operationId.trim() || !Number.isSafeInteger(pending.ordinal) || pending.ordinal !== goal.continuationOrdinal) throw new Error(`Restored goal '${goal.goalId}' has invalid pending continuation identity.`);
+    for (const [name, value] of Object.entries({ selectedRevision: pending.selectedRevision, selectedSequence: pending.selectedSequence, requestSequence: pending.requestSequence, sessionGeneration: pending.sessionGeneration, branchGeneration: pending.branchGeneration })) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Restored goal '${goal.goalId}' has invalid pending continuation field '${name}'.`);
+    }
+    if (!pending.selectedSnapshotHash.trim() || !Number.isFinite(Date.parse(pending.requestedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid pending continuation metadata.`);
+  }
+  const terminal = goal.status === "budget_limited" || goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled";
   if (terminal && (!goal.completedAt || !Number.isFinite(Date.parse(goal.completedAt)))) throw new Error(`Restored terminal goal '${goal.goalId}' has no valid completion time.`);
   if (!terminal && goal.completedAt !== undefined) throw new Error(`Restored non-terminal goal '${goal.goalId}' has a completion time.`);
+  if (goal.status === "budget_limited") {
+    if (!goal.budget.stop || !goal.stopReason?.trim()) throw new Error(`Restored budget-limited goal '${goal.goalId}' has no budget stop.`);
+    if (!Number.isSafeInteger(goal.budget.stop.limit) || goal.budget.stop.limit <= 0 || !Number.isSafeInteger(goal.budget.stop.consumed) || goal.budget.stop.consumed < goal.budget.stop.limit || !Number.isFinite(Date.parse(goal.budget.stop.at))) throw new Error(`Restored budget-limited goal '${goal.goalId}' has an invalid budget stop.`);
+  } else if (goal.budget.stop !== undefined) throw new Error(`Restored goal '${goal.goalId}' has a budget stop without budget-limited status.`);
   if (goal.status === "completed" && state.phase !== "completed") throw new Error(`Restored completed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
   if (goal.status === "failed" && state.phase !== "failed") throw new Error(`Restored failed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
   if (goal.status === "active" && state.phase !== "running") throw new Error(`Restored active goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
-  if ((goal.status === "blocked" || goal.status === "failed" || goal.status === "cancelled") && !goal.stopReason?.trim()) throw new Error(`Restored goal '${goal.goalId}' has status '${goal.status}' without a stop reason.`);
+  if ((goal.status === "paused" || goal.status === "blocked" || goal.status === "budget_limited" || goal.status === "failed" || goal.status === "cancelled") && !goal.stopReason?.trim()) throw new Error(`Restored goal '${goal.goalId}' has status '${goal.status}' without a stop reason.`);
 }
 
 export function validateRestoredLoopState(state: HypagraphState): void {

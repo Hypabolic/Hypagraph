@@ -1,4 +1,4 @@
-import type { Diagnostic, HypagraphDefinition, ReducerResult } from "./model.js";
+import type { Diagnostic, GoalBudgetDefinition, HypagraphDefinition, ReducerResult } from "./model.js";
 import { replayEvents } from "./projection.js";
 import { createWorkflow, handleCommand } from "./reducer.js";
 
@@ -7,6 +7,7 @@ export interface HypagoalCreationIdentity {
   goalId: string;
   goalWorkflowId: string;
   at: string;
+  budget?: GoalBudgetDefinition;
 }
 
 const reject = (code: string, message: string, location?: string): ReducerResult => ({
@@ -40,6 +41,7 @@ export function createHypagoalWorkflow(
     commandId: `start-goal:${identity.goalId}`,
     correlationId,
     at: identity.at,
+    ...(identity.budget ? { budget: structuredClone(identity.budget) } : {}),
   });
   if (!started.ok) return started;
 

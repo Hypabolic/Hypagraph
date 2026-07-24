@@ -21,6 +21,7 @@ import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coo
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
+import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
 import {
@@ -190,6 +191,26 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
       }
     }
+    if (state?.goal?.status === "active") {
+      const cause = branchChanged ? "branch_change" : "session_reload";
+      const reason = branchChanged
+        ? "The Pi branch changed. Resume the Hypagoal explicitly after reviewing canonical state."
+        : "The Pi session reloaded. Resume the Hypagoal explicitly after reviewing canonical state.";
+      const paused = await applyCommandsAndCommit(eventStore.lease(), state, [{
+        type: "pause-goal",
+        cause,
+        reason,
+        commandId: `pause-goal:${cause}:${randomUUID()}`,
+        at: new Date().toISOString(),
+      }]);
+      if (paused.ok) {
+        state = paused.value.state;
+        events.push(...paused.value.events);
+      } else {
+        ctx.ui.notify(`Hypagoal reload pause failed.
+${formatDiagnostics(paused.diagnostics)}`, "warning");
+      }
+    }
     updateUi(state, ctx, graphPane);
   };
 
@@ -199,6 +220,72 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (!result.ok) return throwDiagnostics(result.diagnostics);
     state = result.value.state;
     events.push(...result.value.events);
+  };
+
+  const abandonPendingContinuation = async (reason: string): Promise<void> => {
+    const canonical = state?.goal?.pendingContinuation;
+    if (!state?.goal || !canonical) return;
+    const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
+      type: "abandon-goal-continuation",
+      goalId: state.goal.goalId,
+      workflowId: state.workflowId,
+      expectedRevision: state.revision,
+      expectedSequence: state.sequence,
+      expectedSnapshotHash: state.snapshotHash,
+      continuationOperationId: canonical.operationId,
+      continuationOrdinal: canonical.ordinal,
+      requestSequence: canonical.requestSequence,
+      sessionGeneration: canonical.sessionGeneration,
+      branchGeneration: canonical.branchGeneration,
+      reason,
+      commandId: `abandon-goal-continuation:${randomUUID()}`,
+      at: new Date().toISOString(),
+    }]);
+    if (result.ok) {
+      state = result.value.state;
+      events.push(...result.value.events);
+    }
+  };
+
+  const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
+    if (pendingContinuation || !state || activeExecutions.hasActive()) return;
+    const decision = selectGoalContinuation(state);
+    if (!isRunnableGoalContinuation(decision)) {
+      if (decision.kind === "invariant-error" && state.goal?.status === "active") {
+        ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
+      }
+      return;
+    }
+    const operationId = `hypagoal-continuation:${randomUUID()}`;
+    const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
+      type: "request-goal-continuation",
+      goalId: decision.goalId,
+      workflowId: decision.workflowId,
+      expectedRevision: decision.revision,
+      expectedSequence: decision.sequence,
+      expectedSnapshotHash: decision.snapshotHash,
+      expectedContinuationOrdinal: decision.continuationOrdinal,
+      sessionGeneration,
+      branchGeneration,
+      action: { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
+      commandId: operationId,
+      correlationId: operationId,
+      at: new Date().toISOString(),
+    }]);
+    if (!request.ok) {
+      ctx.ui.notify(`Hypagoal continuation was not queued.
+${formatDiagnostics(request.diagnostics)}`, "warning");
+      return;
+    }
+    state = request.value.state;
+    events.push(...request.value.events);
+    updateUi(state, ctx, graphPane);
+    if (state.goal?.status === "budget_limited") {
+      ctx.ui.notify(state.goal.stopReason ?? "The Hypagoal budget is exhausted.", "warning");
+      return;
+    }
+    pendingContinuation = createPendingGoalContinuation(decision, state, { sessionGeneration, branchGeneration }, operationId);
+    pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
   };
 
   const nodeIdRequired = (nodeId: string | undefined): string => {
@@ -238,60 +325,70 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     restoreContinuationTools();
     if (suppressContinuationAtNextAgentEnd) {
       suppressContinuationAtNextAgentEnd = false;
+      await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
       pendingContinuation = undefined;
       deliveredContinuation = undefined;
+      updateUi(state, ctx, graphPane);
       return;
     }
     if (deliveredContinuation) {
       const delivered = deliveredContinuation;
       deliveredContinuation = undefined;
-      if (state && state.sequence === delivered.committedSequence) {
+      if (!state?.goal?.pendingContinuation) return;
+      const semanticSequenceBeforeAccounting = state.sequence;
+      const normalized = normalizePiGoalUsage(_event.messages);
+      if (!normalized.ok) {
+        await runCommands([{
+          type: "pause-goal",
+          cause: "usage_invalid",
+          reason: `${normalized.code}: ${normalized.message}`,
+          commandId: `pause-goal:usage-invalid:${randomUUID()}`,
+          at: new Date().toISOString(),
+        }]);
+        updateUi(state, ctx, graphPane);
+        ctx.ui.notify(`Hypagoal paused because usage could not be accounted. ${normalized.message}`, "warning");
+        return;
+      }
+      const canonical = state.goal.pendingContinuation;
+      const recorded = await applyCommandsAndCommit(eventStore.lease(), state, [{
+        type: "record-goal-turn-usage",
+        goalId: state.goal.goalId,
+        workflowId: state.workflowId,
+        expectedRevision: state.revision,
+        expectedSequence: state.sequence,
+        expectedSnapshotHash: state.snapshotHash,
+        continuationOperationId: canonical.operationId,
+        continuationOrdinal: canonical.ordinal,
+        requestSequence: canonical.requestSequence,
+        selectedSequence: canonical.selectedSequence,
+        selectedSnapshotHash: canonical.selectedSnapshotHash,
+        sessionGeneration: canonical.sessionGeneration,
+        branchGeneration: canonical.branchGeneration,
+        turnId: delivered.turnId,
+        source: PI_ASSISTANT_USAGE_SOURCE,
+        usage: normalized.usage,
+        commandId: `record-goal-turn:${delivered.turnId}`,
+        correlationId: delivered.operationId,
+        at: new Date().toISOString(),
+      }]);
+      if (!recorded.ok) {
+        ctx.ui.notify(`Hypagoal usage was not recorded.
+${formatDiagnostics(recorded.diagnostics)}`, "warning");
+        return;
+      }
+      state = recorded.value.state;
+      events.push(...recorded.value.events);
+      updateUi(state, ctx, graphPane);
+      if (state.goal?.status === "budget_limited") {
+        ctx.ui.notify(state.goal.stopReason ?? "The Hypagoal budget is exhausted.", "warning");
+        return;
+      }
+      if (semanticSequenceBeforeAccounting === delivered.committedSequence) {
         ctx.ui.notify(`Hypagoal continuation '${delivered.operationId}' made no canonical progress. Automatic continuation stopped.`, "warning");
         return;
       }
     }
-    if (pendingContinuation || !state || activeExecutions.hasActive()) return;
-
-    const decision = selectGoalContinuation(state);
-    if (!isRunnableGoalContinuation(decision)) {
-      if (decision.kind === "invariant-error" && state.goal?.status === "active") {
-        ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
-      }
-      return;
-    }
-
-    const operationId = `hypagoal-continuation:${randomUUID()}`;
-    const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
-      type: "request-goal-continuation",
-      goalId: decision.goalId,
-      workflowId: decision.workflowId,
-      expectedRevision: decision.revision,
-      expectedSequence: decision.sequence,
-      expectedSnapshotHash: decision.snapshotHash,
-      expectedContinuationOrdinal: decision.continuationOrdinal,
-      action: {
-        kind: decision.kind,
-        nodeId: decision.nodeId,
-        ...(decision.loopId ? { loopId: decision.loopId } : {}),
-      },
-      commandId: operationId,
-      correlationId: operationId,
-      at: new Date().toISOString(),
-    }]);
-    if (!request.ok) {
-      ctx.ui.notify(`Hypagoal continuation was not queued.\n${formatDiagnostics(request.diagnostics)}`, "warning");
-      return;
-    }
-    state = request.value.state;
-    events.push(...request.value.events);
-    updateUi(state, ctx, graphPane);
-    pendingContinuation = createPendingGoalContinuation(
-      decision,
-      state,
-      { sessionGeneration, branchGeneration },
-      operationId,
-    );
-    pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
+    await queueGoalContinuation(ctx);
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -310,8 +407,10 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       );
       pendingContinuation = undefined;
       if (event.prompt !== pending.prompt) {
+        await abandonPendingContinuation("A user or tool message took priority over the queued continuation.");
         suppressContinuationAtNextAgentEnd = true;
       } else if (!validation.ok || !state) {
+        await abandonPendingContinuation(validation.message ?? "The queued continuation became stale.");
         suppressContinuationAtNextAgentEnd = true;
         staleContinuationTurn = true;
         return {
@@ -329,7 +428,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       }
     }
 
-    if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
+    if (!state || ["completed", "cancelled", "failed"].includes(state.phase) || state.goal?.status === "budget_limited") return;
     const ready = readyNodeIds(state);
     const at = new Date().toISOString();
     const runnableChecks = state.definition.nodes
@@ -437,6 +536,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         sessionGeneration,
         branchGeneration,
         advisories: input.advisories,
+        ...(input.budget ? { budget: input.budget } : {}),
         ...(replacementConfirmation === undefined
           ? {}
           : { replacementConfirmation }),
@@ -738,7 +838,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     description: "Create one root graph-backed goal from an ordinary prose objective",
     handler: async (args, ctx) => {
       const objective = args;
-      if (!objective.trim()) throw new Error("Usage: /hypagoal <objective>");
+      if (objective.trim().toLowerCase() === "resume") {
+        ensureNoActiveExecution();
+        if (!state?.goal) throw new Error("There is no active Hypagoal to resume.");
+        await runCommands([{ type: "resume-goal", commandId: `resume-goal:${randomUUID()}`, at: new Date().toISOString() }]);
+        updateUi(state, ctx, graphPane);
+        if (state?.goal?.status === "active") await queueGoalContinuation(ctx);
+        else ctx.ui.notify(state?.goal?.stopReason ?? "The Hypagoal did not resume.", "warning");
+        return;
+      }
+      if (!objective.trim()) throw new Error("Usage: /hypagoal <objective> or /hypagoal resume");
       ensureNoActiveExecution();
 
       const generations = { sessionGeneration, branchGeneration };

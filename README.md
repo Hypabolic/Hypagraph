@@ -77,6 +77,10 @@ The current v0.6 product surface allows one root workflow and one root goal in t
 
 The controller selects from all runnable root components in stable definition order. An event-backed continuation ordinal rotates selection when multiple components remain runnable. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
 
+A Hypagoal can also declare a maximum substantive-turn count, a maximum token count, or both. Pi assistant usage is normalized from input, output, cache-read, and cache-write tokens. Each delivered continuation is charged once through a durable turn event before another continuation can be requested. Budget exhaustion stops autonomous continuation as `budget_limited`; it does not mark the workflow successful.
+
+A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Review canonical state and use `/hypagoal resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
+
 ## Start a workflow
 
 Open Pi in a repository and describe the work in normal language.
@@ -279,7 +283,7 @@ store verification and loop decision
 
 Hypagraph does not start an external check when it cannot first store the check-start event.
 
-Restore rebuilds canonical state only. It does not queue a continuation, dispatch model work, invoke an executor, or rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations.
+Restore rebuilds canonical state only. It does not queue a continuation, dispatch model work, invoke an executor, or rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations. When an active Hypagoal is restored after a reload or branch change, Hypagraph persists an explicit pause and requires `/hypagoal resume` before another continuation.
 
 Check artifacts are stored under `.hypagraph/check-artifacts`. Large output stays outside the Pi event stream and is referenced by artifact identity.
 
@@ -292,6 +296,9 @@ Implemented:
 - workflow-local goal lifecycle and workflow-derived terminal state;
 - graph-aware root continuation with deterministic component selection;
 - state-bound continuation requests and stale-delivery rejection;
+- durable substantive-turn and token accounting;
+- deterministic turn-limit and token-limit stops;
+- reload and branch-change pause with explicit `/hypagoal resume`;
 - task, check, and gate nodes;
 - live terminal graph pane;
 - typed facts and deterministic routes;
@@ -307,7 +314,6 @@ Implemented:
 
 Next:
 
-- token and turn budgets plus reload safety;
 - complete loop and trusted-evaluation continuation guidance;
 - blockage and bounded revision;
 - complete Hypagoal product surfaces and v0.6 dogfood;

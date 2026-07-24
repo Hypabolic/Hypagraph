@@ -1,12 +1,61 @@
 import type { Condition } from "./conditions.js";
 import type { FactContract, FactRecord, FactType, FactValue } from "./facts.js";
 
-export const HYPAGRAPH_SCHEMA_VERSION = 3 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 4 as const;
 export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
 export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
 
-export type GoalStatus = "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "completed" | "failed" | "cancelled";
+
+export type GoalPauseCause = "explicit" | "workflow" | "session_reload" | "branch_change" | "usage_invalid";
+export type GoalBudgetStopReason = "turn_limit" | "token_limit";
+export type GoalTurnUsageSource = "pi-assistant-usage-v1";
+
+export interface GoalBudgetDefinition {
+  maximumTurns?: number;
+  maximumTokens?: number;
+}
+
+export interface GoalTokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+}
+
+export interface GoalBudgetStop {
+  reason: GoalBudgetStopReason;
+  limit: number;
+  consumed: number;
+  at: string;
+}
+
+export interface GoalTurnIdentity {
+  turnId: string;
+  continuationOperationId: string;
+  continuationOrdinal: number;
+  requestSequence: number;
+  selectedSequence: number;
+  selectedSnapshotHash: string;
+  sessionGeneration: number;
+  branchGeneration: number;
+}
+
+export interface GoalAccountedTurn extends GoalTurnIdentity {
+  source: GoalTurnUsageSource;
+  usage: GoalTokenUsage;
+  accountedAt: string;
+}
+
+export interface GoalBudgetRuntime {
+  limits: GoalBudgetDefinition;
+  consumedTurns: number;
+  consumedTokens: GoalTokenUsage;
+  lastAccountedTurn?: GoalAccountedTurn;
+  stop?: GoalBudgetStop;
+}
 
 export type GoalContinuationActionKind =
   | "continue-active-task"
@@ -20,11 +69,27 @@ export interface GoalContinuationAction {
   loopId?: string;
 }
 
+export interface GoalContinuationRequestRuntime {
+  operationId: string;
+  ordinal: number;
+  action: GoalContinuationAction;
+  selectedRevision: number;
+  selectedSequence: number;
+  selectedSnapshotHash: string;
+  requestSequence: number;
+  sessionGeneration: number;
+  branchGeneration: number;
+  requestedAt: string;
+}
+
 export interface GoalRuntime {
   goalId: string;
   workflowId: string;
   status: GoalStatus;
   continuationOrdinal: number;
+  budget: GoalBudgetRuntime;
+  pendingContinuation?: GoalContinuationRequestRuntime;
+  pauseCause?: GoalPauseCause;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -474,6 +539,9 @@ export type EventType =
   | "hypagraph.goal.failed"
   | "hypagraph.goal.cancelled"
   | "hypagraph.goal.continuation-requested"
+  | "hypagraph.goal.continuation-abandoned"
+  | "hypagraph.goal.turn-recorded"
+  | "hypagraph.goal.budget-limited"
   | "hypagraph.node.ready"
   | "hypagraph.node.skipped"
   | "hypagraph.node.invalidated"
@@ -541,8 +609,8 @@ export type HypagraphCommand =
   | (CommandBase & { type: "cancel-attempt"; nodeId: string; attemptId: string; reason?: string })
   | (CommandBase & { type: "pause-workflow" })
   | (CommandBase & { type: "resume-workflow" })
-  | (CommandBase & { type: "start-goal"; goalId: string })
-  | (CommandBase & { type: "pause-goal"; reason?: string })
+  | (CommandBase & { type: "start-goal"; goalId: string; budget?: GoalBudgetDefinition })
+  | (CommandBase & { type: "pause-goal"; reason?: string; cause?: GoalPauseCause })
   | (CommandBase & { type: "resume-goal" })
   | (CommandBase & { type: "cancel-goal"; reason?: string })
   | (CommandBase & {
@@ -553,7 +621,41 @@ export type HypagraphCommand =
     expectedSequence: number;
     expectedSnapshotHash: string;
     expectedContinuationOrdinal: number;
+    sessionGeneration: number;
+    branchGeneration: number;
     action: GoalContinuationAction;
+  })
+  | (CommandBase & {
+    type: "abandon-goal-continuation";
+    goalId: string;
+    workflowId: string;
+    expectedRevision: number;
+    expectedSequence: number;
+    expectedSnapshotHash: string;
+    continuationOperationId: string;
+    continuationOrdinal: number;
+    requestSequence: number;
+    sessionGeneration: number;
+    branchGeneration: number;
+    reason: string;
+  })
+  | (CommandBase & {
+    type: "record-goal-turn-usage";
+    goalId: string;
+    workflowId: string;
+    expectedRevision: number;
+    expectedSequence: number;
+    expectedSnapshotHash: string;
+    continuationOperationId: string;
+    continuationOrdinal: number;
+    requestSequence: number;
+    selectedSequence: number;
+    selectedSnapshotHash: string;
+    sessionGeneration: number;
+    branchGeneration: number;
+    turnId: string;
+    source: GoalTurnUsageSource;
+    usage: GoalTokenUsage;
   });
 
 export type ReducerResult =
