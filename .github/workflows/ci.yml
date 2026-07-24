@@ -34,14 +34,19 @@ jobs:
           set +e
           python - <<'PY' > goal-patch.log 2>&1
           from pathlib import Path
-          from textwrap import dedent
 
           workflow = Path('.github/workflows/apply-m5b-goal-lifecycle.yml').read_text()
-          marker = "python - <<'PY'\n"
-          if marker not in workflow:
-              raise SystemExit('The temporary patch script marker was not found.')
-          block = workflow.split(marker, 1)[1].split('\n          PY', 1)[0]
-          exec(dedent(block), {'__name__': '__main__'})
+          lines = workflow.splitlines()
+          start_marker = "          python - <<'PY'"
+          end_marker = "          PY"
+          try:
+              start = lines.index(start_marker) + 1
+              end = lines.index(end_marker, start)
+          except ValueError as error:
+              raise SystemExit('The temporary patch script markers were not found.') from error
+          prefix = '          '
+          block = '\n'.join(line[len(prefix):] if line.startswith(prefix) else line for line in lines[start:end])
+          exec(compile(block, '.github/workflows/apply-m5b-goal-lifecycle.yml', 'exec'), {'__name__': '__main__'})
           PY
           status=$?
           cat goal-patch.log
