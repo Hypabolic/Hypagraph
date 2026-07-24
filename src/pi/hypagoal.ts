@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import type { HypagraphState } from "../domain/model.js";
+import type { GoalBudgetDefinition, HypagraphState } from "../domain/model.js";
 import type {
   HypagoalAuthoringAdvisory,
   RootCanonicalIdentity,
@@ -24,6 +24,11 @@ const creationRequestSchema = Type.Object({
   branchGeneration: Type.Integer({ minimum: 0 }),
 });
 
+const goalBudgetSchema = Type.Object({
+  maximumTurns: Type.Optional(Type.Integer({ minimum: 1 })),
+  maximumTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+
 const advisorySchema = Type.Object({
   code: Type.String(),
   message: Type.String(),
@@ -33,6 +38,7 @@ export const hypagoalStartSchema = Type.Object({
   objective: Type.String({ minLength: 1 }),
   definition: definitionSchema,
   advisories: Type.Optional(Type.Array(advisorySchema)),
+  budget: Type.Optional(goalBudgetSchema),
   creationRequest: Type.Optional(creationRequestSchema),
   replacementConfirmation: Type.Optional(replacementConfirmationSchema),
 });
@@ -44,6 +50,7 @@ export interface NormalizedHypagoalStartInput {
   objective: string;
   definition: ReturnType<typeof normalizeDefinition>;
   advisories: HypagoalAuthoringAdvisory[];
+  budget?: GoalBudgetDefinition;
   creationRequest?: HypagoalCreationRequest;
   replacementConfirmation?: RootReplacementConfirmation;
 }
@@ -56,6 +63,7 @@ export function normalizeHypagoalStartInput(input: HypagoalStartInput): Normaliz
       code: advisory.code.trim(),
       message: advisory.message.trim(),
     })).filter((advisory) => advisory.code.length > 0 && advisory.message.length > 0),
+    ...(input.budget === undefined ? {} : { budget: structuredClone(input.budget) }),
     ...(input.creationRequest === undefined
       ? {}
       : { creationRequest: structuredClone(input.creationRequest) }),
@@ -100,6 +108,8 @@ export function renderHypagoalCreated(
     `Goal ID: ${state.goal?.goalId ?? "none"}`,
     `Workflow revision: ${state.revision}`,
     `Goal control: ${state.goal?.status ?? "none"}`,
+    `Turn budget: ${state.goal?.budget.limits.maximumTurns ?? "none"}; used ${state.goal?.budget.consumedTurns ?? 0}`,
+    `Token budget: ${state.goal?.budget.limits.maximumTokens ?? "none"}; used ${state.goal?.budget.consumedTokens.totalTokens ?? 0}`,
     `Ready tasks: ${list(ready.tasks)}`,
     `Ready checks: ${list(ready.checks)}`,
     `Ready gates: ${list(ready.gates)}`,
@@ -140,6 +150,7 @@ export function buildHypagoalAuthoringPrompt(
     "Use a generic bounded iteration region only when repetition is justified. Repair is one possible loop pattern and is not the default loop meaning.",
     "Keep independent top-level components independent when the work requires them.",
     "Add a progress metric only when a deterministic and defensible metric exists.",
+    "Set a Hypagoal token or turn budget only when the user objective explicitly supplies one. Do not invent a budget.",
     "Do not invent tests, acceptance criteria, commands, metrics, trust claims, or evaluation contracts.",
     "Return uncertain or useful authoring notes through the advisories field. Do not put advisories into canonical definition fields.",
     `Use this exact creation request identity without changing any field:\n${JSON.stringify(creationRequest, null, 2)}`,

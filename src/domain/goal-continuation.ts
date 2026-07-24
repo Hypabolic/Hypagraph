@@ -25,6 +25,7 @@ export type GoalContinuationDecision =
   | (GoalContinuationStateIdentity & { kind: "stop-blocked"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-failed"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-cancelled"; reason: string })
+  | (GoalContinuationStateIdentity & { kind: "stop-budget-limited"; reason: string })
   | {
     kind: "invariant-error";
     reason: string;
@@ -112,6 +113,7 @@ export function selectGoalContinuation(state: HypagraphState): GoalContinuationD
     case "blocked": return { ...identity, kind: "stop-blocked", reason: state.goal.stopReason ?? "The goal is blocked." };
     case "failed": return { ...identity, kind: "stop-failed", reason: state.goal.stopReason ?? "The goal failed." };
     case "cancelled": return { ...identity, kind: "stop-cancelled", reason: state.goal.stopReason ?? "The goal was cancelled." };
+    case "budget_limited": return { ...identity, kind: "stop-budget-limited", reason: state.goal.stopReason ?? "The goal budget is exhausted." };
   }
 
   if (state.phase !== "running") {

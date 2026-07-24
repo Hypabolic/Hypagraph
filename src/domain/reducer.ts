@@ -27,6 +27,7 @@ import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEval
 import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";
 import { goalIsTerminal, goalOutcomeFromWorkflow } from "./goal-policy.js";
 import { continuationActionMatches, isRunnableGoalContinuation, selectGoalContinuation } from "./goal-continuation.js";
+import { formatGoalBudgetStop, goalBudgetStop, validateGoalBudgetDefinition, validateGoalTokenUsage } from "./goal-budget.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -322,7 +323,7 @@ const exhaustedLoopForNode = (state: HypagraphState, nodeId: string): LoopDefini
   });
 
 export function handleCommand(state: HypagraphState, command: HypagraphCommand): ReducerResult {
-  if (command.type !== "revise" && ["completed", "failed", "cancelled"].includes(state.phase)) {
+  if (command.type !== "revise" && command.type !== "record-goal-turn-usage" && ["completed", "failed", "cancelled"].includes(state.phase)) {
     if (state.phase === "failed" && "nodeId" in command) {
       const exhausted = exhaustedLoopForNode(state, command.nodeId);
       if (exhausted) return reject("loop_exhausted", `Loop '${exhausted.id}' reached its limit of ${exhausted.maxIterations} iterations. It cannot start another iteration.`);
@@ -334,16 +335,18 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   if (command.type === "start-goal") {
     if (state.goal) return reject("goal_already_started", `Goal '${state.goal.goalId}' already controls this workflow.`);
     if (!GOAL_ID_PATTERN.test(command.goalId)) return reject("invalid_goal_id", "A goal ID must start with a lower-case letter and contain at most 64 lower-case letters, numbers, underscores, or hyphens.", "goalId");
-    next = append(next, events, command, { type: "hypagraph.goal.started", data: { goalId: command.goalId } });
+    const budgetDiagnostics = validateGoalBudgetDefinition(command.budget);
+    if (budgetDiagnostics.length > 0) return { ok: false, diagnostics: budgetDiagnostics };
+    next = append(next, events, command, { type: "hypagraph.goal.started", data: { goalId: command.goalId, ...(command.budget ? { budget: structuredClone(command.budget) } : {}) } });
     next = appendGoalOutcomeIfNeeded(next, events, command);
     return { ok: true, state: next, events };
   }
   if (command.type === "pause-goal") {
     if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
-    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    if (goalIsTerminal(state.goal) && command.cause !== "usage_invalid") return reject("terminal_goal", `The goal is ${state.goal.status}.`);
     if (state.goal.status === "paused") return reject("goal_already_paused", "The goal is already paused.");
     if (state.goal.status === "blocked") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
-    next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly." } });
+    next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly.", cause: command.cause ?? "explicit" } });
     return { ok: true, state: next, events };
   }
   if (command.type === "resume-goal") {
@@ -353,7 +356,12 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you resume the goal.");
     if (state.phase === "blocked") return reject("workflow_blocked", "Revise or unblock the workflow before you resume the goal.");
     next = append(next, events, command, { type: "hypagraph.goal.resumed", data: { goalId: state.goal.goalId } });
-    next = appendGoalOutcomeIfNeeded(next, events, command);
+    const budgetStop = goalBudgetStop(next.goal!.budget, command.at);
+    if (budgetStop) {
+      next = append(next, events, command, { type: "hypagraph.goal.budget-limited", data: { goalId: next.goal!.goalId, stop: budgetStop, reason: formatGoalBudgetStop(budgetStop) } });
+    } else {
+      next = appendGoalOutcomeIfNeeded(next, events, command);
+    }
     return { ok: true, state: next, events };
   }
   if (command.type === "cancel-goal") {
@@ -365,19 +373,24 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   if (command.type === "request-goal-continuation") {
     if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
     if (state.goal.status !== "active") return reject("goal_not_active", `The goal is ${state.goal.status}.`);
+    if (state.goal.pendingContinuation) return reject("goal_continuation_pending", "The goal already has a durable pending continuation.");
+    if (!Number.isSafeInteger(command.sessionGeneration) || command.sessionGeneration < 0 || !Number.isSafeInteger(command.branchGeneration) || command.branchGeneration < 0) return reject("invalid_goal_continuation_generation", "Continuation generations must be non-negative safe integers.");
     if (command.goalId !== state.goal.goalId) return reject("stale_goal_continuation", "The continuation belongs to a different goal.", "goalId");
     if (command.workflowId !== state.workflowId) return reject("stale_goal_continuation", "The continuation belongs to a different workflow.", "workflowId");
     if (command.expectedRevision !== state.revision) return reject("stale_goal_continuation", "The workflow revision changed before the continuation request was stored.", "expectedRevision");
     if (command.expectedSequence !== state.sequence) return reject("stale_goal_continuation", "The workflow sequence changed before the continuation request was stored.", "expectedSequence");
     if (command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_continuation", "The workflow snapshot changed before the continuation request was stored.", "expectedSnapshotHash");
     if (command.expectedContinuationOrdinal !== state.goal.continuationOrdinal) return reject("stale_goal_continuation", "The continuation ordinal changed before the continuation request was stored.", "expectedContinuationOrdinal");
+    const budgetStop = goalBudgetStop(state.goal.budget, command.at);
+    if (budgetStop) {
+      next = append(next, events, command, { type: "hypagraph.goal.budget-limited", data: { goalId: state.goal.goalId, stop: budgetStop, reason: formatGoalBudgetStop(budgetStop) } });
+      return { ok: true, state: next, events };
+    }
     const selected = selectGoalContinuation(state);
     if (!isRunnableGoalContinuation(selected)) {
       return reject("goal_continuation_not_runnable", selected.kind === "invariant-error" ? selected.reason : `The goal cannot continue from '${selected.kind}'.`);
     }
-    if (!continuationActionMatches(selected, command.action)) {
-      return reject("stale_goal_continuation", "The selected continuation action changed before the request was stored.", "action");
-    }
+    if (!continuationActionMatches(selected, command.action)) return reject("stale_goal_continuation", "The selected continuation action changed before the request was stored.", "action");
     const ordinal = state.goal.continuationOrdinal + 1;
     next = append(next, events, command, {
       type: "hypagraph.goal.continuation-requested",
@@ -385,13 +398,41 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       ...(command.action.loopId ? { loopId: command.action.loopId } : {}),
       data: {
         goalId: state.goal.goalId,
+        operationId: command.commandId,
         ordinal,
         action: structuredClone(command.action),
         selectedRevision: state.revision,
         selectedSequence: state.sequence,
         selectedSnapshotHash: state.snapshotHash,
+        sessionGeneration: command.sessionGeneration,
+        branchGeneration: command.branchGeneration,
       },
     });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "abandon-goal-continuation") {
+    const pending = state.goal?.pendingContinuation;
+    if (!state.goal || !pending) return reject("goal_continuation_not_pending", "The goal has no durable pending continuation.");
+    if (command.goalId !== state.goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_continuation", "The continuation state changed before abandonment.");
+    if (command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration) return reject("stale_goal_continuation", "The continuation identity changed before abandonment.");
+    next = append(next, events, command, { type: "hypagraph.goal.continuation-abandoned", data: { goalId: state.goal.goalId, operationId: pending.operationId, reason: command.reason } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "record-goal-turn-usage") {
+    const goal = state.goal;
+    const pending = goal?.pendingContinuation;
+    if (!goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goal.budget.lastAccountedTurn?.turnId === command.turnId) return reject("duplicate_goal_turn_usage", `Turn '${command.turnId}' was already accounted.`);
+    if (!pending) return reject("goal_continuation_not_pending", "The completed turn has no durable pending continuation.");
+    if (command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_turn_usage", "The workflow changed before turn usage was recorded.");
+    if (command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.selectedSequence !== pending.selectedSequence || command.selectedSnapshotHash !== pending.selectedSnapshotHash || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration) return reject("stale_goal_turn_usage", "The turn usage identity does not match the durable continuation.");
+    const usageDiagnostics = validateGoalTokenUsage(command.usage);
+    if (usageDiagnostics.length > 0) return { ok: false, diagnostics: usageDiagnostics };
+    next = append(next, events, command, { type: "hypagraph.goal.turn-recorded", data: { goalId: goal.goalId, turnId: command.turnId, continuationOperationId: pending.operationId, continuationOrdinal: pending.ordinal, source: command.source, usage: structuredClone(command.usage) } });
+    if (next.goal?.status === "active") {
+      const stop = goalBudgetStop(next.goal.budget, command.at);
+      if (stop) next = append(next, events, command, { type: "hypagraph.goal.budget-limited", data: { goalId: next.goal.goalId, stop, reason: formatGoalBudgetStop(stop) } });
+    }
     return { ok: true, state: next, events };
   }
   if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }

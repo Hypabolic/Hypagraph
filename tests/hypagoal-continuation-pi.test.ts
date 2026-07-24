@@ -23,7 +23,7 @@ interface CommandDefinition {
 
 const objective = "Complete a routed feature and one independent documentation task.";
 
-const rootInput = (creationRequest?: unknown) => ({
+const rootInput = (creationRequest?: unknown, budget?: { maximumTurns?: number; maximumTokens?: number }) => ({
   objective,
   definition: {
     title: "Routed feature with independent work",
@@ -60,6 +60,7 @@ const rootInput = (creationRequest?: unknown) => ({
     loops: [],
     policy: { mode: "guided", requireEvidence: false },
   },
+  ...(budget === undefined ? {} : { budget }),
   ...(creationRequest === undefined ? {} : { creationRequest }),
 });
 
@@ -120,8 +121,16 @@ const beforeAgentStart = async (value: ReturnType<typeof harness>, prompt: strin
   return String(results.find((item) => item?.systemPrompt)?.systemPrompt ?? "");
 };
 
-const agentEnd = async (value: ReturnType<typeof harness>) => {
-  await invoke(value.handlers, "agent_end", { type: "agent_end", messages: [] }, value.ctx);
+const usageMessage = (tokens = 15) => ({
+  role: "assistant",
+  content: [],
+  usage: { input: tokens - 5, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  stopReason: "stop",
+  timestamp: Date.now(),
+});
+
+const agentEnd = async (value: ReturnType<typeof harness>, messages: unknown[] = [usageMessage()]) => {
+  await invoke(value.handlers, "agent_end", { type: "agent_end", messages }, value.ctx);
 };
 
 const transition = async (
@@ -148,7 +157,7 @@ const completeTask = async (
   await transition(value, nodeId, "verify", { passed: true });
 };
 
-const createRoot = async (value: ReturnType<typeof harness>, throughCommand = false) => {
+const createRoot = async (value: ReturnType<typeof harness>, throughCommand = false, budget?: { maximumTurns?: number; maximumTokens?: number }) => {
   let creationRequest: unknown;
   if (throughCommand) {
     await value.commands.get("hypagoal")!.handler(objective, value.ctx);
@@ -156,7 +165,7 @@ const createRoot = async (value: ReturnType<typeof harness>, throughCommand = fa
   }
   return value.tools.get("hypagoal_start")!.execute(
     "create-root",
-    rootInput(creationRequest),
+    rootInput(creationRequest, budget),
     undefined,
     undefined,
     value.ctx,
@@ -291,6 +300,8 @@ describe("Hypagoal Pi continuation", () => {
       expectedSequence: action.sequence,
       expectedSnapshotHash: action.snapshotHash,
       expectedContinuationOrdinal: action.continuationOrdinal,
+      sessionGeneration: 0,
+      branchGeneration: 0,
       action: { kind: action.kind, nodeId: action.nodeId },
       commandId: "pending-validation",
       at: "2026-07-24T08:30:00.000Z",
@@ -309,6 +320,56 @@ describe("Hypagoal Pi continuation", () => {
     value.sendUserMessage.mockClear();
     await invoke(value.handlers, "session_start", { type: "session_start" }, value.ctx);
     expect(value.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("stops automatic continuation after the first charged turn reaches its limit", async () => {
+    const value = harness();
+    await createRoot(value, false, { maximumTurns: 1 });
+    await agentEnd(value);
+    const prompt = continuationPrompts(value)[0]!;
+    await beforeAgentStart(value, prompt);
+    await completeTask(value, "implement", [{ name: "route.use-primary", type: "boolean", value: true }]);
+    await agentEnd(value);
+    expect(continuationPrompts(value)).toHaveLength(1);
+    const latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal).toMatchObject({ status: "budget_limited", budget: { consumedTurns: 1, stop: { reason: "turn_limit" } } });
+    expect(latest.phase).toBe("running");
+  });
+
+  it("pauses when Pi usage metadata is missing", async () => {
+    const value = harness();
+    await createRoot(value, false, { maximumTokens: 100 });
+    await agentEnd(value);
+    await beforeAgentStart(value, continuationPrompts(value)[0]!);
+    await agentEnd(value, []);
+    const latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal).toMatchObject({ status: "paused", pauseCause: "usage_invalid" });
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("usage could not be accounted"), "warning");
+  });
+
+  it("persists reload pause and queues work only after explicit resume", async () => {
+    const value = harness();
+    await createRoot(value);
+    value.sendUserMessage.mockClear();
+    await invoke(value.handlers, "session_start", { type: "session_start", reason: "reload" }, value.ctx);
+    expect(value.sendUserMessage).not.toHaveBeenCalled();
+    let latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal).toMatchObject({ status: "paused", pauseCause: "session_reload" });
+    await value.commands.get("hypagoal")!.handler("resume", value.ctx);
+    expect(continuationPrompts(value)).toHaveLength(1);
+    latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal.status).toBe("active");
+    expect(latest.goal.pendingContinuation).toBeDefined();
+  });
+
+  it("persists a branch-change pause without dispatching work", async () => {
+    const value = harness();
+    await createRoot(value);
+    value.sendUserMessage.mockClear();
+    await invoke(value.handlers, "session_tree", { type: "session_tree" }, value.ctx);
+    expect(value.sendUserMessage).not.toHaveBeenCalled();
+    const latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal).toMatchObject({ status: "paused", pauseCause: "branch_change" });
   });
 
   it("stops when a delivered continuation makes no canonical progress", async () => {

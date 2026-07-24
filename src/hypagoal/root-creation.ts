@@ -2,6 +2,7 @@ import { createHypagoalWorkflow } from "../domain/hypagoal-creation.js";
 import type {
   Diagnostic,
   DomainEvent,
+  GoalBudgetDefinition,
   GoalStatus,
   HypagraphDefinition,
   HypagraphState,
@@ -54,6 +55,7 @@ export interface RootHypagoalStartRequest extends RootGenerationIdentity {
   at: string;
   advisories?: readonly HypagoalAuthoringAdvisory[];
   replacementConfirmation?: RootReplacementConfirmation;
+  budget?: GoalBudgetDefinition;
 }
 
 export type RootHypagoalStartResult =
@@ -191,6 +193,7 @@ export async function startRootHypagoal(
     goalId: request.goalId,
     goalWorkflowId: request.goalWorkflowId,
     at: request.at,
+    ...(request.budget ? { budget: structuredClone(request.budget) } : {}),
   });
   if (!candidate.ok) return { kind: "rejected", diagnostics: candidate.diagnostics };
 

@@ -116,6 +116,7 @@ describe("Hypagoal Pi surfaces", () => {
       "objective",
       "definition",
       "advisories",
+      "budget",
       "creationRequest",
       "replacementConfirmation",
     ]);

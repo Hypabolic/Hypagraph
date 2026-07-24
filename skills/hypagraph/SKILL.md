@@ -32,8 +32,9 @@ During the authoring turn:
 4. keep independent top-level components independent;
 5. use a bounded iteration region only when repetition is justified;
 6. add a metric only when a deterministic and defensible instrument exists;
-7. put uncertain or useful authoring notes in `advisories`, not in canonical definition fields;
-8. call `hypagoal_start` as the final action.
+7. set a token or substantive-turn budget only when the user explicitly supplies one; do not invent a budget;
+8. put uncertain or useful authoring notes in `advisories`, not in canonical definition fields;
+9. call `hypagoal_start` as the final action.
 
 The creation tool validates the complete projected result and persists the workflow definition, initial readiness, and workflow-local goal start in one event batch. It does not start a task, run a check, or invoke an executor. The controller can request the first canonical action only after the authoring turn ends.
 
@@ -57,6 +58,10 @@ The controller selects across all runnable root components. Do not assume that t
 A continuation prompt is valid only for the exact state which requested it. If Hypagraph reports that the continuation is stale, do not change files or canonical workflow state. Read the current graph before another action.
 
 A user message has priority over a queued continuation. Do not recreate or resend a skipped continuation.
+
+Each delivered continuation is charged once against the root Hypagoal budget. Do not fabricate or edit Pi usage values. Budget exhaustion is a controller stop, not workflow success. When Hypagraph reports `budget_limited`, do not continue work through another prompt.
+
+A reload or branch change pauses an active Hypagoal and dispatches no work. Continue only after the user explicitly runs `/hypagoal resume`. Resume does not reset consumed turns or tokens.
 
 ## Evaluation-contract authoring
 

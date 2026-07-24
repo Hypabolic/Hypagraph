@@ -66,6 +66,8 @@ const requestContinuation = (
   expectedSequence: state.sequence,
   expectedSnapshotHash: state.snapshotHash,
   expectedContinuationOrdinal: state.goal!.continuationOrdinal,
+  sessionGeneration: 0,
+  branchGeneration: 0,
   action,
   commandId: `continue-${suffix}`,
   at,
@@ -233,6 +235,23 @@ describe("Hypagoal continuation selection", () => {
       data: { goalId: "continue-root", ordinal: 1, action: { kind: "start-ready-task", nodeId: "first" } },
     });
 
+    const firstPending = state.goal!.pendingContinuation!;
+    state = apply(state, events, {
+      type: "abandon-goal-continuation",
+      goalId: state.goal!.goalId,
+      workflowId: state.workflowId,
+      expectedRevision: state.revision,
+      expectedSequence: state.sequence,
+      expectedSnapshotHash: state.snapshotHash,
+      continuationOperationId: firstPending.operationId,
+      continuationOrdinal: firstPending.ordinal,
+      requestSequence: firstPending.requestSequence,
+      sessionGeneration: firstPending.sessionGeneration,
+      branchGeneration: firstPending.branchGeneration,
+      reason: "test rotation",
+      commandId: "abandon-first",
+      at,
+    });
     const second = selectGoalContinuation(state);
     expect(second).toMatchObject({ kind: "start-ready-task", nodeId: "second", continuationOrdinal: 1 });
     if (!isRunnableGoalContinuation(second)) throw new Error(`Unexpected decision: ${second.kind}`);
@@ -298,6 +317,8 @@ describe("Hypagoal continuation selection", () => {
       expectedSequence: selected.sequence,
       expectedSnapshotHash: selected.snapshotHash,
       expectedContinuationOrdinal: selected.continuationOrdinal,
+      sessionGeneration: 0,
+      branchGeneration: 0,
       action: { kind: selected.kind, nodeId: selected.nodeId },
       commandId: `stale-${field}`,
       at,
