@@ -2,8 +2,9 @@
 
 - Status: active
 - Updated: 2026-07-24
-- Current milestone: M5B Hypagoal
-- Current implementation baseline: `90c54214c5337be01e455145a36232a392172fae`
+- Current milestone: M6 event history, replay, and debugger UI
+- Current implementation baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
+- Current release: `v0.6`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,8 +166,8 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1 through 7 complete; Slice 8 current |
-| M6 | v0.7 | Event history, replay, and debugger UI | Planned |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Complete; released as v0.6 |
+| M6 | v0.7 | Event history, replay, and debugger UI | Active |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
 | M9 | v0.10 | ACP and named direct agent adapters | Planned |
@@ -275,7 +276,7 @@ This root is the first member of the accepted future goal-family model.
 5. Loop and trusted-evaluation continuation — complete in PR #71.
 6. Blockage and bounded revision — complete in PR #73.
 7. Complete Pi product surface — complete in PR #75.
-8. Dogfood and v0.6 release — current.
+8. Dogfood and v0.6 release — complete in PR #77.
 
 The detailed plan is in `docs/hypagoal-vertical-slice-plan.md`.
 
@@ -392,7 +393,24 @@ M5B Slice 7 provides:
 
 The merged baseline is `90c54214c5337be01e455145a36232a392172fae`. CI #1075 and final PR CI #1077 pass 94 test files and 460 tests on all six supported OS and Node.js targets.
 
-Slice 8 is the final integrated dogfood and v0.6 release slice. It must validate the complete root-Hypagoal product path on the tested main commit before version alignment, tagging, and release.
+### Slice 8 result
+
+M5B Slice 8 provides:
+
+- one integrated Pi product path which starts from `/hypagoal`;
+- a four-evaluation optimization region with invalid-result rejection and typed success;
+- one independent bounded auxiliary region with event-backed fairness;
+- reload pause, explicit resume, and restore without dispatch;
+- one probe evaluation and deterministic gate route;
+- one typed repository blocker and one applied non-weakening automatic revision;
+- canonical final workflow and goal completion only;
+- package and lock-file version `0.6.0`;
+- updated README, changelog, release notes, and dogfood evidence;
+- exact-main publication after the complete six-target matrix.
+
+The release baseline is `90a2885bb8f46d61cedd803897ca4d32246bcb44`. PR #77 and final candidate CI #1111 pass 95 test files and 461 tests. Publication gate CI #1114 passes the same six targets and creates tag and release `v0.6` from that exact commit.
+
+M5B is complete. Evidence is in `docs/v0.6-dogfood.md`.
 
 ### M5B architecture constraints
 
@@ -425,6 +443,8 @@ Those features are accepted later direction, not rejected scope.
 - Restore does not run work.
 - Replay produces the same goal state and stop decision.
 - The root workflow can later become a one-member family without rewriting its workflow events.
+
+All M5B acceptance criteria are satisfied in v0.6.
 
 ## 7. M6 - Event history, replay, and debugger UI
 
