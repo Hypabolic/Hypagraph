@@ -145,7 +145,7 @@ describe("M4 Slice 7 persistence hardening", () => {
     expect(restored?.snapshot.runtime.loops.region?.status).toBe("requires_revision");
     const revised = handleCommand(restored!.snapshot, { type: "revise", definition: taskDefinition(), commandId: "typed-revision", at });
     if (!revised.ok) throw new Error(JSON.stringify(revised.diagnostics));
-    expect(revised.state.schemaVersion).toBe(4);
+    expect(revised.state.schemaVersion).toBe(5);
     expect(revised.state.runtime.loops.region).toMatchObject({ status: "pending", currentIteration: 0 });
     expect(revised.state.runtime.nodes.work?.status).toBe("ready");
     expect(revised.events.some((event) => event.type === "hypagraph.loop.invalidated")).toBe(true);

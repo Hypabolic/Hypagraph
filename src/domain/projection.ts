@@ -158,6 +158,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         status: "active",
         continuationOrdinal: 0,
         budget: createGoalBudgetRuntime(event.data.budget as import("./model.js").GoalBudgetDefinition | undefined),
+        automaticRevision: { maximumAttempts: 1, consumedAttempts: 0 },
         startedAt: event.timestamp,
         updatedAt: event.timestamp,
       };
@@ -219,6 +220,39 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.updatedAt = event.timestamp;
       break;
     }
+    case "hypagraph.goal.revision-requested": {
+      if (!next.goal) throw new Error("A goal-revision-requested event requires existing goal-control state.");
+      if (next.goal.automaticRevision.consumedAttempts >= next.goal.automaticRevision.maximumAttempts) throw new Error("The automatic revision allowance is exhausted.");
+      const blocker = structuredClone(event.data.blocker as import("./model.js").GoalBlockerIdentity);
+      next.goal.automaticRevision.consumedAttempts += 1;
+      next.goal.automaticRevision.lastAttempt = {
+        operationId: String(event.data.operationId),
+        blocker,
+        sourceRevision: Number(event.data.sourceRevision),
+        sourceSequence: Number(event.data.sourceSequence),
+        sourceSnapshotHash: String(event.data.sourceSnapshotHash),
+        requestSequence: event.sequence,
+        sessionGeneration: Number(event.data.sessionGeneration),
+        branchGeneration: Number(event.data.branchGeneration),
+        requestedAt: event.timestamp,
+        outcome: "pending",
+      };
+      next.goal.updatedAt = event.timestamp;
+      break;
+    }
+    case "hypagraph.goal.revision-rejected":
+    case "hypagraph.goal.revision-abandoned":
+    case "hypagraph.goal.revision-applied": {
+      const attempt = next.goal?.automaticRevision.lastAttempt;
+      if (!next.goal || !attempt || attempt.operationId !== event.data.operationId) throw new Error("A goal revision outcome does not match the pending automatic attempt.");
+      attempt.outcome = event.type === "hypagraph.goal.revision-applied" ? "applied" : event.type === "hypagraph.goal.revision-rejected" ? "rejected" : "abandoned";
+      attempt.completedAt = event.timestamp;
+      if (typeof event.data.outcomeCode === "string") attempt.outcomeCode = event.data.outcomeCode;
+      if (typeof event.data.reason === "string") attempt.reason = event.data.reason;
+      if (typeof event.data.appliedRevision === "number") attempt.appliedRevision = event.data.appliedRevision;
+      next.goal.updatedAt = event.timestamp;
+      break;
+    }
     case "hypagraph.goal.budget-limited": {
       if (!next.goal) throw new Error("A goal-budget-limited event requires existing goal-control state.");
       const stop = structuredClone(event.data.stop as import("./model.js").GoalBudgetStop);
@@ -256,7 +290,6 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.status = "blocked";
       next.goal.updatedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The workflow is blocked.");
-      delete next.goal.pendingContinuation;
       delete next.goal.completedAt;
       break;
     }
@@ -302,12 +335,15 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       if (node) {
         node.status = "blocked";
         node.blockedReason = String(event.data.reason ?? "");
+        const blockerKind = event.data.blockerKind;
+        node.blockerKind = blockerKind === "repository-work" || blockerKind === "external-dependency" || blockerKind === "safeguard" ? blockerKind : "unknown";
       }
       break;
     case "hypagraph.node.unblocked":
       if (node) {
         node.status = "pending";
         delete node.blockedReason;
+        delete node.blockerKind;
       }
       break;
     case "hypagraph.attempt.started":
@@ -433,6 +469,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
           delete loopNode.currentAttemptId;
           loopNode.evidence = [];
           delete loopNode.blockedReason;
+          delete loopNode.blockerKind;
           delete next.runtime.routes[nodeId];
         }
       }
@@ -468,6 +505,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
             delete nodeRuntime.currentAttemptId;
             nodeRuntime.evidence = [];
             delete nodeRuntime.blockedReason;
+            delete nodeRuntime.blockerKind;
             delete next.runtime.routes[nodeId];
           }
         }

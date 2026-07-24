@@ -6,7 +6,7 @@ import {
 } from "../domain/evaluation-presentation.js";
 import type {
   EvaluationKind,
-  GoalContinuationAction,
+  GoalWorkContinuationAction,
   HypagraphState,
   LoopSuccessPredicate,
 } from "../domain/model.js";
@@ -70,7 +70,7 @@ const kindMaximum = (
 
 export function projectGoalLoopContinuationGuidance(
   state: HypagraphState,
-  action: Pick<GoalContinuationAction, "nodeId" | "loopId">,
+  action: Pick<GoalWorkContinuationAction, "nodeId" | "loopId">,
 ): GoalLoopContinuationGuidance | undefined {
   if (!action.loopId) return undefined;
   const definition = state.definition.loops.find((loop) => loop.id === action.loopId);
@@ -152,7 +152,7 @@ const value = (candidate: number | boolean | string | undefined): string => cand
 
 export function renderGoalLoopContinuationGuidance(
   state: HypagraphState,
-  action: Pick<GoalContinuationAction, "nodeId" | "loopId">,
+  action: Pick<GoalWorkContinuationAction, "nodeId" | "loopId">,
 ): string[] {
   const guidance = projectGoalLoopContinuationGuidance(state, action);
   if (!guidance) return [];

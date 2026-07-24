@@ -65,7 +65,7 @@ describe("M4 Slice 1 loop execution", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const events = [...created.events];
 
-    expect(created.state.schemaVersion).toBe(4);
+    expect(created.state.schemaVersion).toBe(5);
     expect(created.state.runtime.loops.repair).toMatchObject({ status: "pending", currentIteration: 0 });
     expect(created.state.runtime.nodes.implement?.status).toBe("ready");
     expect(created.state.runtime.nodes.document?.status).toBe("pending");
@@ -157,7 +157,7 @@ describe("M4 Slice 1 loop execution", () => {
         },
       },
     }]);
-    expect(restored?.snapshot.schemaVersion).toBe(4);
+    expect(restored?.snapshot.schemaVersion).toBe(5);
     expect(restored?.snapshot.runtime.loops.repair).toMatchObject({ status: "requires_revision", currentIteration: 0, legacyPredicate: "tests.passed == true" });
     expect(restored?.snapshot.definition.loops[0]?.successWhen).toEqual({ kind: "legacy-text", text: "tests.passed == true" });
   });
@@ -203,7 +203,7 @@ describe("M4 Slice 1 loop execution", () => {
         },
       },
     }]);
-    expect(restored?.snapshot.schemaVersion).toBe(4);
+    expect(restored?.snapshot.schemaVersion).toBe(5);
     expect(restored?.snapshot.runtime.loops).toEqual({});
   });
 });

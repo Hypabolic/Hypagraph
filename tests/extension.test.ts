@@ -22,6 +22,7 @@ describe("Pi extension registration", () => {
       "hypagraph_run_check",
       "hypagraph_cancel_check",
       "hypagraph_transition",
+      "hypagoal_submit_revision",
       "hypagraph_revise",
     ]);
     expect(commands).toEqual(["hypagoal", "hypagraph"]);
