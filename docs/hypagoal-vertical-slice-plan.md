@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1, 2, and 3 complete; Slice 4 current
+- Status: active implementation; Slices 1, 2, 3, and 4 complete; Slice 5 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -203,7 +203,7 @@ Slice 1 delivered these events:
 - `hypagraph.goal.failed`;
 - `hypagraph.goal.cancelled`.
 
-Later M5B slices add turn accounting and budget events.
+Slice 4 added turn accounting, budget events, durable continuation identity, and reload-safety pause events.
 
 Future family events will record child bindings, family membership, scheduler selection, child return, executor dispatch, and workspace integration. Those events are outside v0.6 and must not overload the workflow-local lifecycle events.
 
@@ -279,23 +279,51 @@ CI #770 and final PR CI #772 pass 85 test files and 357 tests on Ubuntu, macOS, 
 
 The selector remains workflow-local and can later become one candidate source for the family scheduler without changing its action contract.
 
-### Slice 4 - Budgets and reload safety — current
+### Slice 4 - Budgets and reload safety — complete
 
-Add token accounting, turn accounting, final-turn accounting, budget events, wrap-up guidance, reload pause, branch-change pause, explicit resume, and session-generation tests.
+PR #69 delivered:
 
-A budget stop is not success. Restore must not run work.
+- workflow-local substantive-turn and token limits;
+- normalized input, output, cache-read, cache-write, and total token usage;
+- durable pending-continuation identity;
+- exactly-once turn charging;
+- duplicate and stale usage rejection;
+- deterministic `turn_limit` and `token_limit` stop state;
+- final-turn accounting without replacing workflow completion;
+- explicit reload, branch-change, and invalid-usage pause causes;
+- canonical pending-continuation invalidation on pause;
+- explicit `/hypagoal resume`;
+- resume-time budget and runnable-state validation;
+- replay, restore, schema compatibility, and Pi summaries.
 
-Use field and event names which can later aggregate descendant usage into a family budget. Do not create a budget model which assumes all future usage occurs in the root Pi process.
+The merge baseline is `80766e51636cbd065cd08632546d3ff39419624c`.
 
-Done when token limits, turn limits, reload, and branch changes produce deterministic stop behavior.
+CI #871 and final PR CI #873 pass 87 test files and 374 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-### Slice 5 - Loop and trusted-evaluation continuation
+The budget contract is workflow-local and additive. A later family controller can aggregate descendant and executor usage without rewriting this event history.
 
-Add continuation guidance for generic loop state, current and best metric, patience, invalid-evaluation count, evaluation purpose and trust, feedback mode, evaluation budgets, all bounded stop reasons, independent loop components, and explicit loop failure policy.
+### Slice 5 - Loop and trusted-evaluation continuation — current
 
-The continuation policy must keep independent components runnable while another component progresses. A child goal added in a later release must not change this isolation rule.
+Add canonical loop and evaluation guidance for:
 
-Done when Hypagoal runs both an optimization or refinement region and an independent auxiliary region, preserves their state independence, rejects an invalid score, and completes through typed success.
+- current iteration and hard limit;
+- typed success;
+- current and best accepted metric;
+- progress direction;
+- patience and no-progress count;
+- invalid-evaluation count and limit;
+- evaluation attempt budget;
+- evaluation purpose, trust, isolation, and feedback mode;
+- protected evaluator information;
+- all bounded stop reasons;
+- explicit loop failure policy;
+- independent loop components.
+
+Reuse the existing loop-region and trusted-evaluation runtime. Do not add a second loop controller or evaluation state model.
+
+The continuation selector must keep every runnable root component eligible. A loop cannot own the next turn because it produced the latest event.
+
+Done when Hypagoal runs an optimization or refinement region and an independent auxiliary region without manual continuation, rejects an invalid score without updating the best metric, improves a valid metric over at least three iterations, preserves state isolation, and completes through typed success.
 
 ### Slice 6 - Blockage and bounded revision
 
@@ -421,4 +449,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slices 1, 2, and 3 are complete. Slice 4 is the current implementation target.
+M5B is active. Slices 1, 2, 3, and 4 are complete. Slice 5 is the current implementation target.

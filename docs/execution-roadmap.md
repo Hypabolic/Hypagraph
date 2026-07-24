@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `836ac10ea8c13c6b0839902d175f718359d1bd07`
+- Current implementation baseline: `80766e51636cbd065cd08632546d3ff39419624c`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, and 3 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1, 2, 3, and 4 complete |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -271,8 +271,8 @@ This root is the first member of the accepted future goal-family model.
 1. Canonical goal lifecycle — complete in PR #62.
 2. Atomic `/hypagoal` creation — complete in PR #65.
 3. Graph-aware continuation — complete in PR #67.
-4. Token and turn budgets plus reload safety — current.
-5. Loop and trusted-evaluation continuation.
+4. Token and turn budgets plus reload safety — complete in PR #69.
+5. Loop and trusted-evaluation continuation — current.
 6. Blockage and bounded revision.
 7. Complete Pi product surface.
 8. Dogfood and v0.6 release.
@@ -323,7 +323,26 @@ M5B Slice 3 provides:
 - user-message priority and no-progress stopping;
 - replay, restore, independent-loop fairness, and routed Pi smoke evidence in `docs/m5b-slice-3-dogfood.md`.
 
-Slice 4 adds workflow-local token and turn budgets plus reload and branch-change pause behavior. Usage contracts must be additive so a later family aggregate can sum descendant and executor usage without rewriting root workflow history.
+### Slice 4 result
+
+M5B Slice 4 provides:
+
+- workflow-local substantive-turn and token budgets;
+- normalized Pi usage including cache-read and cache-write tokens;
+- durable pending-continuation identity;
+- exactly-once charging;
+- duplicate, malformed, and stale usage rejection;
+- deterministic turn-limit and token-limit stops;
+- final-turn accounting;
+- budget exhaustion separate from workflow success;
+- event-backed reload, branch-change, and invalid-usage pause;
+- explicit resume with budget and runnable-state validation;
+- replay, restore, schema compatibility, and UI summaries;
+- complete evidence in `docs/m5b-slice-4-dogfood.md`.
+
+The merged baseline is `80766e51636cbd065cd08632546d3ff39419624c`. CI #871 and final PR CI #873 pass 87 test files and 374 tests on all six supported OS and Node.js targets.
+
+Slice 5 adds loop-aware and trusted-evaluation-aware continuation guidance. It must reuse the existing loop and evaluation runtime, preserve protected evaluator boundaries, keep all bounded stop reasons distinct, and continue to select fairly across independent root components.
 
 ### M5B architecture constraints
 
