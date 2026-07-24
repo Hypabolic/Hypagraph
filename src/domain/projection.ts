@@ -147,6 +147,69 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.workflow.resumed": next.phase = "running"; break;
     case "hypagraph.workflow.completed": next.phase = "completed"; break;
     case "hypagraph.workflow.failed": next.phase = "failed"; break;
+    case "hypagraph.goal.started": {
+      if (next.goal) throw new Error("The event stream starts more than one goal for one workflow.");
+      const goalId = event.data.goalId;
+      if (typeof goalId !== "string" || !goalId.trim()) throw new Error("A goal-started event requires a goal ID.");
+      next.goal = {
+        goalId,
+        workflowId: next.workflowId,
+        status: "active",
+        continuationOrdinal: 0,
+        startedAt: event.timestamp,
+        updatedAt: event.timestamp,
+      };
+      break;
+    }
+    case "hypagraph.goal.paused": {
+      if (!next.goal) throw new Error("A goal-paused event requires existing goal-control state.");
+      next.goal.status = "paused";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The goal is paused.");
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.resumed": {
+      if (!next.goal) throw new Error("A goal-resumed event requires existing goal-control state.");
+      if (next.goal.status !== "paused" && next.goal.status !== "blocked") throw new Error("A goal can resume only from paused or blocked state.");
+      next.goal.status = "active";
+      next.goal.updatedAt = event.timestamp;
+      delete next.goal.stopReason;
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.blocked": {
+      if (!next.goal) throw new Error("A goal-blocked event requires existing goal-control state.");
+      next.goal.status = "blocked";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The workflow is blocked.");
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.completed": {
+      if (!next.goal) throw new Error("A goal-completed event requires existing goal-control state.");
+      next.goal.status = "completed";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The canonical workflow completed.");
+      break;
+    }
+    case "hypagraph.goal.failed": {
+      if (!next.goal) throw new Error("A goal-failed event requires existing goal-control state.");
+      next.goal.status = "failed";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The canonical workflow failed.");
+      break;
+    }
+    case "hypagraph.goal.cancelled": {
+      if (!next.goal) throw new Error("A goal-cancelled event requires existing goal-control state.");
+      next.goal.status = "cancelled";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The goal was cancelled.");
+      break;
+    }
     case "hypagraph.node.ready": if (node) node.status = "ready"; break;
     case "hypagraph.node.skipped": if (node) node.status = "skipped"; break;
     case "hypagraph.node.invalidated":

@@ -5,6 +5,19 @@ export const HYPAGRAPH_SCHEMA_VERSION = 3 as const;
 export const HYPAGRAPH_EVENT_VERSION = 1 as const;
 
 export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+
+export type GoalStatus = "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+
+export interface GoalRuntime {
+  goalId: string;
+  workflowId: string;
+  status: GoalStatus;
+  continuationOrdinal: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  stopReason?: string;
+}
 export type NodeStatus =
   | "pending"
   | "ready"
@@ -421,6 +434,7 @@ export interface HypagraphState {
     loops: Record<string, LoopRuntime>;
     evaluations?: EvaluationRuntime;
   };
+  goal?: GoalRuntime;
   createdAt: string;
   updatedAt: string;
   snapshotHash: string;
@@ -440,6 +454,13 @@ export type EventType =
   | "hypagraph.workflow.resumed"
   | "hypagraph.workflow.completed"
   | "hypagraph.workflow.failed"
+  | "hypagraph.goal.started"
+  | "hypagraph.goal.paused"
+  | "hypagraph.goal.resumed"
+  | "hypagraph.goal.blocked"
+  | "hypagraph.goal.completed"
+  | "hypagraph.goal.failed"
+  | "hypagraph.goal.cancelled"
   | "hypagraph.node.ready"
   | "hypagraph.node.skipped"
   | "hypagraph.node.invalidated"
@@ -506,7 +527,11 @@ export type HypagraphCommand =
   | (CommandBase & { type: "unblock-node"; nodeId: string })
   | (CommandBase & { type: "cancel-attempt"; nodeId: string; attemptId: string; reason?: string })
   | (CommandBase & { type: "pause-workflow" })
-  | (CommandBase & { type: "resume-workflow" });
+  | (CommandBase & { type: "resume-workflow" })
+  | (CommandBase & { type: "start-goal"; goalId: string })
+  | (CommandBase & { type: "pause-goal"; reason?: string })
+  | (CommandBase & { type: "resume-goal" })
+  | (CommandBase & { type: "cancel-goal"; reason?: string });
 
 export type ReducerResult =
   | { ok: true; state: HypagraphState; events: DomainEvent[] }
