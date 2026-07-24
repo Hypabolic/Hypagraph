@@ -22,6 +22,7 @@ flowchart LR
 Coding agents often begin with a reasonable plan and lose structure as the session grows. Hypagraph makes the plan executable.
 
 - **Automatic authoring:** ordinary requests and supplied plans become the smallest useful graph.
+- **Graph-backed goals:** `/hypagoal` atomically creates one root goal and its canonical workflow from ordinary prose.
 - **Dependency control:** only ready work can start.
 - **Evidence-backed completion:** task results and checks remain attached to durable attempts.
 - **Typed routing:** gates select branches from declared facts.
@@ -29,7 +30,7 @@ Coding agents often begin with a reasonable plan and lose structure as the sessi
 - **Trusted evaluation:** metric reports can declare validity, feedback limits, evaluation budgets, trust, and evaluator integrity.
 - **Independent components:** disconnected loop regions keep independent state.
 - **Safe recovery:** session state restores without repeating completed external effects.
-- **Live inspection:** Pi shows workflow, loop, check, and evaluator state.
+- **Live inspection:** Pi shows workflow, goal-control, loop, check, and evaluator state.
 
 ## Install
 
@@ -52,6 +53,27 @@ Install only for the current project:
 ```bash
 pi install -l git:github.com/Hypabolic/Hypagraph
 ```
+
+## Start a Hypagoal
+
+Open Pi in a repository and enter an ordinary prose objective:
+
+```text
+/hypagoal Add an inspect command that reports the current workflow without starting execution.
+```
+
+Hypagraph then:
+
+1. preserves the objective exactly;
+2. inspects relevant repository context;
+3. compiles the smallest useful canonical workflow;
+4. validates the complete definition;
+5. creates the workflow, initial readiness, and workflow-local goal lifecycle in one durable event batch;
+6. reports the workflow ID, goal ID, revision, goal-control state, ready work, and authoring advisories.
+
+Creation does not start a task, run a check, invoke an executor, or queue autonomous continuation. Graph-aware continuation is a separate lifecycle operation.
+
+The current v0.6 product surface allows one root workflow and one root goal in the active Pi session. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain itself remains able to represent separate workflow aggregates for the later goal-family architecture.
 
 ## Start a workflow
 
@@ -83,6 +105,7 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 
 | Command | Action |
 | --- | --- |
+| `/hypagoal <objective>` | Inspect repository context and atomically create one root graph-backed goal. |
 | `/hypagraph` | Show the active workflow. |
 | `/hypagraph loop` | Show canonical loop, progress, evaluation, and outcome state. |
 | `/hypagraph graph` | Open or focus the live graph pane. |
@@ -217,6 +240,23 @@ Protected evaluator output is not exposed in normal Pi messages. Protected local
 
 Hypagraph stores accepted event batches in the Pi session. The event stream is the source of truth, and the current workflow is a deterministic projection.
 
+A root Hypagoal creation is stored in this order:
+
+```text
+workflow defined
+    |
+    v
+initial ready nodes
+    |
+    v
+goal started
+    |
+    v
+one durable append
+```
+
+The active Pi state changes only after the complete creation append succeeds. Failed validation, sequence conflicts, branch changes, stale replacement confirmation, or snapshot mismatch expose no partial candidate state.
+
 A deterministic check is stored in this order:
 
 ```text
@@ -237,7 +277,7 @@ store verification and loop decision
 
 Hypagraph does not start an external check when it cannot first store the check-start event.
 
-Restore does not rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations.
+Restore rebuilds canonical state only. It does not queue a continuation, dispatch model work, invoke an executor, or rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations.
 
 Check artifacts are stored under `.hypagraph/check-artifacts`. Large output stays outside the Pi event stream and is referenced by artifact identity.
 
@@ -246,6 +286,8 @@ Check artifacts are stored under `.hypagraph/check-artifacts`. Large output stay
 Implemented:
 
 - automatic graph authoring skill;
+- atomic root `/hypagoal` creation and `hypagoal_start` model surface;
+- workflow-local goal lifecycle and workflow-derived terminal state;
 - task, check, and gate nodes;
 - live terminal graph pane;
 - typed facts and deterministic routes;
@@ -261,10 +303,10 @@ Implemented:
 
 Next:
 
+- graph-aware Hypagoal continuation across all runnable root components;
 - automatic evaluation-contract authoring;
 - transport-neutral evaluator adapters;
 - evaluation dogfood and M5A closeout;
-- `/hypagoal` autonomous continuation over one canonical workflow;
 - delegated and ACP execution.
 
 ## Develop locally
@@ -287,6 +329,7 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 - [Automatic graph authoring model](docs/automatic-graph-authoring.md)
 - [Trusted evaluation contracts](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal vertical slices](docs/hypagoal-vertical-slice-plan.md)
+- [Goal-family and concurrent-execution architecture](docs/goal-family-and-concurrent-execution-plan.md)
 - [Current session handoff](docs/session-handoff.md)
 - [M3.1 deterministic parser adapters](docs/m3-1-parser-adapters-plan.md)
 - [M4 bounded iteration plan](docs/m4-vertical-slice-plan.md)
