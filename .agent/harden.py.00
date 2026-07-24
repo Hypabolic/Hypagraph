@@ -37,28 +37,32 @@ replace(
 
 replace(
     "src/domain/reducer.ts",
-    '''    const stale = staleGoalRevisionReason(state, command);
-    if (stale) return stale;
-    if (command.type === "abandon-goal-revision") {''',
-    '''    const stale = staleGoalRevisionReason(state, command);
-    if (stale) {
-      const attempt = state.goal?.automaticRevision.lastAttempt;
+    '''    if (command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_revision", "The workflow changed before the revision proposal was processed.");
+    if (state.sequence !== pending.requestSequence) return reject("stale_goal_revision", "The workflow sequence changed after the revision request.");
+    if (command.revisionOperationId !== automatic.operationId || command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration) return reject("stale_goal_revision", "The automatic revision identity changed before the proposal was processed.");
+    if (!blockerIdentityMatches(command.type === "apply-goal-revision" ? command.blocker : pending.action.blocker, pending.action.blocker)) return reject("stale_goal_revision", "The canonical blocker changed before the proposal was processed.");
+    if (automatic.outcome !== "pending") return reject("goal_revision_already_resolved", "The automatic revision request already has an outcome.");''',
+    '''    const staleReason = command.goalId !== goal.goalId || command.workflowId !== state.workflowId || command.expectedRevision !== state.revision || command.expectedSequence !== state.sequence || command.expectedSnapshotHash !== state.snapshotHash
+      ? "The workflow changed before the revision proposal was processed."
+      : state.sequence !== pending.requestSequence
+        ? "The workflow sequence changed after the revision request."
+        : command.revisionOperationId !== automatic.operationId || command.continuationOperationId !== pending.operationId || command.continuationOrdinal !== pending.ordinal || command.requestSequence !== pending.requestSequence || command.sessionGeneration !== pending.sessionGeneration || command.branchGeneration !== pending.branchGeneration
+          ? "The automatic revision identity changed before the proposal was processed."
+          : !blockerIdentityMatches(command.type === "apply-goal-revision" ? command.blocker : pending.action.blocker, pending.action.blocker)
+            ? "The canonical blocker changed before the proposal was processed."
+            : undefined;
+    if (staleReason) {
       const belongsToConsumedAttempt = command.type === "apply-goal-revision"
-        && attempt?.outcome === "pending"
-        && attempt.operationId === command.revisionOperationId;
-      if (!belongsToConsumedAttempt || !state.goal) return stale;
+        && automatic.outcome === "pending"
+        && automatic.operationId === command.revisionOperationId;
+      if (!belongsToConsumedAttempt) return reject("stale_goal_revision", staleReason);
       next = append(next, events, command, {
         type: "hypagraph.goal.revision-abandoned",
-        data: {
-          goalId: state.goal.goalId,
-          operationId: attempt.operationId,
-          outcomeCode: "stale_goal_revision",
-          reason: stale.diagnostics[0]?.message ?? "The automatic revision proposal is stale.",
-        },
+        data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: "stale_goal_revision", reason: staleReason },
       });
       return { ok: true, state: next, events };
     }
-    if (command.type === "abandon-goal-revision") {''',
+    if (automatic.outcome !== "pending") return reject("goal_revision_already_resolved", "The automatic revision request already has an outcome.");''',
 )
 
 replace(
