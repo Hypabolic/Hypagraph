@@ -1,27 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type {
-  DomainEvent,
-  HypagraphCommand,
-  HypagraphDefinition,
-  HypagraphState,
-} from "../src/domain/model.js";
+import type { DomainEvent, HypagraphCommand, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { createWorkflow, handleCommand, replayEvents } from "../src/domain/reducer.js";
 import { restoreLatestSession, validateRestoredGoalState } from "../src/persistence/session-rebuild.js";
 import { renderWidget, renderWorkflow, workflowSummary } from "../src/ui/format.js";
 
 const at = "2026-07-24T07:00:00.000Z";
+const objective = "Complete one manually driven canonical workflow";
 
 const definition = (): HypagraphDefinition => ({
   title: "Canonical goal lifecycle",
-  goal: "Complete one manually driven canonical workflow",
-  nodes: [
-    {
-      id: "work",
-      title: "Do the work",
-      requires: [],
-      acceptance: ["The work is verified."],
-    },
-  ],
+  goal: objective,
+  nodes: [{ id: "work", title: "Do the work", requires: [], acceptance: ["The work is verified."] }],
   loops: [],
   policy: { mode: "guided", requireEvidence: false },
 });
@@ -44,20 +33,16 @@ const command = <T extends HypagraphCommand["type"]>(type: T, suffix: string) =>
   at,
 } as const);
 
-const append = (
-  state: HypagraphState,
-  events: DomainEvent[],
-  next: ReturnType<typeof run>,
-): HypagraphState => {
-  events.push(...next.events);
-  return next.state;
+const apply = (state: HypagraphState, events: DomainEvent[], result: ReturnType<typeof run>): HypagraphState => {
+  events.push(...result.events);
+  return result.state;
 };
 
 describe("canonical goal lifecycle", () => {
   it("derives completion from the canonical workflow and reproduces it through replay and restore", () => {
     const initial = created();
     const events = [...initial.events];
-    let state = append(initial.state, events, run(initial.state, {
+    let state = apply(initial.state, events, run(initial.state, {
       ...command("start-goal", "start"),
       goalId: "ship-feature",
     }));
@@ -70,18 +55,18 @@ describe("canonical goal lifecycle", () => {
     });
     expect(state.snapshotHash).not.toBe(initial.state.snapshotHash);
 
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, {
       ...command("start-node", "node-start"),
       nodeId: "work",
       attemptId: "work-1",
     }));
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, {
       ...command("submit-result", "submit"),
       nodeId: "work",
       attemptId: "work-1",
       evidence: [],
     }));
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, {
       ...command("begin-verification", "verify"),
       nodeId: "work",
       attemptId: "work-1",
@@ -92,7 +77,7 @@ describe("canonical goal lifecycle", () => {
       attemptId: "work-1",
       passed: true,
     });
-    state = append(state, events, completed);
+    state = apply(state, events, completed);
 
     expect(completed.events.map((event) => event.type)).toEqual([
       "hypagraph.verification.passed",
@@ -117,7 +102,9 @@ describe("canonical goal lifecycle", () => {
     }]);
     expect(restored?.snapshot).toEqual(state);
 
-    expect(workflowSummary(state).goal).toEqual(state.goal);
+    const summary = workflowSummary(state);
+    expect(summary.goal).toBe(objective);
+    expect(summary.goalControl).toEqual(state.goal);
     expect(renderWorkflow(state)).toContain("Goal control: ship-feature - completed");
     expect(renderWidget(state)[0]).toContain("Goal completed");
   });
@@ -125,7 +112,7 @@ describe("canonical goal lifecycle", () => {
   it("projects blockage from workflow state and requires explicit recovery", () => {
     const initial = created();
     const events = [...initial.events];
-    let state = append(initial.state, events, run(initial.state, {
+    let state = apply(initial.state, events, run(initial.state, {
       ...command("start-goal", "start-blocked"),
       goalId: "recover-blockage",
     }));
@@ -135,7 +122,7 @@ describe("canonical goal lifecycle", () => {
       nodeId: "work",
       reason: "A required external input is missing.",
     });
-    state = append(state, events, blocked);
+    state = apply(state, events, blocked);
 
     expect(blocked.events.map((event) => event.type)).toEqual([
       "hypagraph.node.blocked",
@@ -147,50 +134,45 @@ describe("canonical goal lifecycle", () => {
       stopReason: "A required external input is missing.",
     });
 
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, {
       ...command("unblock-node", "unblock"),
       nodeId: "work",
     }));
     expect(state.phase).toBe("running");
     expect(state.goal?.status).toBe("blocked");
 
-    state = append(state, events, run(state, command("resume-goal", "resume-blocked")));
+    state = apply(state, events, run(state, command("resume-goal", "resume-blocked")));
     expect(state.goal?.status).toBe("active");
     expect(state.goal?.stopReason).toBeUndefined();
     expect(replayEvents(events)).toEqual(state);
   });
 
-  it("records explicit pause, resume, workflow pause, and cancellation without changing workflow completion", () => {
+  it("records explicit pause, workflow pause, resume, and cancellation", () => {
     const initial = created();
     const events = [...initial.events];
-    let state = append(initial.state, events, run(initial.state, {
+    let state = apply(initial.state, events, run(initial.state, {
       ...command("start-goal", "start-controls"),
       goalId: "control-goal",
     }));
 
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, {
       ...command("pause-goal", "pause-goal"),
       reason: "Wait for user review.",
     }));
     expect(state.goal).toMatchObject({ status: "paused", stopReason: "Wait for user review." });
     expect(state.phase).toBe("running");
 
-    state = append(state, events, run(state, command("resume-goal", "resume-goal")));
-    expect(state.goal?.status).toBe("active");
-
-    state = append(state, events, run(state, command("pause-workflow", "pause-workflow")));
+    state = apply(state, events, run(state, command("resume-goal", "resume-goal")));
+    state = apply(state, events, run(state, command("pause-workflow", "pause-workflow")));
     expect(state.phase).toBe("paused");
-    expect(state.goal).toMatchObject({
-      status: "paused",
-      stopReason: "The canonical workflow is paused.",
-    });
+    expect(state.goal).toMatchObject({ status: "paused", stopReason: "The canonical workflow is paused." });
 
-    state = append(state, events, run(state, command("resume-workflow", "resume-workflow")));
+    state = apply(state, events, run(state, command("resume-workflow", "resume-workflow")));
     expect(state.phase).toBe("running");
     expect(state.goal?.status).toBe("paused");
 
-    state = append(state, events, run(state, command("resume-goal", "resume-after-workflow")));
-    state = append(state, events, run(state, {
+    state = apply(state, events, run(state, command("resume-goal", "resume-after-workflow")));
+    state = apply(state, events, run(state, {
       ...command("cancel-goal", "cancel"),
       reason: "The user stopped autonomous control.",
     }));
