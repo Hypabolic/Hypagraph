@@ -31,9 +31,33 @@ jobs:
           set +e
           {
             cat .agent/apply.py.gz.b64.* | base64 --decode | gzip --decompress > .agent/apply.py
-            sed -i 's/""", count=2)/""", count=3)/' .agent/apply.py
-            sed -i 's/"""       action: { kind: decision.kind/"""      action: { kind: decision.kind/' .agent/apply.py
+            python - <<'PY'
+          from pathlib import Path
+          path = Path('.agent/apply.py')
+          text = path.read_text()
+          text = text.replace('""", count=2)', '""", count=3)')
+          text = text.replace('"""       action: { kind: decision.kind', '"""      action: { kind: decision.kind')
+          text = text.replace(
+              '''"""       if (!state?.goal?.pendingContinuation) return;
+                 const semanticSequenceBeforeAccounting = state.sequence;
+                 const normalized = normalizePiGoalUsage(_event.messages);
+          """''',
+              '''"""      if (!state?.goal?.pendingContinuation) return;
+                const semanticSequenceBeforeAccounting = state.sequence;
+                const normalized = normalizePiGoalUsage(_event.messages);
+          """''',
+          )
+          path.write_text(text)
+          PY
             python .agent/apply.py
+            python - <<'PY'
+          from pathlib import Path
+          path = Path('src/pi/hypagoal-loop-guidance.ts')
+          text = path.read_text()
+          text = text.replace('  GoalContinuationAction,\n', '  GoalWorkContinuationAction,\n')
+          text = text.replace('Pick<GoalContinuationAction, "nodeId" | "loopId">', 'Pick<GoalWorkContinuationAction, "nodeId" | "loopId">')
+          path.write_text(text)
+          PY
             npm ci
             npm run check
           } > agent-run.log 2>&1
@@ -59,7 +83,7 @@ jobs:
         run: |
           rm -rf .agent agent-run.log agent-status.txt agent-output.patch
           rm -f .github/workflows/apply-agent-patch.yml
-          git config user.name "github-actions[bot]"
+          git config user.name "github-actions[bot]]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Add bounded Hypagoal revision"
