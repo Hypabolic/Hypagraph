@@ -25,8 +25,8 @@ jobs:
       - name: Apply the hardening patch
         run: python scripts/apply-m5b-slice2-hardening.py
 
-      - name: Remove temporary patch machinery
-        run: rm scripts/apply-m5b-slice2-hardening.py .github/workflows/apply-m5b-slice2-hardening.yml
+      - name: Remove temporary patch script
+        run: rm scripts/apply-m5b-slice2-hardening.py
 
       - name: Commit and push
         run: |
