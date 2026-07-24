@@ -1,9 +1,9 @@
 # Hypagoal vertical-slice plan
 
-- Status: accepted product direction
+- Status: active implementation; Slice 1 complete
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
-- Prerequisites: M4 bounded iteration regions and the required M5A evaluation foundation
+- Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
 - Tracking issue: #25
 - Research source: https://github.com/Michaelliv/pi-goal
 - Writing standard: ASD-STE100 Simplified Technical English
@@ -20,7 +20,7 @@ Hypagoal is an autonomous controller over one normal Hypagraph workflow. It is n
 - a prose continuation loop;
 - a model-selected completion mechanism.
 
-The workflow graph remains the executable contract. The goal controller decides only whether Pi may request another agent turn.
+The workflow graph remains the executable contract. Goal control decides only whether Pi may request another agent turn.
 
 ## 2. Product result
 
@@ -62,7 +62,7 @@ There is no `complete-goal` command and no model tool that completes a goal.
 
 ### 3.3 Pure continuation decision
 
-A pure function decides the next control action:
+A later slice adds a pure continuation decision:
 
 ```ts
 export type GoalContinuationDecision =
@@ -104,33 +104,13 @@ A region can perform refinement, optimization, search, batch processing, repeate
 
 A region can connect to the main graph or be an independent top-level component.
 
-Each region has:
-
-- explicit entry and evaluation boundaries;
-- typed success;
-- hard iteration limits;
-- optional numeric progress and patience;
-- optional evaluation validity and budgets;
-- explicit failure policy.
+Each region has explicit entry and evaluation boundaries, typed success, hard iteration limits, optional numeric progress and patience, optional evaluation validity and budgets, and explicit failure policy.
 
 Hypagoal must not infer repair semantics from a loop name or node title.
 
 ### 3.6 Trusted evaluation integration
 
-When a defensible metric exists, authoring should define:
-
-- a metric-producing evaluator node;
-- evaluation purpose;
-- evaluator trust boundary;
-- typed validity;
-- typed success;
-- numeric progress direction;
-- hard iteration limit;
-- patience when useful;
-- evaluation budget;
-- feedback policy;
-- constraints and deterministic instruments;
-- probe or anti-gaming checks when useful.
+When a defensible metric exists, authoring should define a metric-producing evaluator, evaluation purpose, trust boundary, typed validity, typed success, progress direction, hard limit, optional patience, evaluation budget, feedback policy, deterministic constraints, and useful probe or anti-gaming instruments.
 
 When no defensible metric exists, authoring must omit progress and use deterministic checks, typed success, evidence, hard bounds, outcome policy, and user review.
 
@@ -138,29 +118,21 @@ A non-isolated evaluation must not be presented as trusted holdout acceptance.
 
 ## 4. Goal-control state
 
-The initial domain model is:
+Slice 1 delivered this initial persisted domain model:
 
 ```ts
 export type GoalStatus =
   | "active"
   | "paused"
   | "blocked"
-  | "budget_limited"
   | "completed"
   | "failed"
   | "cancelled";
-
-export interface GoalBudget {
-  maxTokens?: number;
-  maxTurns?: number;
-}
 
 export interface GoalRuntime {
   goalId: string;
   workflowId: string;
   status: GoalStatus;
-  tokensUsed: number;
-  turnsUsed: number;
   continuationOrdinal: number;
   startedAt: string;
   updatedAt: string;
@@ -169,29 +141,28 @@ export interface GoalRuntime {
 }
 ```
 
-Commands supply timestamps and usage values. The reducer remains pure.
+Slice 4 extends the runtime with token and turn usage and deterministic budget-limited state. Commands supply timestamps and usage values. The reducer remains pure.
 
 ## 5. Commands and events
 
-Domain commands:
+Slice 1 delivered these commands:
 
 - `start-goal`;
-- `account-goal-turn`;
 - `pause-goal`;
 - `resume-goal`;
 - `cancel-goal`.
 
-Domain events:
+Slice 1 delivered these events:
 
 - `hypagraph.goal.started`;
-- `hypagraph.goal.turn-accounted`;
 - `hypagraph.goal.paused`;
 - `hypagraph.goal.resumed`;
-- `hypagraph.goal.budget-reached`;
 - `hypagraph.goal.blocked`;
 - `hypagraph.goal.completed`;
 - `hypagraph.goal.failed`;
 - `hypagraph.goal.cancelled`.
+
+Later slices add turn accounting and budget events.
 
 Every status change and stop reason must be event-backed and replayable.
 
@@ -199,19 +170,48 @@ Every status change and stop reason must be event-backed and replayable.
 
 Each slice crosses all affected domain, reducer, projection, persistence, Pi, test, and documentation layers.
 
-### Slice 1 - Canonical goal lifecycle
+### Slice 1 - Canonical goal lifecycle — complete
 
-Add goal runtime types, commands, events, reducer logic, projection, schema migration, workflow-derived terminal status, replay, and state-hash tests.
+PR #62 delivered:
 
-Done when a manually driven workflow produces the correct goal terminal state through replay and no model action can mark the goal complete.
+- optional `GoalRuntime` in canonical workflow state and snapshot hashes;
+- start, pause, resume, block, complete, fail, and cancel events;
+- explicit start, pause, resume, and cancel commands;
+- workflow-derived completion, failure, blockage, and workflow-pause projection;
+- explicit recovery from paused or blocked goal state;
+- replay and restore validation;
+- structured, text, and compact widget summaries;
+- compatibility for workflows and sessions without goal control;
+- preservation of the workflow objective under `goal`, with lifecycle state under `goalControl`;
+- rejection of a fabricated `complete-goal` command without state mutation.
 
-### Slice 2 - Atomic `/hypagoal` creation
+The merge baseline is `0bbe7f227fc28262958f29992cece9c663ecad2a`.
 
-Add command parsing, `hypagoal_start`, repository inspection guidance, atomic workflow-plus-goal creation, replacement confirmation, and strict validation.
+CI #661 passes 81 test files and 307 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-An invalid graph must create no canonical workflow or goal state.
+### Slice 2 - Atomic `/hypagoal` creation — next
 
-Done when one prose objective creates a valid graph-backed goal in a real Pi turn.
+Add:
+
+- `/hypagoal <objective>` command parsing;
+- model-facing `hypagoal_start`;
+- repository inspection and authoring guidance;
+- one atomic workflow-plus-goal creation path;
+- replacement confirmation when canonical state already exists;
+- strict definition and goal validation;
+- durable persistence of the complete creation event batch;
+- useful failure diagnostics without partial state.
+
+Mandatory rules:
+
+- an invalid graph creates neither workflow nor goal state;
+- a goal cannot be started against an unpersisted or mismatched workflow;
+- creation does not queue autonomous continuation yet;
+- the prose objective remains `HypagraphDefinition.goal`;
+- the model does not supply terminal goal state;
+- only one active goal is permitted in the first release.
+
+Done when one prose objective creates a valid graph-backed goal in a real Pi turn and every invalid creation path leaves canonical state unchanged.
 
 ### Slice 3 - Graph-aware continuation
 
@@ -229,18 +229,7 @@ Done when token limits, turn limits, reload, and branch changes produce determin
 
 ### Slice 5 - Loop and trusted-evaluation continuation
 
-Add continuation guidance for:
-
-- generic loop state;
-- current and best metric;
-- patience;
-- invalid-evaluation count;
-- evaluation purpose and trust;
-- feedback mode;
-- evaluation budgets;
-- hard-limit, no-progress, invalid-evaluation, evaluation-error, and evaluation-budget stops;
-- independent loop components;
-- explicit loop failure policy.
+Add continuation guidance for generic loop state, current and best metric, patience, invalid-evaluation count, evaluation purpose and trust, feedback mode, evaluation budgets, all bounded stop reasons, independent loop components, and explicit loop failure policy.
 
 Done when Hypagoal runs both an optimization or refinement region and an independent auxiliary region, preserves their state independence, rejects an invalid score, and completes through typed success.
 
@@ -254,16 +243,7 @@ Done when a blocked graph either returns to a valid path through one revision or
 
 ### Slice 7 - Complete Pi product surface
 
-Add compact lifecycle messages and:
-
-- `/hypagoal status`;
-- `/hypagoal pause`;
-- `/hypagoal resume`;
-- `/hypagoal cancel`;
-- `/hypagoal graph`;
-- graph-pane goal details;
-- budget, loop, evaluation, and stop-state summaries;
-- narrow and wide terminal coverage.
+Add compact lifecycle messages, `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, `/hypagoal graph`, graph-pane goal details, budget/loop/evaluation/stop summaries, and narrow and wide terminal coverage.
 
 Done when a user can understand the active action, remaining budget, loop and evaluation state, and stop reason without event inspection.
 
@@ -294,39 +274,11 @@ The release requires the full six-target CI matrix, a dogfood record in `docs`, 
 
 ## 7. Test strategy
 
-Tests must prove:
-
-- deterministic goal events and snapshot hashes;
-- workflow-derived completion only;
-- one queued continuation;
-- user and tool message priority;
-- paused and terminal goals cannot continue;
-- token and turn budget enforcement;
-- reload and branch-change pause;
-- stale usage and continuation rejection;
-- generic loop continuation;
-- independent loop isolation;
-- validity, integrity, and evaluation-budget stops;
-- bounded revision;
-- status and graph-pane behavior;
-- no model-selected completion.
+Tests must prove deterministic goal events and hashes, workflow-derived completion only, atomic creation, one queued continuation, user/tool priority, paused and terminal behavior, token and turn budgets, reload and branch-change pause, stale usage and continuation rejection, generic loop continuation, independent loop isolation, evaluation stops, bounded revision, Pi surfaces, and no model-selected completion.
 
 ## 8. Out of scope for v0.6
 
-The first Hypagoal release does not include:
-
-- parallel autonomous node execution;
-- delegated subagents;
-- ACP execution;
-- named direct CLI agent adapters;
-- model-scored success or loss;
-- loss extraction from unstructured text;
-- unlimited automatic revision;
-- automatic restoration of the best workspace state;
-- time-based hard budgets;
-- more than one active goal in one Pi session;
-- automatic resume after reload;
-- deletion of canonical goal history.
+The first Hypagoal release does not include parallel autonomous node execution, delegated subagents, ACP execution, named direct CLI agent adapters, model-scored success or loss, loss extraction from unstructured text, unlimited automatic revision, automatic restoration of the best workspace state, time-based hard budgets, more than one active goal in one Pi session, automatic resume after reload, or deletion of canonical goal history.
 
 ## 9. Roadmap position
 
@@ -341,4 +293,4 @@ The first Hypagoal release does not include:
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B starts after the required M5A metric, validity, budget, integrity, and authoring contracts are stable.
+M5B is active. Slice 1 is complete. Slice 2 is the current implementation target.

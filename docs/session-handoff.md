@@ -1,14 +1,15 @@
-# Session handoff: M5A complete to M5B Slice 1
+# Session handoff: M5B Slice 1 complete to Slice 2
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- M5A implementation baseline: `9d529e2cc549c5d2508a190b267a07361f302659`
-- M5A final implementation pull request: #60
-- M5A tracking issue: #30
+- Last merged baseline: `0bbe7f227fc28262958f29992cece9c663ecad2a`
+- Last merged pull request: #62
 - Active milestone: M5B Hypagoal
-- Next slice: M5B Slice 1, canonical goal lifecycle
+- Completed slice: M5B Slice 1, canonical goal lifecycle
+- Next slice: M5B Slice 2, atomic `/hypagoal` creation
 - Hypagoal tracking issue: #25
+- Completed evaluation foundation: issue #30
 - Release marker: v0.6 after M5B dogfood and release evidence
 
 ## 1. Read first
@@ -17,15 +18,13 @@ Read:
 
 - `AGENTS.md`;
 - `docs/hypagoal-vertical-slice-plan.md`;
-- `docs/trusted-evaluation-contract-plan.md`;
-- `docs/m5a-dogfood.md`;
+- `docs/product-spec.md`;
 - `docs/automatic-graph-authoring.md`;
 - `docs/loop-region-product-model.md`;
-- `docs/product-spec.md`.
+- `docs/trusted-evaluation-contract-plan.md`;
+- `docs/m5a-dogfood.md`.
 
 Use issue #25 as the authoritative M5B checklist.
-
-Issue #30 is the completed M5A implementation record.
 
 ## 2. Product decisions that must not change
 
@@ -33,263 +32,262 @@ Issue #30 is the completed M5A implementation record.
 
 Hypagraph has one executable workflow graph.
 
-Hypagoal must control that workflow. It must not add:
+Hypagoal controls that workflow. It must not add:
 
 - a goal node;
 - a second task model;
+- a duplicate workflow definition;
 - a parallel completion state machine;
 - a model tool that marks a goal complete.
 
-The runtime derives goal completion from canonical workflow state.
+`HypagraphDefinition.goal` remains the human-readable objective.
 
-### 2.2 Goal control is continuation control
+### 2.2 Workflow state is authoritative
+
+The reducer derives goal completion and failure from canonical workflow state.
+
+There is no `complete-goal` command.
+
+A model narrative, tool result, or Pi message cannot mark the goal complete.
+
+Goal cancellation is explicit control cancellation. It does not rewrite the canonical workflow as successfully completed.
+
+### 2.3 Goal control is continuation control
 
 Hypagoal decides whether Pi may request another agent turn.
 
 It does not decide that semantic task work is complete.
 
-The continuation decision must be pure. The Pi adapter performs the external continuation side effect only after the decision is durable and current.
+The continuation decision and automatic follow-up side effect belong to Slice 3. Slice 2 must not queue continuation.
 
-### 2.3 Generic bounded iteration
-
-A loop is a generic bounded iteration region.
-
-It can perform refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, migration, or repair.
-
-Repair is one pattern, not the default purpose.
-
-A loop can connect to the wider graph or run as an independent top-level component. Each loop has explicit failure policy.
-
-### 2.4 Trusted evaluation is complete foundation work
-
-M5A keeps these concepts separate:
-
-- success;
-- progress;
-- evaluation validity;
-- evaluation purpose;
-- evaluator trust;
-- evaluator transport.
-
-Hypagoal must consume the existing evaluation and loop state. It must not add a second loss or evaluator model.
-
-Only isolated execution can support trusted holdout acceptance.
-
-### 2.5 Restore must not run autonomous work
+### 2.4 Restore must not run autonomous work
 
 Session restore rebuilds canonical state only.
 
-An active goal must pause after reload or branch change. The user must resume it explicitly.
+Reload and branch-change pause behavior belongs to Slice 4.
 
-A stale continuation or stale turn must not affect the current goal generation.
+No Slice 2 creation or restore path may silently queue work.
 
-## 3. Completed foundation
+### 2.5 Generic loops and trusted evaluation remain canonical
 
-### M3.1 deterministic checks
+Hypagoal consumes the existing loop and evaluation state.
 
-Complete:
+It must not create a second loss, loop, evaluator, or outcome model.
 
-- command checks;
-- Vitest, ESLint, and Istanbul report checks;
-- file assertions;
-- Git assertions;
-- durable lifecycle, retry, cancellation, restore, and replay.
+A loop is a generic bounded iteration region. Repair is one pattern, not the default purpose.
 
-### M4 bounded iteration regions
+Only isolated execution can support trusted holdout acceptance.
 
-Complete:
+## 3. M5B Slice 1 delivered
 
-- typed success;
-- multiple iterations;
-- feedback edges;
-- hard limits;
-- numeric progress;
-- best metric and iteration;
-- patience;
-- independent loop components;
-- explicit failure policy;
-- cancellation and revision recovery;
-- stale-result rejection;
-- Pi and graph surfaces.
+PR #62 adds the canonical event-backed goal lifecycle.
 
-### M5A trusted evaluation contracts
+The merged implementation provides:
 
-Complete:
+- `GoalStatus` and `GoalRuntime`;
+- optional top-level goal-control state in `HypagraphState`;
+- goal state in snapshot hashing;
+- `start-goal`;
+- `pause-goal`;
+- `resume-goal`;
+- `cancel-goal`;
+- `hypagraph.goal.started`;
+- `hypagraph.goal.paused`;
+- `hypagraph.goal.resumed`;
+- `hypagraph.goal.blocked`;
+- `hypagraph.goal.completed`;
+- `hypagraph.goal.failed`;
+- `hypagraph.goal.cancelled`;
+- workflow-derived completion, failure, blockage, and workflow-pause projection;
+- explicit recovery from paused or blocked goal state;
+- replay and restore validation;
+- text, structured, and compact UI summaries;
+- source and session compatibility for workflows without goal control.
 
-- metric-report checks;
-- typed evaluation validity;
-- invalid-observation limits;
-- bounded feedback;
-- protected evaluator output;
-- event-backed total and per-purpose budgets;
-- transparent and protected evaluator integrity;
-- evaluator versions and fingerprints;
-- cancellation and integrity deadlines;
-- transport-neutral evaluator adapters;
-- evaluation-contract authoring guidance;
-- deterministic authoring advisories;
-- accurate purpose, trust, claim, adapter, and integrity presentation;
-- complete product-path dogfood;
-- restore and replay on every supported target.
+Structured summaries preserve the workflow objective under `goal`. Goal lifecycle state is exposed under `goalControl`.
 
-The M5A dogfood record is `docs/m5a-dogfood.md`.
+### Slice 1 invariants proved
 
-## 4. M5A final evidence
+- Goal state belongs to exactly one workflow.
+- A second goal cannot start against the same workflow.
+- Invalid goal IDs are rejected.
+- Completion occurs only after canonical workflow completion.
+- Failure occurs only after canonical workflow failure.
+- A fabricated `complete-goal` command is rejected without state mutation.
+- Blockage includes a durable reason.
+- Terminal state includes a completion time and reason.
+- Replay reproduces the same goal state and snapshot hash.
+- Restore validates identity, timestamps, terminal state, and workflow alignment.
+- Workflows without goal state remain unchanged.
 
-PR #60 adds `tests/m5a-dogfood.test.ts`.
+## 4. Slice 1 evidence
 
-The three executable scenarios prove:
+Implementation baseline:
 
-1. prose-derived evaluation authoring, an inner typed gate, three improving development evaluations, typed acceptance, and a generalization probe;
-2. protected evaluator change detection, rejection of a high invalid score, best-result and patience protection, and later `no_progress` termination;
-3. `evaluation_budget` termination, restore, replay, and stale evaluator result rejection.
+```text
+0bbe7f227fc28262958f29992cece9c663ecad2a
+```
 
-CI #621 passes:
+PR #62 added:
+
+- `src/domain/goal-policy.ts`;
+- goal types, commands, and events in `src/domain/model.ts`;
+- reducer synchronization in `src/domain/reducer.ts`;
+- goal projection in `src/domain/projection.ts`;
+- restore validation in `src/persistence/session-rebuild.ts`;
+- lifecycle summaries in `src/ui/format.ts`;
+- `tests/goal-lifecycle.test.ts`;
+- `tests/goal-failure.test.ts`.
+
+CI #661 passes:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The suite contains 79 test files and 300 tests.
+The suite contains 81 test files and 307 tests.
 
 ## 5. Current architecture map
 
 ### Domain and reducer
 
-- `src/domain/model.ts`: canonical workflow, loop, evaluation, and event types.
-- `src/domain/reducer.ts`: canonical workflow decisions.
-- `src/domain/projection.ts`: event replay and runtime projection.
-- `src/domain/evaluation-policy.ts`: event-backed evaluation budgets.
-- `src/domain/integrity-policy.ts`: evaluator-integrity validation.
-- `src/domain/evaluation-authoring.ts`: non-blocking authoring assessment.
-- `src/domain/evaluation-presentation.ts`: honest evaluator result claims.
+- `src/domain/model.ts`: workflow, loop, evaluation, goal, command, and event contracts.
+- `src/domain/reducer.ts`: canonical command decisions and workflow-to-goal synchronization.
+- `src/domain/projection.ts`: deterministic event projection and hashing.
+- `src/domain/goal-policy.ts`: pure workflow-to-goal outcome policy.
+- `src/domain/workflow-outcome.ts`: canonical workflow completion and loop policy.
 
-### Check and evaluator path
+### Authoring and Pi
 
-- `src/checks/durable-lifecycle.ts`: durable check effect ordering.
-- `src/checks/report-check-executor.ts`: report parsing and fact publication.
-- `src/checks/evaluator-adapter.ts`: transport-neutral evaluator boundary.
-- `src/checks/evaluation-integrity.ts`: external integrity instruments.
+- `src/extension.ts`: Pi commands and tools.
+- `src/pi/definition.ts`: definition schemas and normalization.
+- `skills/hypagraph/SKILL.md`: bundled model guidance.
+- `docs/automatic-graph-authoring.md`: graph compilation model.
 
-### Pi and product surfaces
-
-- `src/extension.ts`: Pi tools and commands.
-- `src/pi/definition.ts`: authoring schemas and normalization.
-- `src/pi/check-runner.ts`: check and evaluator result presentation.
-- `src/graph/projection.ts`: canonical graph view model.
-- `src/ui/loop-surface.ts`: canonical loop and evaluation summaries.
-
-### Persistence and session behavior
+### Persistence
 
 - `src/persistence/event-store.ts`: optimistic event persistence.
-- `src/persistence/session-rebuild.ts`: restore from Pi session history.
-- `src/pi/session-branch.ts`: branch generation and stale-result protection.
+- `src/persistence/session-rebuild.ts`: restore, replay verification, and goal/loop validation.
+- `src/pi/session-branch.ts`: session generation and stale-result protection.
 
-## 6. Next task: M5B Slice 1
+## 6. Next task: M5B Slice 2
 
 ### User result
 
-A normal Hypagraph workflow can have durable goal-control state whose terminal status is derived from workflow state.
+A user enters one prose `/hypagoal` objective. Hypagraph inspects the repository, creates one valid workflow, starts goal control, and persists the complete state atomically.
 
-This slice is domain-first. It does not yet add `/hypagoal` automatic creation or Pi continuation.
+This slice creates the controller. It does not yet continue work automatically.
 
 ### Add
 
-- `GoalStatus` and `GoalRuntime` domain types;
-- optional goal-control state in `HypagraphState`;
-- goal commands:
-  - `start-goal`;
-  - `pause-goal`;
-  - `resume-goal`;
-  - `cancel-goal`;
-- goal events in the `hypagraph.goal.*` namespace;
-- pure workflow-to-goal status derivation;
-- event projection;
-- snapshot schema migration or explicit compatibility behavior;
-- replay and snapshot-hash coverage;
-- workflow-derived completion, failure, cancellation, and blockage.
+- `/hypagoal <objective>` command parsing;
+- model-facing `hypagoal_start` tool;
+- repository inspection guidance before graph creation;
+- reuse of the existing automatic graph-authoring contract;
+- one atomic workflow-plus-goal creation operation;
+- replacement confirmation when a canonical workflow or goal already exists;
+- strict validation before any state becomes canonical;
+- one durable event batch containing workflow definition, readiness, and goal start;
+- clear diagnostics for invalid definitions, invalid goal identity, conflicts, and stale session state;
+- structured and text confirmation of the created objective, workflow, ready work, and goal-control status;
+- Pi and persistence tests;
+- one real Pi smoke test from ordinary prose.
 
-Do not add token or turn accounting yet. That belongs to Slice 4.
+### Atomicity rule
 
-Do not add automatic Pi continuation yet. That belongs to Slice 3.
+An invalid creation attempt must create no canonical workflow and no goal state.
 
-Do not add `/hypagoal` creation yet. That belongs to Slice 2.
+Do not persist the workflow first and start the goal in a second fallible operation.
 
-### Required rules
+Build and validate the complete creation result in memory, then persist one event batch against expected sequence zero.
 
-- Goal state cannot exist without a workflow.
-- There can be at most one goal-control state in one Pi session for the first release.
-- The model cannot complete a goal.
-- There is no `complete-goal` command.
-- Every goal status transition has a durable event.
-- The reducer remains pure.
-- Replaying the same events produces the same goal status and stop reason.
-- Workflow terminal state is authoritative over model narrative.
+If persistence reports a branch or sequence conflict, do not present the candidate state as active.
 
-### Recommended initial types
+### Replacement rule
 
-```ts
-export type GoalStatus =
-  | "active"
-  | "paused"
-  | "blocked"
-  | "completed"
-  | "failed"
-  | "cancelled";
+The first release supports one canonical workflow and one goal per Pi session.
 
-export interface GoalRuntime {
-  goalId: string;
-  workflowId: string;
-  status: GoalStatus;
-  continuationOrdinal: number;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  stopReason?: string;
-}
-```
+If either already exists:
 
-Budget-limited state and usage counters can be added in Slice 4 unless implementation evidence shows they must exist in the initial persisted schema.
+- do not silently replace it;
+- show the existing state;
+- require explicit replacement confirmation;
+- reject stale confirmation after the session generation or canonical sequence changes.
+
+### Authoring rule
+
+The user describes an objective, not a graph.
+
+The skill must:
+
+1. inspect relevant repository context;
+2. compile the smallest valid graph-backed work contract;
+3. use typed gates and checks where the objective requires them;
+4. use generic bounded regions where repetition is required;
+5. add metric progress only when a defensible deterministic metric exists;
+6. preserve the exact user objective in `HypagraphDefinition.goal`;
+7. return useful advisories without inventing unjustified evaluation contracts.
+
+### Public surface for this slice
+
+- Pi command: `/hypagoal <objective>`;
+- model tool: `hypagoal_start`.
+
+Administrative status, pause, resume, cancel, and graph subcommands remain scheduled for Slice 7 unless the command parser needs a minimal non-public seam now.
+
+### Deferred
+
+Do not add:
+
+- automatic continuation;
+- queued follow-ups;
+- token or turn budgets;
+- reload-time pause;
+- bounded automatic revision;
+- production isolated evaluation;
+- a second workflow model.
 
 ### Done when
 
-A manually driven workflow with goal control:
+Slice 2 is complete when:
 
-- completes only when the workflow completes;
-- fails only when the workflow fails;
-- cancels only through canonical cancellation;
-- pauses and resumes through explicit commands;
-- blocks when the workflow has no executable path;
-- restores and replays the same goal state;
-- cannot be completed by any model-visible command.
+- one prose objective produces one valid workflow and one active goal;
+- workflow and goal creation are one atomic persisted operation;
+- an invalid graph leaves no canonical state;
+- duplicate state requires explicit replacement confirmation;
+- stale replacement confirmation is rejected;
+- the objective remains the canonical definition goal;
+- no continuation is queued;
+- restore reproduces the created workflow and goal without running work;
+- a real Pi smoke test proves the ordinary user path;
+- all six CI jobs pass.
 
 Suggested branch:
 
 ```text
-agent/m5b-slice-1-goal-lifecycle
+agent/m5b-slice-2-hypagoal-creation
 ```
 
 Suggested pull request title:
 
 ```text
-Implement M5B canonical goal lifecycle
+Add atomic Hypagoal creation
 ```
 
-## 7. Work after Slice 1
+## 7. Work after Slice 2
 
 Continue M5B in this order:
 
-1. Slice 2: atomic `/hypagoal` creation.
-2. Slice 3: graph-aware continuation.
-3. Slice 4: token and turn budgets plus reload safety.
-4. Slice 5: loop and trusted-evaluation continuation.
-5. Slice 6: blockage and bounded revision.
-6. Slice 7: complete Pi product surface.
-7. Slice 8: dogfood and v0.6 release.
+1. Slice 3: graph-aware continuation.
+2. Slice 4: token and turn budgets plus reload safety.
+3. Slice 5: loop and trusted-evaluation continuation.
+4. Slice 6: blockage and bounded revision.
+5. Slice 7: complete Pi product surface.
+6. Slice 8: dogfood and v0.6 release.
 
-## 8. Important release warning
+## 8. Release warning
 
-The package version remains `0.5.0` during M5A and M5B development.
+The package version remains `0.5.0` during M5B development.
 
 Do not tag current `main` as `v0.5.0`.
 
@@ -305,11 +303,12 @@ The v0.6 version and tag must wait until M5B dogfood and release evidence pass o
 
 - Do not create a second goal definition that duplicates the graph.
 - Do not make model text authoritative for completion.
-- Do not queue autonomous work during restore.
+- Do not expose `start-goal` as an independent public path that can create mismatched state.
+- Do not persist a workflow before the complete atomic creation result is valid.
+- Do not queue autonomous work during creation or restore.
 - Do not infer repair semantics for generic loops.
 - Do not weaken M5A validity, trust, budget, or protected-output rules.
-- Preserve event ordering and optimistic sequence checks.
-- Keep branch generation and stale-continuation identity explicit.
+- Preserve event ordering, optimistic sequence checks, branch generation, and stale-result identity.
 - Connector-authored commits can suppress push-triggered Actions. Use the PR `ready_for_review` trigger when required.
 - Temporary patch workflows must remove themselves and must not remain in final diffs.
 
@@ -317,10 +316,12 @@ The v0.6 version and tag must wait until M5B dogfood and release evidence pass o
 
 The next handoff is ready when:
 
-- M5B Slice 1 is merged;
-- issue #25 marks Slice 1 complete;
-- goal-control state is event-backed and replayable;
-- workflow state derives every goal terminal result;
-- no model or public command can complete a goal;
+- M5B Slice 2 is merged;
+- issue #25 marks Slice 2 complete;
+- `/hypagoal` creates workflow and goal atomically;
+- invalid creation leaves no canonical state;
+- replacement is explicit and stale-safe;
+- no continuation runs during creation or restore;
+- the real Pi smoke test passes;
 - all six CI jobs pass;
-- this document points to atomic `/hypagoal` creation.
+- this document points to graph-aware continuation.
