@@ -168,7 +168,11 @@ export async function startRootHypagoal(
   if (currentState) {
     const required = replacementConfirmationFor(currentState, generations);
     if (!request.replacementConfirmation) {
-      return { kind: "replacement-required", current, confirmation: required };
+      return {
+        kind: "replacement-required",
+        current: rootCanonicalIdentity(currentState, generations),
+        confirmation: required,
+      };
     }
     const stale = confirmationDiagnostic(required, request.replacementConfirmation);
     if (stale) return { kind: "rejected", diagnostics: [stale] };
@@ -215,7 +219,7 @@ export async function startRootHypagoal(
     kind: "created",
     state: candidate.state,
     events: candidate.events,
-    advisories: structuredClone(request.advisories ?? []),
+    advisories: (request.advisories ?? []).map((advisory) => structuredClone(advisory)),
     ...(current ? { replaced: current } : {}),
   };
 }
