@@ -12,12 +12,24 @@ import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph 
 import { createWorkflow } from "./domain/reducer.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { projectGraphView } from "./graph/projection.js";
+import {
+  replacementConfirmationFor,
+  startRootHypagoal,
+} from "./hypagoal/root-creation.js";
 import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
+import {
+  buildHypagoalAuthoringPrompt,
+  hypagoalReadyWork,
+  hypagoalStartSchema,
+  normalizeHypagoalStartInput,
+  renderHypagoalCreated,
+  renderReplacementRequired,
+} from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
@@ -102,6 +114,8 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
   let sessionGeneration = 0;
+  let branchGeneration = 0;
+  let hypagoalAuthoring = false;
   const graphPane = new GraphPaneController();
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
@@ -113,8 +127,10 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
   };
 
-  const restore = async (ctx: ExtensionContext): Promise<void> => {
+  const restore = async (ctx: ExtensionContext, branchChanged: boolean): Promise<void> => {
     sessionGeneration += 1;
+    if (branchChanged) branchGeneration += 1;
+    hypagoalAuthoring = false;
     activeExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     eventStore.synchronize(session);
@@ -168,14 +184,22 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     }).map((entry) => entry.nodeId);
   };
 
-  pi.on("session_start", async (_event, ctx) => restore(ctx));
-  pi.on("session_tree", async (_event, ctx) => restore(ctx));
+  pi.on("session_start", async (_event, ctx) => restore(ctx, false));
+  pi.on("session_tree", async (_event, ctx) => restore(ctx, true));
   pi.on("session_shutdown", async () => {
     activeExecutions.cancelAll();
     graphPane.dispose();
   });
+  pi.on("agent_end", async () => {
+    hypagoalAuthoring = false;
+  });
 
   pi.on("before_agent_start", async (event) => {
+    if (hypagoalAuthoring) {
+      return {
+        systemPrompt: `${event.systemPrompt}\n\nHYPAGOAL AUTHORING CONTROL:\nInspect repository context and author one complete canonical workflow. The user supplied an objective, not a graph. Do not modify repository files, run workflow nodes, start checks, invoke executors, or continue implementation. Call hypagoal_start once as the final action.`,
+      };
+    }
     if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
     const ready = readyNodeIds(state);
     const at = new Date().toISOString();
@@ -194,6 +218,9 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (hypagoalAuthoring && (event.toolName === "write" || event.toolName === "edit")) {
+      return { block: true, reason: "Hypagoal authoring is read-only. Create the workflow before semantic repository work starts." };
+    }
     if (!state || state.definition.policy.mode !== "strict") return;
     if (event.toolName !== "write" && event.toolName !== "edit") return;
     const active = activeNode(state);
@@ -203,6 +230,94 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     const paths = active.scope?.paths ?? [];
     if (paths.length === 0) return { block: true, reason: `Hypagraph strict mode: Active node '${active.id}' has no writable scope.` };
     if (!scopeAllows(ctx.cwd, input.path, paths)) return { block: true, reason: `Hypagraph strict mode: '${input.path}' is outside the scope of node '${active.id}' [${paths.join(", ")}].` };
+  });
+
+  pi.registerTool({
+    name: "hypagoal_start",
+    label: "Start Hypagoal",
+    description: "Atomically create and persist one root graph-backed goal from an ordinary prose objective and a repository-aware Hypagraph definition.",
+    promptSnippet: "Create a root Hypagoal from a prose objective",
+    promptGuidelines: [
+      "Use hypagoal_start only after inspecting relevant repository context and compiling the smallest valid workflow for the user's exact objective.",
+      "hypagoal_start accepts authoring advisories separately from canonical workflow fields and never accepts terminal goal state.",
+      "Call hypagoal_start as the final action of a Hypagoal authoring turn. It creates durable state but does not continue execution.",
+    ],
+    parameters: hypagoalStartSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      ensureNoActiveExecution();
+      const input = normalizeHypagoalStartInput(params);
+      const workflowId = randomUUID();
+      const goalId = `goal-${randomUUID()}`;
+      const result = await startRootHypagoal(eventStore.lease(), state, {
+        objective: input.objective,
+        definition: input.definition,
+        workflowId,
+        goalId,
+        goalWorkflowId: workflowId,
+        at: new Date().toISOString(),
+        sessionGeneration,
+        branchGeneration,
+        advisories: input.advisories,
+        ...(input.replacementConfirmation === undefined
+          ? {}
+          : { replacementConfirmation: input.replacementConfirmation }),
+      });
+      hypagoalAuthoring = false;
+
+      if (result.kind === "created") {
+        state = result.state;
+        events = [...result.events];
+        updateUi(state, ctx, graphPane);
+        return {
+          content: [{ type: "text" as const, text: renderHypagoalCreated(result) }],
+          details: {
+            hypagraph: persisted(),
+            graph: projectGraphView(state),
+            hypagoal: {
+              kind: result.kind,
+              objective: state.definition.goal,
+              workflowId: state.workflowId,
+              goalId: state.goal?.goalId,
+              workflowRevision: state.revision,
+              goalControl: structuredClone(state.goal),
+              ready: hypagoalReadyWork(state),
+              advisories: structuredClone(result.advisories),
+              ...(result.replaced === undefined ? {} : { replaced: structuredClone(result.replaced) }),
+              autonomousContinuationStarted: false,
+            },
+          },
+          terminate: true,
+        };
+      }
+
+      if (result.kind === "replacement-required") {
+        return {
+          content: [{ type: "text" as const, text: renderReplacementRequired(result.current) }],
+          details: {
+            hypagoal: {
+              kind: result.kind,
+              current: structuredClone(result.current),
+              replacementConfirmation: structuredClone(result.confirmation),
+            },
+          },
+          terminate: true,
+        };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Hypagoal was not created. Canonical state is unchanged.\n${formatDiagnostics(result.diagnostics)}`,
+        }],
+        details: {
+          hypagoal: {
+            kind: result.kind,
+            diagnostics: structuredClone(result.diagnostics),
+          },
+        },
+        terminate: true,
+      };
+    },
   });
 
   pi.registerTool({
@@ -427,6 +542,39 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
       updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);
+    },
+  });
+
+  pi.registerCommand("hypagoal", {
+    description: "Create one root graph-backed goal from an ordinary prose objective",
+    handler: async (args, ctx) => {
+      const objective = args;
+      if (!objective.trim()) throw new Error("Usage: /hypagoal <objective>");
+      ensureNoActiveExecution();
+
+      const generations = { sessionGeneration, branchGeneration };
+      const replacementConfirmation = state
+        ? replacementConfirmationFor(state, generations)
+        : undefined;
+      if (state) {
+        if (!ctx.hasUI) {
+          throw new Error("Replacing the current root requires an interactive confirmation bound to the current canonical state.");
+        }
+        const confirmed = await ctx.ui.confirm(
+          "Replace current root Hypagoal?",
+          [
+            `Objective: ${state.definition.goal}`,
+            `Workflow: ${state.workflowId} revision ${state.revision}`,
+            `Goal control: ${state.goal?.status ?? "none"}`,
+            `Sequence: ${state.sequence}`,
+            "The current root remains in session history, but the new root becomes active only after one successful atomic append.",
+          ].join("\n"),
+        );
+        if (!confirmed) return;
+      }
+
+      hypagoalAuthoring = true;
+      pi.sendUserMessage(buildHypagoalAuthoringPrompt(objective, replacementConfirmation));
     },
   });
 
