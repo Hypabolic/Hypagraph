@@ -46,6 +46,8 @@ jobs:
               raise SystemExit('The temporary patch script markers were not found.') from error
           prefix = '          '
           block = '\n'.join(line[len(prefix):] if line.startswith(prefix) else line for line in lines[start:end])
+          block = block.replace("'  runtime: WorkflowRuntime;\\n  createdAt: string;\\n'", "'    evaluations?: EvaluationRuntime;\\n  };\\n  createdAt: string;\\n'")
+          block = block.replace("'  runtime: WorkflowRuntime;\\n  goal?: GoalRuntime;\\n  createdAt: string;\\n'", "'    evaluations?: EvaluationRuntime;\\n  };\\n  goal?: GoalRuntime;\\n  createdAt: string;\\n'")
           exec(compile(block, '.github/workflows/apply-m5b-goal-lifecycle.yml', 'exec'), {'__name__': '__main__'})
           PY
           status=$?
