@@ -132,8 +132,11 @@ const nonMetricObjective = (): HypagraphDefinition => ({
       requires: ["write-decision"],
       acceptance: [],
       produces: [
-        { name: "decision.exists", type: "boolean", required: true },
-        { name: "decision.path", type: "string", required: false },
+        { name: "decision.success", type: "boolean", required: true },
+        { name: "decision.kind", type: "string", required: true },
+        { name: "decision.path", type: "string", required: true },
+        { name: "decision.exists", type: "boolean", required: false },
+        { name: "decision.size-bytes", type: "integer", required: false },
       ],
       check: {
         kind: "file-assertion",
