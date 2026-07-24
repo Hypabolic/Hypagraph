@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { open, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { Diagnostic, EvidenceReference, FactInput, FileAssertionDefinition } from "../domain/model.js";
 
@@ -27,21 +28,54 @@ const insideRoot = (rootDirectory: string, path: string): string => {
   return target;
 };
 
-const realPathInsideRoot = async (rootDirectory: string, target: string): Promise<void> => {
+const realPathInsideRoot = async (rootDirectory: string, target: string): Promise<string> => {
   const root = await realpath(resolve(rootDirectory));
   const actual = await realpath(target);
   const local = relative(root, actual);
   if (local === ".." || local.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
     throw new Error("The asserted file resolves outside the configured workspace root.");
   }
+  return actual;
 };
 
-const readBounded = async (target: string, maxBytes: number): Promise<Buffer | undefined> => {
-  const handle = await open(target, "r");
+const abortError = (): Error => {
+  const error = new Error("The file assertion was cancelled.");
+  error.name = "AbortError";
+  return error;
+};
+
+const readBounded = async (
+  rootDirectory: string,
+  target: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<Buffer | undefined> => {
+  if (signal?.aborted) throw abortError();
+  const initialLink = await lstat(target);
+  if (initialLink.isSymbolicLink()) {
+    const error = new Error("The asserted file must not be a symbolic link.") as NodeJS.ErrnoException;
+    error.code = "ELOOP";
+    throw error;
+  }
+
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const handle = await open(target, constants.O_RDONLY | noFollow);
   const chunks: Buffer[] = [];
   let total = 0;
   try {
+    if (signal?.aborted) throw abortError();
+    const opened = await handle.stat();
+    if (!opened.isFile()) throw new Error("The asserted path is not a regular file.");
+    if (opened.size > maxBytes) return undefined;
+
+    const actual = await realPathInsideRoot(rootDirectory, target);
+    const current = await stat(actual);
+    if (opened.dev !== current.dev || opened.ino !== current.ino) {
+      throw new Error("The asserted file changed while it was being opened.");
+    }
+
     while (total <= maxBytes) {
+      if (signal?.aborted) throw abortError();
       const buffer = Buffer.allocUnsafe(Math.min(65_536, maxBytes - total + 1));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
       if (bytesRead === 0) return Buffer.concat(chunks, total);
@@ -68,10 +102,27 @@ const failure = (definition: FileAssertionDefinition, code: string, message: str
   diagnostics: [{ code, message, location: "assertion.path" }],
 });
 
+const readFailure = (definition: FileAssertionDefinition, error: unknown): FileAssertionResult => {
+  const cancelled = error instanceof Error && error.name === "AbortError";
+  const symlink = error instanceof Error && "code" in error && error.code === "ELOOP";
+  return failure(
+    definition,
+    cancelled ? "file_assertion_cancelled" : symlink ? "file_assertion_symlink_not_allowed" : "file_assertion_read_failed",
+    cancelled
+      ? "The file assertion was cancelled."
+      : symlink
+        ? "The asserted file must not be a symbolic link."
+        : `The asserted file could not be read: ${error instanceof Error ? error.message : String(error)}`,
+  );
+};
+
 export async function evaluateFileAssertion(
   rootDirectory: string,
   definition: FileAssertionDefinition,
+  signal?: AbortSignal,
 ): Promise<FileAssertionResult> {
+  if (signal?.aborted) return failure(definition, "file_assertion_cancelled", "The file assertion was cancelled.");
+
   let target: string;
   try {
     target = insideRoot(rootDirectory, definition.path);
@@ -137,9 +188,9 @@ export async function evaluateFileAssertion(
     if (metadata.size > maxBytes) return failure(definition, "file_assertion_too_large", `The file is ${metadata.size} bytes and exceeds the ${maxBytes} byte hash assertion limit.`);
     let content: Buffer | undefined;
     try {
-      content = await readBounded(target, maxBytes);
+      content = await readBounded(rootDirectory, target, maxBytes, signal);
     } catch (error) {
-      return failure(definition, "file_assertion_read_failed", `The asserted file could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      return readFailure(definition, error);
     }
     if (content === undefined) return failure(definition, "file_assertion_too_large", `The file exceeds the ${maxBytes} byte hash assertion limit.`);
     const actual = createHash("sha256").update(content).digest("hex");
@@ -152,9 +203,9 @@ export async function evaluateFileAssertion(
     if (metadata.size > maxBytes) return failure(definition, "file_assertion_too_large", `The file is ${metadata.size} bytes and exceeds the ${maxBytes} byte text assertion limit.`);
     let content: Buffer | undefined;
     try {
-      content = await readBounded(target, maxBytes);
+      content = await readBounded(rootDirectory, target, maxBytes, signal);
     } catch (error) {
-      return failure(definition, "file_assertion_read_failed", `The asserted file could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      return readFailure(definition, error);
     }
     if (content === undefined) return failure(definition, "file_assertion_too_large", `The file exceeds the ${maxBytes} byte text assertion limit.`);
     passed = content.toString("utf8").includes(definition.text);
