@@ -1,0 +1,34 @@
+name: Apply M5B Slice 2 closeout
+
+on:
+  push:
+    branches:
+      - agent/m5b-slice-2-closeout
+    paths:
+      - scripts/apply-m5b-slice2-closeout.py
+      - .github/workflows/apply-m5b-slice2-closeout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out closeout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-2-closeout
+          fetch-depth: 0
+
+      - name: Apply documentation updates
+        run: python scripts/apply-m5b-slice2-closeout.py
+
+      - name: Commit and push documentation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          git commit -m "Close M5B Slice 2 planning"
+          git push origin HEAD:agent/m5b-slice-2-closeout
