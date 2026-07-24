@@ -21,18 +21,37 @@ jobs:
           fetch-depth: 0
 
       - name: Execute stored closeout update
+        id: transform
+        continue-on-error: true
         shell: python
         run: |
           from pathlib import Path
           from textwrap import dedent
+          import traceback
 
           workflow = Path('.github/workflows/ci.yml').read_text()
           start = '      - name: Update canonical plans\n        shell: python\n        run: |\n'
           end = '\n      - name: Install locked dependencies\n'
-          if workflow.count(start) != 1 or workflow.count(end) != 1:
-              raise SystemExit('Stored closeout script markers were not unique.')
-          script = workflow.split(start, 1)[1].split(end, 1)[0]
-          exec(compile(dedent(script), 'stored-closeout.py', 'exec'))
+          try:
+              if workflow.count(start) != 1 or workflow.count(end) != 1:
+                  raise RuntimeError('Stored closeout script markers were not unique.')
+              script = workflow.split(start, 1)[1].split(end, 1)[0]
+              exec(compile(dedent(script), 'stored-closeout.py', 'exec'))
+          except Exception:
+              Path('closeout-error.txt').write_text(traceback.format_exc())
+              raise
+
+      - name: Upload closeout diagnostics
+        if: steps.transform.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0-6-closeout-error
+          path: closeout-error.txt
+
+      - name: Stop after transformation failure
+        if: steps.transform.outcome == 'failure'
+        shell: bash
+        run: exit 1
 
       - name: Install locked dependencies
         run: npm ci
