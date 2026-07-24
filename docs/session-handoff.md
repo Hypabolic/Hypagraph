@@ -1,15 +1,14 @@
-# Session handoff: M5B Slice 7 complete to Slice 8
+# Session handoff: v0.6 released to M6
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Last merged baseline: `90c54214c5337be01e455145a36232a392172fae`
-- Last merged pull request: #75 — Complete Hypagoal Pi product surface
-- Active milestone: M5B Hypagoal
-- Completed slice: M5B Slice 7, complete Pi product surface
-- Current slice: M5B Slice 8, final dogfood and v0.6 release
+- Release baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
+- Release: `v0.6`
+- Release pull request: #77 — Dogfood and release Hypagoal v0.6
+- Completed milestone: M5B root Hypagoal autonomous controller
+- Current milestone: M6 event history, replay, and debugger UI
 - Hypagoal tracking issue: #25
-- Release marker: v0.6 after the Slice 8 integrated dogfood passes on the tested main commit
 
 ## 1. Read first
 
@@ -17,185 +16,134 @@ Read these files in order:
 
 1. `AGENTS.md`;
 2. `docs/session-handoff.md`;
-3. `docs/hypagoal-vertical-slice-plan.md`;
+3. `docs/execution-roadmap.md`;
 4. `docs/product-spec.md`;
-5. `docs/execution-roadmap.md`;
-6. `docs/loop-region-product-model.md`;
-7. `docs/trusted-evaluation-contract-plan.md`;
+5. `docs/hypagoal-vertical-slice-plan.md`;
+6. `docs/v0.6-dogfood.md`;
+7. `docs/event-sourcing-and-replay.md` if it exists;
 8. `docs/goal-family-and-concurrent-execution-plan.md`;
-9. `docs/m5b-slice-5-dogfood.md`;
-10. `docs/m5b-slice-6-dogfood.md`;
-11. `docs/m5b-slice-7-dogfood.md`;
-12. issue #25.
+9. issue #25 for the completed M5B record.
 
-Use issue #25 as the active M5B checklist.
+## 2. Released state
 
-The existing workflow reducer, goal runtime, continuation selector, loop and evaluation runtime, budget accounting, blocker classifier, bounded revision path, and Slice 7 product projection are authoritative. Slice 8 validates and releases this product. It must not add another lifecycle, scheduler, evaluation model, revision engine, or completion path.
+M5A and M5B are complete and released as v0.6.
 
-## 2. Current repository state
+The release contains:
 
-M5B Slices 1 through 7 are complete.
+- trusted evaluation contracts;
+- one workflow-local root Hypagoal lifecycle;
+- atomic `/hypagoal` creation from ordinary prose;
+- graph-aware automatic continuation;
+- exact turn and normalized token budgets;
+- reload, branch-change, and invalid-usage pause;
+- loop-aware and trusted-evaluation-aware continuation;
+- deterministic canonical blocker classification;
+- one bounded non-weakening automatic workflow revision;
+- `/hypagoal` status, pause, resume, cancel, and graph controls;
+- compact lifecycle messages and explicit typed stop reasons;
+- complete integrated release dogfood.
 
-The current implementation baseline is `90c54214c5337be01e455145a36232a392172fae`.
+Final release-candidate CI #1111 and exact-main publication gate CI #1114 pass 95 test files and 461 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-PR #75 merged M5B Slice 7.
+Tag and GitHub release `v0.6` point to `90a2885bb8f46d61cedd803897ca4d32246bcb44`.
 
-CI #1075 and final PR CI #1077 pass:
+## 3. Preserved invariants
 
-- Ubuntu with Node.js 22 and 24;
-- macOS with Node.js 22 and 24;
-- Windows with Node.js 22 and 24.
+Do not weaken these invariants during M6:
 
-The complete suite contains 94 test files and 460 tests.
+- canonical state changes only through the controller and reducers;
+- workflow state remains authoritative for goal completion;
+- the model has no workflow-completion or goal-completion tool;
+- one durable event sequence defines one workflow aggregate;
+- snapshot hashes include canonical state;
+- stale, cancelled, and pre-revision results cannot change current state;
+- restore and replay do not repeat external effects;
+- protected evaluator internals remain outside model-visible output;
+- independent branches and bounded regions keep independent lifecycle state;
+- the v0.6 root can later become a one-member goal family without rewriting workflow events.
 
-No v0.6 tag or release exists yet. Slice 8 owns final integrated dogfood, version alignment, the tested-main tag, and release evidence.
-
-## 3. Delivered root Hypagoal product
-
-### 3.1 Canonical execution
-
-One root Hypagoal owns one canonical workflow. `HypagraphDefinition.goal` remains the exact user objective.
-
-Workflow state is authoritative for readiness, attempts, evidence, checks, gates, routes, loop outcomes, blockage, revision invalidation, and terminal state. A model cannot mark the workflow or goal complete.
-
-The Slice 3 continuation selector remains the only root scheduling authority. It interleaves disconnected branches and independent bounded regions with durable state-bound identity.
-
-### 3.2 Budgets and safety
-
-Goal turns and normalized tokens are event-backed and charged exactly once. They remain separate from loop iterations, patience, invalid-evaluation limits, evaluation budgets, check retries, and the one automatic revision allowance.
-
-Reload, branch change, and invalid usage pause autonomous execution. Restore and replay perform no semantic work.
-
-Protected evaluator commands, paths, reports, hashes, stdout, stderr, and holdout details remain outside model-visible output.
-
-### 3.3 Bounded revision
-
-Canonical blockage classification decides whether one automatic graph revision is eligible. The revision is state-bound, preserves the objective byte-for-byte, cannot weaken safeguards, consumes the single allowance when requested, and applies only through the existing workflow revision and invalidation reducer.
-
-### 3.4 Pi product surface
-
-`/hypagoal` supports:
-
-- `/hypagoal <objective>`;
-- `/hypagoal status`;
-- `/hypagoal pause [reason]`;
-- `/hypagoal resume`;
-- `/hypagoal cancel [reason]`;
-- `/hypagoal graph`.
-
-The pure product projection exposes:
-
-- exact objective;
-- workflow phase, revision, and event sequence;
-- goal status, pause cause, and stop reason;
-- active action, next action, and ready work;
-- consumed, maximum, and remaining turn and token budgets;
-- loop iteration, typed success, progress, patience, evaluation validity, evaluation budgets, trust, and integrity summaries;
-- blocker class and revision eligibility;
-- automatic revision allowance, pending state, and last outcome;
-- explicit stop codes;
-- valid lifecycle controls for the current state.
-
-The same projection supplies wide and narrow status, compact lifecycle messages, model-visible state, and graph-pane root-goal details.
-
-Exact product coverage includes completion, failure, cancellation, all pause causes, goal budgets, revision eligibility and exhaustion, non-revisable blockage, loop hard limit, no progress, invalid evaluations, evaluation budget, stale continuation or revision, and interrupted revision work.
-
-Evidence is in `docs/m5b-slice-7-dogfood.md`.
-
-## 4. Current target: M5B Slice 8
+## 4. Current target: M6
 
 ### Objective
 
-Run one final integrated root-Hypagoal dogfood path, close any product defects it exposes, align package versions, and release v0.6 from the exact tested main commit.
+Make execution history, replay, and controller decisions inspectable without changing canonical workflow semantics.
 
-### Required integrated scenario
+### Proposed vertical slices
 
-The final dogfood must:
+1. Add a transport-neutral event-history projection with stable event identity and protected-data filtering.
+2. Add replay to an exact event sequence and compare live state with replay state.
+3. Add deterministic decision explanations for readiness, blockage, gates, loops, evaluations, budgets, revisions, and goal state.
+4. Add Pi event-timeline and replay controls.
+5. Add live-versus-replay graph rendering and preserve graph positions across small revisions.
+6. Add revision, invalidation, stale-result, and external-effect history views.
+7. Add future family, executor, workspace, and integration projection seams without implementing those runtimes.
+8. Dogfood, harden, document, and release v0.7.
 
-1. start from one prose `/hypagoal` command;
-2. compile one graph with at least one deterministic gate;
-3. run one refinement or optimization region for at least three iterations;
-4. run one independent bounded auxiliary region;
-5. use check-and-repair as one pattern, not the default loop model;
-6. improve one numeric progress metric;
-7. reject one invalid evaluation without updating best progress;
-8. run a probe or generalization check;
-9. complete only through typed success and canonical workflow completion;
-10. prove independent-region isolation and fair scheduling;
-11. restore between iterations without automatic dispatch;
-12. prove reload-time pause and explicit resume;
-13. prove turn-budget and token-budget termination;
-14. prove evaluation-budget termination;
-15. prove hard-limit and no-progress termination;
-16. prove each loop failure policy;
-17. prove stale-continuation rejection;
-18. prove one bounded automatic revision and revision exhaustion;
-19. prove that the model cannot mark the goal complete;
-20. record that the root identities and workflow event history can enter the future one-member family projection without rewriting workflow state.
+### Slice 1 recommendation
 
-Use the Slice 5, Slice 6, and Slice 7 evidence as component evidence, but add one integrated end-to-end record for the release candidate.
+Start with the pure event-history projection.
 
-### Release work
+Suggested branch:
 
-After the integrated scenario and complete suite pass:
+`agent/m6-slice-1-event-history-projection`
 
-1. update package and lock-file versions to v0.6 consistently;
-2. update user-facing release notes and installation documentation where required;
-3. run the complete six-target matrix on the exact release candidate commit;
-4. merge the release PR;
-5. verify the exact main commit;
-6. create the v0.6 tag on that tested main commit;
-7. create the release and attach or link the dogfood and CI evidence;
-8. update issue #25 and the roadmap to mark M5B complete.
+Suggested pull request title:
 
-Do not tag before the release candidate main commit has passed the complete matrix.
+`Add event history projection`
 
-### Product constraints
+### Slice 1 product result
 
-Slice 8 must not add:
+A caller can request a bounded chronological projection of persisted events and receive:
 
-- child or recursive Hypagoals;
-- family persistence or scheduling;
-- a second scheduler;
-- executors or subagents;
-- worktree leases;
-- physical concurrency;
-- ACP or direct CLI adapters;
-- model-owned completion;
-- unbounded revision;
-- a new loop or evaluation model.
+- stable sequence and event identity;
+- event type and timestamp;
+- workflow, goal, revision, node, loop, attempt, check, and continuation identity when present;
+- a concise public summary;
+- explicit redaction markers for protected evaluator data;
+- enough metadata for later timeline grouping and replay selection.
 
-Those capabilities remain planned after v0.6.
+### Slice 1 constraints
 
-## 5. Validation baseline
+- Do not add a second event store.
+- Do not change reducer semantics.
+- Do not replay external effects.
+- Do not expose protected evaluator commands, paths, hashes, reports, stdout, stderr, or holdout details.
+- Do not add goal families, executors, worktrees, or physical concurrency.
+- Keep the projection independent of Pi.
+- Keep future family and executor identities additive.
 
-The pre-release baseline is:
+### Slice 1 terminal coverage
 
-- implementation merge: `90c54214c5337be01e455145a36232a392172fae`;
-- implementation PR: #75;
-- CI: #1075 and #1077;
-- test files: 94;
-- tests: 460;
-- product evidence: `docs/m5b-slice-7-dogfood.md`.
+Cover at least:
 
-Slice 8 must report its own final release-candidate matrix and exact tagged main SHA.
+- workflow definition and revision;
+- node attempts and verification;
+- checks and typed facts;
+- gates and selected routes;
+- loop iteration, evaluation, success, and bounded failure;
+- goal start, pause, resume, budget stop, blockage, revision, completion, failure, and cancellation;
+- stale continuation and stale result rejection;
+- reload and branch-change pause;
+- malformed or legacy events which the current schema can restore.
 
-## 6. Suggested implementation
+## 5. Release evidence
 
-- Branch: `agent/m5b-slice-8-dogfood-release`
-- Pull-request title: `Dogfood and release Hypagoal v0.6`
+- Integrated dogfood: `docs/v0.6-dogfood.md`.
+- Release notes: `docs/v0.6-release-notes.md`.
+- Implementation PR: #77.
+- Release baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`.
+- Candidate CI: #1111.
+- Exact-main publication gate: #1114.
+- Suite: 95 test files and 461 tests.
+- Release: https://github.com/Hypabolic/Hypagraph/releases/tag/v0.6
 
-## 7. Required final report
+## 6. Deferred product direction
 
-Report:
+The following work remains accepted but deferred beyond M6:
 
-- release PR and merge SHA;
-- exact tagged main SHA;
-- v0.6 tag and release;
-- files changed;
-- integrated dogfood result;
-- exact test count;
-- six-target release-candidate CI result;
-- issue #25 and roadmap state;
-- confirmation that M5B is complete;
-- any deferred work for M6 or later milestones.
+- goal-family persistence;
+- recursive child Hypagoals;
+- executor abstraction and isolated Pi execution;
+- worktree leases and integration;
+- bounded physical concurrency;
+- ACP and named direct agent adapters.

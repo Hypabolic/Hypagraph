@@ -1,8 +1,9 @@
 # Hypagraph product and technical specification
 
 - Status: active
-- Version: implementation baseline through M5B Slice 7
-- Current baseline: `90c54214c5337be01e455145a36232a392172fae`
+- Version: v0.6 release baseline
+- Current baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
+- Current milestone: M6 event history, replay, and debugger UI
 - Delivery: independent Pi package, designed to support additional agent runtimes
 - Future execution plan: `docs/goal-family-and-concurrent-execution-plan.md`
 
@@ -314,19 +315,22 @@ The implementation provides:
 - compact automatic lifecycle notifications;
 - root-goal details in model-visible state and the graph pane;
 - exact bounded-loop exit presentation;
-- narrow and wide terminal rendering.
+- narrow and wide terminal rendering;
+- one integrated root-Hypagoal release path across loops, evaluation, gates, reload recovery, bounded revision, and canonical completion;
+- package and lock-file version `0.6.0`;
+- tag and GitHub release `v0.6` on the exact tested main commit.
 
 M5A is complete. Its evidence is in `docs/m5a-dogfood.md`.
 
-M5B Slices 1 through 7 are complete in PRs #62, #65, #67, #69, #71, #73, and #75. Slice 8, final integrated dogfood and v0.6 release, is the current target.
+M5B Slices 1 through 8 are complete in PRs #62, #65, #67, #69, #71, #73, #75, and #77. M5A and M5B are released as v0.6. M6 is the current target.
 
 ## Delivery sequence
 
 1. M4 bounded iteration regions — complete.
 2. M3.1 deterministic parser and assertion adapters — complete.
 3. M5A trusted evaluation contracts — complete.
-4. M5B root Hypagoal autonomous controller — active; Slices 1 through 7 complete; Slice 8 current.
-5. M6 event history, replay, and debugger UI.
+4. M5B root Hypagoal autonomous controller — complete and released as v0.6.
+5. M6 event history, replay, and debugger UI — current.
 6. M7 goal families, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 7. M8 worktree integration and bounded concurrent scheduling.
 8. M9 ACP and named direct agent adapters.
@@ -336,10 +340,12 @@ The detailed M7 and M8 architecture is in `docs/goal-family-and-concurrent-execu
 
 ## Validation baseline
 
-CI #1075 and final PR CI #1077 pass:
+Final release-candidate CI #1111 and exact-main publication gate CI #1114 pass:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The complete suite contains 94 test files and 460 tests.
+The complete suite contains 95 test files and 461 tests.
+
+Release `v0.6` points to `90a2885bb8f46d61cedd803897ca4d32246bcb44`.

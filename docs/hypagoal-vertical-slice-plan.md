@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1 through 7 complete; Slice 8 current
+- Status: complete; released as v0.6
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -364,32 +364,27 @@ The merge baseline is `90c54214c5337be01e455145a36232a392172fae`.
 
 CI #1075 and final PR CI #1077 pass 94 test files and 460 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-### Slice 8 - Dogfood and release — current
+### Slice 8 - Dogfood and release — complete
 
-The v0.6 dogfood path must:
+PR #77 delivered:
 
-1. start from one prose `/hypagoal` command;
-2. define a graph with at least one gate;
-3. run one refinement or optimization region for at least three iterations;
-4. run one independent bounded auxiliary region;
-5. include check-and-repair as one pattern, not the default loop model;
-6. improve one numeric progress metric;
-7. reject one invalid evaluation without updating the best metric;
-8. run a probe or generalization check;
-9. complete through typed success;
-10. prove independent-region state isolation;
-11. prove that the continuation selector does not starve the independent region;
-12. restore between iterations;
-13. prove reload-time pause;
-14. prove token-budget and turn-budget termination;
-15. prove evaluation-budget termination;
-16. prove hard-limit and no-progress termination;
-17. prove each loop failure policy;
-18. prove stale-continuation rejection;
-19. prove that the model cannot mark the goal complete;
-20. record compatibility evidence that the persisted root identities and event history can be referenced by the documented future family model without rewriting workflow state.
+- one integrated `/hypagoal` product path;
+- one four-evaluation optimization region and one independent auxiliary region;
+- invalid-evaluation rejection before accepted progress;
+- numeric improvements from `0.4` to `0.7` to typed success at `0.9`;
+- one probe evaluation at `0.95` and one deterministic gate route;
+- reload pause, explicit resume, exact accounting, and restore without dispatch;
+- one typed repository blocker and one consumed, accepted, non-weakening automatic revision;
+- final completion derived only from canonical workflow state;
+- root identity compatibility with a future one-member goal family;
+- package and lock-file version `0.6.0`;
+- release documentation and installation updates.
 
-The release requires the full six-target CI matrix, a dogfood record in `docs`, package and lock-file version alignment, and a tag on the tested main commit.
+The release baseline is `90a2885bb8f46d61cedd803897ca4d32246bcb44`.
+
+CI #1108 validates the integrated product path. Final PR CI #1111 and exact-main publication gate CI #1114 pass 95 test files and 461 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
+
+Tag and GitHub release `v0.6` point to the tested release baseline. Complete evidence is in `docs/v0.6-dogfood.md`.
 
 ## 7. Test strategy
 
@@ -470,4 +465,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slices 1 through 7 are complete. Slice 8 is the current implementation and release target.
+M5B is complete and released as v0.6. M6 event history, replay, and debugger UI is the current roadmap phase.
