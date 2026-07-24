@@ -1,629 +1,514 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Date: 2026-07-22
-- Current milestone: M4
+- Updated: 2026-07-24
+- Current milestone: M5B Hypagoal
+- Current implementation baseline: `0bbe7f227fc28262958f29992cece9c663ecad2a`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
 
 This document gives the ordered execution plan for Hypagraph.
 
-The graph describes the work. The deterministic runtime executes the work.
+The graph describes the work. The deterministic runtime controls execution.
 
-Hypagraph is an execution-control kernel for coding agents. A model can propose a plan, write code, and diagnose a failure. The runtime controls state changes, dependency readiness, checks, gates, loops, evidence, budgets, replay, and executor coordination.
+Hypagraph is an execution-control kernel for coding agents. A model can inspect a repository, propose a workflow, perform semantic task work, and diagnose failure. The runtime controls state changes, dependency readiness, checks, gates, loops, evidence, evaluations, budgets, goals, scheduling, replay, executors, workspaces, and integration.
 
-The project must complete deterministic runtime functions before it adds delegated or parallel execution.
+The project completes deterministic domain functions before it adds isolated and concurrent execution. The architecture must still prepare early state and identity contracts for those later functions.
 
-## 2. Product result
+## 2. Version 1.0 result
 
 At version 1.0, Hypagraph must:
 
-1. Accept a versioned directed workflow.
-2. Validate graph structure, node contracts, gates, and loops.
-3. Execute nodes with an explicit finite-state machine.
-4. Run deterministic checks.
-5. Publish typed facts.
-6. Evaluate routes without model judgement.
-7. Run bounded iteration regions for refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, and repair.
-8. Store an append-only event history.
-9. Rebuild state from events.
-10. Show live and historical execution in Pi.
-11. Delegate bounded node contracts through executor adapters.
-12. Keep the domain and runtime independent of Pi.
+1. accept a versioned directed workflow;
+2. validate graph structure, node contracts, gates, loops, and goal bindings;
+3. execute nodes with an explicit finite-state machine;
+4. run deterministic checks;
+5. publish typed facts;
+6. evaluate routes without model judgement;
+7. run bounded iteration regions for refinement, optimization, search, batch processing, repeated evaluation, reconciliation, polling, migration, and repair;
+8. use trusted evaluation contracts when a defensible evaluator exists;
+9. pursue durable objectives through workflow-derived Hypagoal state;
+10. create bounded child Hypagoals when execution discovers independently owned work;
+11. store append-only workflow and family event history;
+12. rebuild the same state and decisions from events;
+13. show live and historical execution in Pi;
+14. dispatch bounded node contracts through executor adapters;
+15. isolate mutating attempts in leased worktrees;
+16. execute compatible independent work concurrently;
+17. keep the domain and runtime independent of Pi and executor transport.
 
 ## 3. Mandatory design rules
 
 ### 3.1 Use deterministic control
 
-Use a model only when the task needs semantic reasoning.
+Use a model only when work needs semantic reasoning.
 
 Use deterministic code for:
 
 - validation;
 - state changes;
+- readiness;
 - scheduling;
 - gate evaluation;
+- loop decisions;
+- goal terminal state;
 - budgets;
 - evidence rules;
-- check execution;
+- check execution policy;
+- executor result validation;
+- workspace leases;
+- integration policy;
 - replay.
 
 ### 3.2 Keep definition and runtime state separate
 
-The workflow definition contains:
+A workflow definition contains:
 
 - nodes;
 - dependencies;
 - contracts;
 - gates;
 - loop policies;
-- executor profiles.
+- evaluation contracts;
+- executor profile references.
 
-Runtime state contains:
+Workflow runtime state contains:
 
 - attempts;
 - node states;
 - facts;
 - evidence;
 - budgets;
-- selected routes.
+- selected routes;
+- loop and evaluation state;
+- workflow-local goal state.
+
+Future family runtime state contains:
+
+- root and member goal identities;
+- workflow membership;
+- parent-child bindings;
+- scheduler decisions;
+- family budgets;
+- child returns;
+- executor and workspace coordination state.
+
+Do not embed a complete child workflow definition inside a parent node.
 
 ### 3.3 Use one canonical writer
 
-Only the controller can change canonical state.
+Only the controller can change canonical workflow or family state.
 
 An executor returns a structured result. The controller validates the result before it changes state.
 
-### 3.4 Make failure explicit
+A child Hypagoal does not own a competing controller.
+
+### 3.4 Keep completion derived
+
+Workflow state determines workflow-local goal completion, failure, blockage, and cancellation.
+
+A model, worker, child goal, or result message cannot mark a goal complete directly.
+
+A child goal result cannot complete its parent task without parent integration and verification.
+
+### 3.5 Keep independent components independent
+
+A disconnected loop or graph branch keeps its own lifecycle.
+
+Creation or execution of a child goal in another component cannot pause, reset, release, fail, or complete that component.
+
+The scheduler can interleave or concurrently execute compatible components.
+
+### 3.6 Make failure explicit
 
 The runtime must use explicit states for:
 
 - failed verification;
 - blocked work;
-- integration conflicts;
 - exhausted loops;
+- invalid evaluation;
+- budget exhaustion;
 - cancelled attempts;
-- stale results.
+- stale results;
+- child-goal failure;
+- executor failure;
+- workspace lease failure;
+- integration conflicts.
 
-### 3.5 Use ASD-STE100 technical English
+### 3.7 Pass explicit context
+
+Executor context must be a bounded projection of canonical state.
+
+Do not depend on the complete parent conversation as the execution contract.
+
+A persisted executor session can improve continuity. It is not canonical context.
+
+### 3.8 Use isolated mutation
+
+A mutating delegated attempt uses one workspace lease and one git worktree by default.
+
+Execution success and integration success are separate states.
+
+### 3.9 Use ASD-STE100 technical English
 
 All repository text must follow `AGENTS.md`.
 
 ## 4. Release sequence
 
-| Milestone | Release marker | Result |
-| --- | --- | --- |
-| M0 | v0.1 | Stable graph foundation |
-| M1 | v0.2 | Event-driven finite-state runtime |
-| M2 | v0.3 | Typed facts and deterministic gates |
-| M3 | v0.4 | Deterministic check execution |
-| M4 | v0.5 | Executable bounded iteration regions |
-| M5 | v0.6 | Event history, replay, and debugger UI |
-| M6 | v0.7 | Executor abstraction and isolated Pi execution |
-| M7 | v0.8 | Workspace integration and bounded concurrency |
-| M8 | v0.9 | Agent Communication Protocol adapter and direct adapters |
-| Exit | v1.0 | Hardened agent-independent execution kernel |
+| Milestone | Release marker | Result | Status |
+| --- | --- | --- | --- |
+| M0 | v0.1 | Stable graph foundation | Complete |
+| M1 | v0.2 | Event-driven finite-state runtime | Complete |
+| M2 | v0.3 | Typed facts and deterministic gates | Complete |
+| M3 | v0.4 | Deterministic check execution | Complete |
+| M4 | v0.5 | Executable bounded iteration regions | Complete |
+| M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
+| M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slice 1 complete |
+| M6 | v0.7 | Event history, replay, and debugger UI | Planned |
+| M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
+| M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
+| M9 | v0.10 | ACP and named direct agent adapters | Planned |
+| Exit | v1.0 | Hardened agent-independent execution kernel | Planned |
 
 Release markers are planning values. Acceptance criteria control milestone completion.
 
----
-
-# M0 - Stable graph foundation
-
-## Status
-
-Complete in the repository baseline.
+## 5. Completed foundation
 
-## Objective
+### M0 - Stable graph foundation
 
-Make the current single-session graph engine a stable base for later runtime work.
+M0 provides:
 
-## Implemented work
+- versioned workflow definitions;
+- deterministic validation;
+- schema versions and migrations;
+- pure reducer foundations;
+- snapshot hashing;
+- branch-aware session restoration;
+- stable Hypagraph naming and repository policy.
 
-### Naming
+### M1 - Event-driven finite-state runtime
 
-- The product name is `Hypagraph`.
-- Pi tools use the `hypagraph_` prefix.
-- The Pi command is `/hypagraph`.
-- Source types use `Hypagraph` names.
-- Persisted state uses the `hypagraph` key.
-- Domain events use the `hypagraph.` namespace.
-- The extension entry point is `extensions/hypagraph.ts`.
-- No compatibility alias is part of the public interface.
+M1 provides:
 
-### Repository policy
+- explicit node and attempt states;
+- commands and append-only events;
+- pure event projection;
+- optimistic sequence control;
+- deterministic replay;
+- stale-attempt rejection.
 
-- `AGENTS.md` defines the naming rules.
-- `AGENTS.md` makes the ASD-STE100 writing method mandatory.
-- The rule applies to documentation, plans, comments, tests, messages, and tool text.
+### M2 - Typed facts and deterministic gates
 
-### Schema and persistence
+M2 provides:
 
-- Persisted state has an explicit schema version.
-- Restoration rejects an unsupported schema version.
-- State snapshots have deterministic hashes.
-- Session restoration uses only the active branch.
-- Restoration returns a clone of the stored state.
+- typed immutable facts;
+- fact contracts;
+- deterministic condition evaluation;
+- persisted route selection;
+- route-aware readiness;
+- revision invalidation.
 
-### Reducer
+### M3 - Deterministic check execution
 
-- The reducer is a pure function.
-- The reducer does not read the clock.
-- The reducer does not create random values.
-- The caller supplies time and workflow identity.
-- The reducer does not change input state.
-- The same state and command produce the same result.
+M3 provides:
 
-### Validation
+- command checks;
+- report checks;
+- file and Git assertions;
+- bounded artifacts;
+- cancellation, timeout, and retry;
+- durable external-effect ordering;
+- restore without command replay.
 
-- The validator rejects duplicate node IDs.
-- The validator rejects missing dependencies.
-- The validator rejects invalid node and loop IDs.
-- The validator rejects undeclared cycles.
-- A declared loop must match one cyclic strongly connected component.
-- A declared loop must identify its feedback edges.
-- A declared loop must have a hard iteration limit.
-- A declared loop must have a success predicate.
+### M4 - Executable bounded iteration regions
 
-### Runtime rules
+M4 provides:
 
-- A node cannot start before its dependencies complete.
-- Only one node can be active.
-- Completion can require evidence.
-- A revision marks changed completed nodes as stale.
-- A revision also marks dependent completed nodes as stale.
-- Strict mode blocks file changes outside the active node scope.
+- declared strongly connected loop regions;
+- typed success conditions;
+- hard iteration limits;
+- optional progress and patience;
+- validity and evaluation budgets;
+- explicit loop failure policy;
+- connected and independent loop components;
+- deterministic recovery and replay.
 
-### Tests
+Repair is one loop pattern. It is not the loop model.
 
-- Tests cover dependency order.
-- Tests cover one-active-node enforcement.
-- Tests cover evidence requirements.
-- Tests cover workflow completion.
-- Tests cover downstream invalidation.
-- Tests cover reducer determinism.
-- Tests cover input immutability.
-- Tests cover unsupported schema versions.
-- Property tests generate directed acyclic graphs and check strongly connected components.
+### M3.1 - Parser and assertion adapters
 
-## M0 acceptance criteria
+M3.1 provides deterministic parsing and assertion adapters which publish declared typed facts.
 
-- [x] The public interface uses only Hypagraph names.
-- [x] Persisted state has a schema version.
-- [x] The reducer is deterministic.
-- [x] The reducer does not change input state.
-- [x] Invalid graphs cannot start.
-- [x] Unsupported snapshots cannot become canonical state.
-- [x] The test suite checks the principal domain invariants.
-- [x] Repository writing rules are explicit.
-- [x] Continuous integration runs `npm run check` on a clean checkout.
-- [x] A complete Pi dogfood run is recorded.
+### M5A - Trusted evaluation contracts
 
-The two unchecked items are release tasks. They do not change the M0 domain model.
+M5A provides:
 
-## M0 release tasks
+- metric reports;
+- development, probe, and holdout purpose;
+- aggregate and bounded diagnostic feedback;
+- evaluation validity;
+- evaluation budgets;
+- protected file and Git integrity;
+- evaluator versions and fingerprints;
+- transport-neutral evaluator adapters;
+- authoring guidance and product surfaces;
+- complete dogfood evidence in `docs/m5a-dogfood.md`.
 
-1. Add continuous integration for supported Node.js versions.
-2. Run `npm install` in a network-enabled checkout.
-3. Commit the generated lock file.
-4. Run `npm run check`.
-5. Complete one medium Hypagraph change with Hypagraph itself.
-6. Record the dogfood findings.
-7. Tag the M0 release.
+## 6. M5B - Root Hypagoal autonomous controller
 
----
+### Objective
 
-# M1 - Event-driven finite-state runtime
+Let a user enter one durable objective and let Hypagraph continue the canonical workflow until a deterministic stop state applies.
 
-## Objective
+The v0.6 release supports one root goal and one root workflow in one Pi session.
 
-Replace the small direct-transition model with an explicit finite-state runtime.
+This root is the first member of the accepted future goal-family model.
 
-## Node attempt states
+### Slice status
 
-The first state model must include:
+1. Canonical goal lifecycle — complete in PR #62.
+2. Atomic `/hypagoal` creation — next.
+3. Graph-aware continuation.
+4. Token and turn budgets plus reload safety.
+5. Loop and trusted-evaluation continuation.
+6. Blockage and bounded revision.
+7. Complete Pi product surface.
+8. Dogfood and v0.6 release.
 
-- `pending`;
-- `ready`;
-- `starting`;
-- `running`;
-- `awaiting_evidence`;
-- `verifying`;
-- `succeeded`;
-- `failed`;
-- `blocked`;
-- `cancelled`;
-- `stale`.
+The detailed plan is in `docs/hypagoal-vertical-slice-plan.md`.
 
-The runtime must keep execution success separate from verification success.
+### Slice 1 result
 
-## Commands
+M5B Slice 1 provides:
 
-Add explicit commands for:
+- workflow-local `GoalStatus` and `GoalRuntime`;
+- goal commands and events;
+- goal state in snapshot hashes;
+- workflow-derived goal completion, failure, blockage, cancellation, and pause;
+- replay and restore validation;
+- UI summaries;
+- compatibility for workflows without goal control.
 
-- workflow definition;
-- workflow revision;
-- node start;
-- attempt result submission;
-- verification start;
-- verification completion;
-- node block and unblock;
-- attempt cancellation;
-- node retry;
-- workflow pause and resume.
+This lifecycle remains the leaf lifecycle for future root and child goals.
 
-A command states intent. A command handler validates the intent and returns events.
+### M5B architecture constraints
 
-## Event envelope
+M5B must:
 
-Each event must include:
+- keep one canonical workflow for the root goal;
+- keep workflow state authoritative for goal completion;
+- keep one queued Pi continuation;
+- preserve independent loop state and fairness;
+- use explicit goal, workflow, revision, and node identity in continuation actions;
+- make root persistence compatible with later one-member family migration;
+- avoid treating one Pi session equals one workflow as a permanent domain invariant.
 
-- event ID;
-- workflow ID;
-- graph revision;
-- sequence number;
-- event type;
-- event version;
-- timestamp;
-- causation ID;
-- correlation ID;
-- optional node ID;
-- optional attempt ID;
-- payload.
+M5B does not implement child goals, subagents, worktree leases, or physical concurrency.
 
-## Projection
+Those features are accepted later direction, not rejected scope.
 
-Build canonical state only by applying events.
+### M5B acceptance criteria
 
-Create projections for:
+- One prose objective creates one valid workflow and active root goal atomically.
+- Invalid creation creates no canonical state.
+- Completion is workflow-derived only.
+- Multi-node work continues without manual prompts.
+- Independent components do not starve.
+- Token and turn budgets stop deterministically.
+- Reload and branch changes pause autonomous work.
+- Generic loops and trusted evaluations continue correctly.
+- One bounded revision can recover a blocked graph.
+- Pi explains active work, budgets, loops, evaluations, and stop reasons.
+- Restore does not run work.
+- Replay produces the same goal state and stop decision.
+- The root workflow can later become a one-member family without rewriting its workflow events.
 
-- workflow state;
-- node state;
-- attempt state;
-- ready nodes;
-- compact user interface state;
-- event timeline.
+## 7. M6 - Event history, replay, and debugger UI
 
-## M1 acceptance criteria
+### Objective
 
-- The same ordered events always produce the same state hash.
-- An invalid command produces no events.
-- Replay produces the same state as live execution.
-- A stale attempt cannot complete a current node.
-- Execution and verification have separate states.
-- Pi is a thin adapter over the runtime.
+Make execution and decisions inspectable.
 
----
+### Product result
 
-# M2 - Typed facts and deterministic gates
+The user can:
 
-## Objective
+- inspect the event timeline;
+- replay to an event;
+- compare live and replay state;
+- explain readiness, blockage, loop, evaluation, and goal decisions;
+- inspect revisions and stale results;
+- preserve graph positions across small revisions.
 
-Let nodes publish typed facts. Let gates select routes with deterministic expressions.
+### Future compatibility
 
-## Fact model
+M6 projections and event views must be able to add:
 
-Each fact must include:
+- family membership;
+- child bindings;
+- scheduler selections;
+- executor attempts;
+- workspace leases;
+- integration state.
 
-- namespace;
-- name;
-- type;
-- value;
-- producer node;
-- producer attempt;
-- graph revision;
-- publication event;
-- optional evidence reference.
+This must not require replacement of the workflow reducer or Slice 1 goal lifecycle.
 
-Initial fact types:
+### Acceptance criteria
 
-- Boolean;
-- integer;
-- floating-point number;
-- string;
-- duration;
-- timestamp;
-- string list.
+- Replay to any event produces the correct historical state.
+- Live and replay views use common projection code.
+- The user can identify why a node or goal is not runnable.
+- Protected evaluator data remains protected in history views.
+- Future family and executor event namespaces have defined projection seams.
 
-Do not support arbitrary nested objects in the first version.
+## 8. M7 - Goal families and isolated Pi execution
 
-## Expression engine
+The detailed architecture is in `docs/goal-family-and-concurrent-execution-plan.md` and `docs/delegation-and-visualisation.md`.
 
-Use Common Expression Language or another constrained expression language.
+### Objective
 
-The engine must:
+Add bounded recursive goal composition and transport-independent node execution.
 
-- compile expressions during graph validation;
-- type-check expressions;
-- run without network access;
-- run without file access;
-- run without process access;
-- run without clock access;
-- enforce evaluation limits;
-- give source diagnostics;
-- version expression semantics.
+### Vertical slices
 
-## M2 acceptance criteria
+1. Add family persistence above existing workflow aggregates.
+2. Migrate one v0.6 root into a one-member family projection.
+3. Add one family scheduler with sequential dispatch.
+4. Add bounded child-goal creation from an active parent task.
+5. Add validated child return and parent failure policy.
+6. Add explicit executor context and result contracts.
+7. Route current-session execution through the executor abstraction.
+8. Add an isolated Pi RPC executor.
+9. Add nested graph and executor UI.
 
-- A workflow can select a repair route without model judgement.
-- Invalid expressions fail before execution.
-- The same facts and state always select the same route.
-- Unselected routes cannot make downstream nodes ready.
-- A revision invalidates affected route decisions.
+### Goal-family rules
 
----
+- Each goal owns one canonical workflow.
+- One family controller owns scheduling and canonical writes.
+- A child goal waits only its invoking parent task.
+- Unrelated branches and independent loops remain runnable.
+- Child creation and return are family-level atomic operations.
+- Recursive creation has depth, count, scope, and budget bounds.
+- Descendant usage is charged to the root family budget.
+- Child completion does not complete the parent task automatically.
 
-# M3 - Deterministic check execution
+### Executor rules
 
-## Status
+- A child Hypagoal is not a subagent.
+- A subagent executes one selected node attempt.
+- The executor receives explicit reproducible context.
+- The executor returns a structured untrusted result.
+- Only the controller commits state changes.
+- A persisted child Pi session is optional continuity, not canonical context.
 
-Complete in v0.4. The dogfood record is in `docs/v0.4-dogfood.md`.
+### Isolated Pi implementation source
 
-## Objective
+The Pi RPC process lifecycle can reuse or adapt the MIT-licensed implementation in:
 
-Make build, test, lint, coverage, and security checks first-class nodes.
+https://github.com/ogulcancelik/pi-extensions/tree/main/packages/pi-codex-subagents
 
-## Initial check types
+Reuse process bootstrap, RPC framing, ownership checks, cancellation, child sessions, streaming, and orphan reconciliation.
 
-- command exit status;
-- test report;
-- lint report;
-- coverage report;
-- file assertion;
-- git state assertion.
+Do not adopt raw final text as the canonical result, model-owned spawning, same-checkout mutation, or uncontrolled completion-triggered turns.
 
-## Check result
+### M7 acceptance criteria
 
-A check result must include:
+- A root goal can create one child and one bounded grandchild.
+- The root workflow event history remains unchanged during one-member family migration.
+- An independent loop remains runnable while a child executes.
+- The family scheduler is the only dispatch authority.
+- Child output returns through declared fact and evidence contracts.
+- Child failure policies have deterministic parent effects.
+- The current Pi session and isolated Pi executor use the same result contract.
+- Loss of an executor session does not lose canonical context.
+- Restore and replay reproduce family membership, bindings, scheduler selections, and child outcomes.
 
-- check type;
-- attempt ID;
-- start and end time;
-- exit status;
-- normalized facts;
-- evidence references;
-- captured output locations;
-- timeout state;
-- cancellation state.
+M7 can dispatch sequentially or with limited isolated capacity. Production concurrent mutation waits for M8 worktree isolation.
 
-## M3 acceptance criteria
+## 9. M8 - Worktree integration and bounded concurrency
 
-- [x] A test check publishes typed facts.
-- [x] A gate can use those facts.
-- [x] A timeout is an explicit result.
-- [x] A check cannot change canonical state directly.
-- [x] Check output is treated as untrusted input.
-- [x] Pi stores check lifecycle events before the next external side effect.
-- [x] Restore does not rerun a command.
-- [x] The user can cancel a running check.
-- [x] Retry policy is explicit and bounded.
-- [x] The live Pi graph pane shows routes, loops, feedback edges, and runtime state.
-- [x] The complete dogfood path is recorded.
+### Objective
 
----
+Execute compatible independent work concurrently without unsafe repository mutation.
 
-# M4 - Executable bounded loops
+### Vertical slices
 
-## Status
+1. Add workspace lease contracts.
+2. Create one worktree for each mutating attempt.
+3. Add structured worker commit results.
+4. Validate changed scope and evidence.
+5. Add integration lifecycle and explicit conflict state.
+6. Run post-integration checks in the base workspace.
+7. Add global and per-executor concurrency limits.
+8. Add concurrency groups and deterministic fairness.
+9. Run independent loops and child workflows concurrently.
+10. Harden cancellation, crash recovery, and stale integration rejection.
 
-Active. The detailed implementation plan is in `docs/m4-vertical-slice-plan.md`.
+### Concurrency rules
 
-M4 is selected before the M3.1 parser adapters.
+Attempts can run together only when:
 
-## Objective
+- dependencies and routes permit them;
+- loop ordering permits them;
+- executor limits permit them;
+- family and goal budgets permit them;
+- concurrency groups are compatible;
+- workspace leases are compatible;
+- integration operations do not conflict.
 
-Execute declared cyclic regions as deterministic bounded iteration regions.
+Initial default concurrency is two isolated attempts.
 
-A valid v0.5 loop has one entry, one evaluation boundary, typed success rules, declared feedback, a hard iteration limit, optional numeric progress and patience rules, and an explicit failure policy.
+### Integration rules
 
-A loop can be connected to the main graph or be an independent graph component. Repair is one use case. It is not a loop type.
+1. Acquire a lease.
+2. Prepare the worktree.
+3. Launch the executor in that worktree.
+4. Validate identity, scope, facts, evidence, and artifacts.
+5. Integrate the worker commit.
+6. Record conflicts explicitly.
+7. Run base-workspace checks.
+8. Complete the node only after integration succeeds.
 
-## Vertical slices
+### M8 acceptance criteria
 
-1. Execute one successful iteration.
-2. Follow feedback and start iteration 2.
-3. Support a failed evaluation check as one loop observation.
-4. Enforce the hard iteration limit.
-5. Add progress, loss, best result, and patience.
-6. Add independent loop regions and explicit outcome policy.
-7. Harden revision, cancellation, and recovery.
-8. Complete the Pi loop product surface.
-9. Dogfood and release v0.5.
-
-## Loop state
-
-Track:
-
-- loop status;
-- iteration number;
-- hard iteration limit;
-- typed success condition;
-- progress or loss value;
-- best metric and best iteration;
-- no-progress count and patience;
-- selected feedback edge;
-- iteration history;
-- exit reason;
-- failure policy;
-- graph-component identity.
-
-Success and progress are different values.
-
-A loop can improve without succeeding. A loop can also satisfy its success condition without having the best metric value.
-
-## M4 acceptance criteria
-
-- [ ] New loop definitions use typed success conditions.
-- [ ] The runtime executes only structured declared loop regions.
-- [ ] A false success condition follows only declared feedback.
-- [ ] Current facts and gate routes do not leak into a later iteration.
-- [ ] A failed evaluation check can provide a valid loop observation.
-- [ ] The runtime stops at the hard limit.
-- [ ] The runtime can stop after no progress.
-- [ ] The runtime stores each iteration result and best metric.
-- [ ] Downstream work waits for loop success.
-- [ ] Restore does not run a node or check.
-- [ ] Replay gives the same loop decision and state hash.
-- [ ] Pi shows current iteration, progress, and exit reason.
-- [ ] Two disconnected loop regions can run without state coupling.
-- [ ] A loop failure policy determines its effect on the workflow and its dependants.
-- [ ] The domain model and public guidance do not assign repair semantics to loops.
-- [ ] The v0.5 dogfood and release checks pass.
-
----
-
-# M5 - Event history, replay, and debugger UI
-
-## Objective
-
-Make execution inspectable.
-
-## User interface functions
-
-The compact view must show:
-
-- active node;
-- ready nodes;
-- blocked gates;
-- loop progress;
-- executor identity;
-- elapsed time.
-
-The full view must show:
-
-- graph navigation;
-- node contracts;
-- attempts;
-- facts;
-- evidence;
-- events;
-- revisions;
-- replay position;
-- pause, cancel, retry, and approval actions.
-
-## M5 acceptance criteria
-
-- The user can replay a workflow to any event.
-- Live and replay views use the same projection code.
-- The view preserves node positions across small revisions when possible.
-- The user can identify why a node is not ready.
-
----
-
-# M6 - Executor abstraction and isolated Pi execution
-
-## Objective
-
-Separate node semantics from the system that performs the work.
-
-## Executor contract
-
-An executor receives:
-
-- workflow goal;
-- node intent;
-- acceptance criteria;
-- read scope;
-- write scope;
-- required evidence;
-- selected upstream facts;
-- selected artifacts;
-- attempt ID;
-- cancellation signal.
-
-An executor returns:
-
-- attempt result;
-- facts;
-- evidence;
-- artifacts;
-- progress events;
-- failure details.
-
-The executor cannot change the graph.
-
-## M6 acceptance criteria
-
-- The current Pi session runs through the executor interface.
-- An isolated Pi process can execute one node contract.
-- A cancelled executor cannot complete a node.
-- Results always identify workflow, revision, node, and attempt.
-
----
-
-# M7 - Workspace integration and bounded concurrency
-
-## Objective
-
-Run independent delegated nodes and loop regions safely.
-
-## Workspace rules
-
-Use one Git worktree for each mutating attempt.
-
-The controller must:
-
-1. Create a workspace lease.
-2. Start the executor in that workspace.
-3. Validate changed paths.
-4. Validate evidence.
-5. Integrate the commit.
-6. Run checks in the base workspace.
-7. Complete the node only after integration succeeds.
-
-## Concurrency rules
-
-Start with a default limit of two delegated attempts.
-
-Do not run attempts together when they have:
-
-- a dependency relation;
-- the same exclusive workspace lease;
-- an incompatible concurrency group;
-- a loop-order constraint;
-- an executor limit conflict.
-
-## M7 acceptance criteria
-
-- Independent nodes can run together.
-- Independent loop regions can overlap in execution when budgets permit.
-- Conflicting nodes and loop regions cannot run together.
-- Integration failure is separate from execution failure.
+- At least two compatible isolated attempts execute concurrently.
+- Conflicting leases prevent unsafe concurrency.
+- Independent root loops and child workflows can overlap.
+- Execution success and integration success remain separate.
+- Integration conflicts are explicit and recoverable.
 - Post-integration checks run before completion.
-- A stale result cannot integrate.
+- Stale executor and integration results cannot change current state.
+- Crash recovery reconciles active child processes and workspace leases.
+- Scheduler fairness prevents starvation.
+- Replay reproduces scheduler, lease, integration, and terminal family state.
 
----
+## 10. M9 - External executor adapters
 
-# M8 - External executor adapters
-
-## Objective
+### Objective
 
 Support external agents without moving orchestration out of Hypagraph.
 
-## Agent Communication Protocol
+### ACP
 
-Hypagraph acts as the protocol client.
+Hypagraph acts as the ACP client.
 
-The adapter must:
+ACP is an execution transport. It is not the graph, goal-family, scheduler, or memory model.
 
-- create one session for each attempt;
-- negotiate capabilities;
-- stream progress;
-- broker permissions;
-- broker user input;
-- support cancellation;
-- normalize the final result.
+Each attempt initially receives its own ACP session.
 
-## Direct command-line adapters
+The adapter negotiates capabilities, streams progress, brokers permissions and user input, supports cancellation, and normalizes the result.
+
+### Named direct CLI adapters
 
 Use named and tested adapters.
 
-A named adapter must define:
+Each adapter defines:
 
 - command invocation;
-- input format;
-- output format;
+- context input format;
+- result output format;
 - cancellation behavior;
 - timeout behavior;
 - result normalization;
@@ -631,16 +516,14 @@ A named adapter must define:
 
 Do not use an arbitrary command as a strict mutating executor.
 
-## M8 acceptance criteria
+### M9 acceptance criteria
 
-- One external protocol agent can execute a node.
-- One named command-line adapter can execute a node.
-- Both adapters produce the same normalized result type.
-- Untrusted output cannot change canonical state without validation.
+- One ACP agent executes a node attempt.
+- One named CLI adapter executes the same contract.
+- Pi RPC, ACP, and CLI executors return the same normalized result type.
+- Untrusted output cannot change canonical state without controller validation.
 
----
-
-# Version 1.0 exit criteria
+## 11. Version 1.0 exit criteria
 
 Hypagraph can release version 1.0 when:
 
@@ -649,18 +532,24 @@ Hypagraph can release version 1.0 when:
 - schema migration is documented and tested;
 - checks and gates are deterministic;
 - iteration regions are bounded, policy-driven, independent when disconnected, and replayable;
+- trusted evaluation claims match actual isolation and integrity;
+- goal completion is workflow-derived;
+- recursive goal creation is bounded and family-controlled;
 - executors cannot change canonical state;
+- executor context is explicit and reproducible;
 - delegated file changes use isolated workspaces;
+- concurrent scheduling respects dependencies, loops, leases, budgets, and executor limits;
 - cancellation and stale-result rules are tested;
-- the user interface explains readiness and failure;
-- documentation follows the repository writing rules;
-- a complete medium coding task succeeds through Hypagraph without manual state repair.
+- integration failure is separate from execution failure;
+- the user interface explains readiness, failure, family, executor, and workspace state;
+- documentation follows repository writing rules;
+- a complete medium coding objective succeeds through root and child Hypagoals with isolated concurrent execution and no manual state repair.
 
-## Immediate next work
+## 12. Immediate next work
 
-1. Add the M1 event envelope.
-2. Add the command handler interface.
-3. Add pure event projections.
-4. Define the node attempt transition table.
-5. Add replay tests.
-6. Keep Pi as an adapter.
+1. Implement M5B Slice 2 atomic `/hypagoal` creation.
+2. Keep Slice 1 `GoalRuntime` as the workflow-local lifecycle.
+3. Include goal and workflow identity in later continuation actions.
+4. Keep independent components available to the continuation selector.
+5. Keep v0.6 persistence compatible with later one-member family migration.
+6. Do not implement child goals or subagents before the root controller is complete.
