@@ -18,6 +18,32 @@ permissions:
   contents: read
 
 jobs:
+  apply-hardening:
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-2-hypagoal-creation
+          fetch-depth: 0
+
+      - name: Apply the hardening patch
+        run: python scripts/apply-m5b-slice2-hardening.py
+
+      - name: Remove temporary patch script
+        run: rm scripts/apply-m5b-slice2-hardening.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Harden Hypagoal authoring identity"
+          git push origin HEAD:agent/m5b-slice-2-hypagoal-creation
+
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
