@@ -183,7 +183,9 @@ describe("M5A evaluation product surface", () => {
     const created = createWorkflow(loopDefinition(), at, "workflow-loop-surface");
     if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
     const state = structuredClone(created.state);
-    state.runtime.loops.quality!.evaluatorIntegrity = integrityResult().evaluation!.integrity;
+    const integrity = integrityResult().evaluation?.integrity;
+    if (!integrity) throw new Error("The integrity fixture is missing.");
+    state.runtime.loops.quality!.evaluatorIntegrity = integrity;
 
     const summary = loopSurfaceSummaries(state)[0]!;
     expect(summary.evaluator).toMatchObject({
