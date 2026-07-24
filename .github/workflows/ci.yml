@@ -72,9 +72,10 @@ jobs:
             !.git/**
             !node_modules/**
 
-      - name: Upload Pi coding-agent types
+      - name: Upload Slice 3 dependencies
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
         uses: actions/upload-artifact@v4
         with:
-          name: pi-coding-agent-types
-          path: node_modules/@earendil-works/pi-coding-agent
+          name: slice3-node-modules
+          include-hidden-files: true
+          path: node_modules
