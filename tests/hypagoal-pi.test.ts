@@ -82,6 +82,7 @@ const harness = (confirm = true) => {
 
   const ctx = {
     cwd: process.cwd(),
+    mode: "rpc",
     hasUI: true,
     ui: {
       confirm: vi.fn().mockResolvedValue(confirm),
@@ -293,4 +294,33 @@ describe("Hypagoal Pi surfaces", () => {
     expect(prompt).toContain("branchGeneration");
     expect(value.entries).toHaveLength(1);
   });
+  it("exposes status, pause, resume, cancel, and graph through the existing goal reducers", async () => {
+    const value = harness();
+    await value.tools.get("hypagoal_start")!.execute("create-controls", authoredInput(), undefined, undefined, value.ctx);
+
+    await value.commands.get("hypagoal")!.handler("status", value.ctx);
+    expect(value.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`Objective: ${proseObjective}`), "info");
+    expect(value.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Automatic revision: 0/1"), "info");
+
+    await value.commands.get("hypagoal")!.handler("pause Wait for product review.", value.ctx);
+    let summary = await value.tools.get("hypagraph_read")!.execute("read-paused", { view: "summary" }, undefined, undefined, value.ctx);
+    expect(text(summary)).toContain('"status": "paused"');
+    expect(text(summary)).toContain('"pauseCause": "explicit"');
+    expect(text(summary)).toContain("Wait for product review.");
+
+    await value.commands.get("hypagoal")!.handler("resume", value.ctx);
+    summary = await value.tools.get("hypagraph_read")!.execute("read-active", { view: "summary" }, undefined, undefined, value.ctx);
+    expect(text(summary)).toContain('"status": "active"');
+
+    await value.commands.get("hypagoal")!.handler("graph", value.ctx);
+    expect(value.ctx.ui.notify).toHaveBeenCalledWith("The Hypagraph graph pane is available only in TUI mode.", "warning");
+
+    await value.commands.get("hypagoal")!.handler("cancel Stop autonomous work.", value.ctx);
+    summary = await value.tools.get("hypagraph_read")!.execute("read-cancelled", { view: "summary" }, undefined, undefined, value.ctx);
+    expect(text(summary)).toContain('"status": "cancelled"');
+    expect(text(summary)).toContain("Stop autonomous work.");
+    expect(text(summary)).not.toContain('"status": "completed"');
+  });
+
+
 });

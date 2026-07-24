@@ -137,7 +137,8 @@ export class PiGraphPaneComponent implements Component, Focusable {
     const innerWidth = Math.max(1, paneWidth - 2);
     const availableHeight = Math.max(8, Math.min(this.terminalHeight - 2, Math.floor(this.terminalHeight * 0.9)));
     const detailLines = this.showDetails ? this.renderDetails(innerWidth) : [];
-    const chromeRows = 4 + detailLines.length;
+    const goalLines = this.renderGoalSummary(innerWidth);
+    const chromeRows = 4 + goalLines.length + detailLines.length;
     const graphHeight = Math.max(4, availableHeight - chromeRows);
     this.graphWidth = innerWidth;
     this.graphHeight = graphHeight;
@@ -163,6 +164,7 @@ export class PiGraphPaneComponent implements Component, Focusable {
     const selected = selectedNode(this.view, this.selectedNodeId);
     const header = `${this.view.phase} · r${this.view.revision} · e${this.view.sequence}`;
     const lines = [frameLine(this.theme, "╭", "─", "╮", paneWidth, `Hypagraph · ${this.view.title}`), row(` ${header}`)];
+    for (const line of goalLines) lines.push(row(line));
     for (const line of graphLines) lines.push(row(line));
     for (const line of detailLines) lines.push(row(line));
     const focusText = this.focused ? "navigation" : "passive";
@@ -224,6 +226,22 @@ export class PiGraphPaneComponent implements Component, Focusable {
     else if (node.y + node.height > this.viewportY + this.graphHeight) {
       this.viewportY = Math.max(0, node.y + node.height - this.graphHeight);
     }
+  }
+
+  private renderGoalSummary(width: number): string[] {
+    const goal = this.view.goal;
+    if (!goal) return [];
+    const turns = `${goal.budget.turns.consumed}/${goal.budget.turns.limit ?? "∞"}`;
+    const tokens = `${goal.budget.tokens.consumed}/${goal.budget.tokens.limit ?? "∞"}`;
+    const revision = `${goal.automaticRevision.consumed}/${goal.automaticRevision.maximum}`;
+    const lines = [
+      ` Goal ${goal.goalId} · ${goal.status} · turns ${turns} · tokens ${tokens} · revision ${revision}${goal.automaticRevision.pending ? " pending" : ""}${goal.automaticRevision.lastOutcomeCode ? ` · ${goal.automaticRevision.lastOutcomeCode}` : ""}`,
+      ` Objective ${sanitizeTerminalText(goal.objective)}`,
+    ];
+    if (goal.stopReason || goal.blockage.kind !== "not-blocked") {
+      lines.push(` Stop ${goal.blockage.kind}${goal.blockage.blockerKind ? ` · ${goal.blockage.blockerKind} ${goal.blockage.blockerId}` : ""}${goal.stopReason ? ` · ${sanitizeTerminalText(goal.stopReason)}` : ""}`);
+    }
+    return lines.map((line) => truncateToWidth(line, width, "…", true));
   }
 
   private renderDetails(width: number): string[] {

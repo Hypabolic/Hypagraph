@@ -43,6 +43,7 @@ import {
   type HypagoalCreationRequest,
 } from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
+import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
   throw new Error(`Hypagraph rejected the operation:\n${formatDiagnostics(diagnostics)}`);
@@ -236,6 +237,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       if (paused.ok) {
         state = paused.value.state;
         events.push(...paused.value.events);
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
       } else {
         ctx.ui.notify(`Hypagoal reload pause failed.
 ${formatDiagnostics(paused.diagnostics)}`, "warning");
@@ -281,8 +283,10 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (pendingContinuation || !state || activeExecutions.hasActive()) return;
     const decision = selectGoalContinuation(state);
     if (!isDispatchableGoalContinuation(decision)) {
-      if ((decision.kind === "invariant-error" && state.goal?.status === "active") || decision.kind === "stop-blocked") {
-        ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
+      if (decision.kind === "invariant-error") {
+        if (state.goal?.status === "active") ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
+      } else {
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state), decision.kind === "stop-completed" ? "info" : "warning");
       }
       return;
     }
@@ -313,7 +317,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     events.push(...request.value.events);
     updateUi(state, ctx, graphPane);
     if (state.goal?.status === "budget_limited") {
-      ctx.ui.notify(state.goal.stopReason ?? "The Hypagoal budget is exhausted.", "warning");
+      ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
       return;
     }
     pendingContinuation = createPendingGoalContinuation(decision, state, { sessionGeneration, branchGeneration }, operationId);
@@ -394,6 +398,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         if (interrupted.ok) {
           state = interrupted.value.state;
           events.push(...interrupted.value.events);
+          ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
         }
       }
       updateUi(state, ctx, graphPane);
@@ -441,6 +446,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         }]);
         updateUi(state, ctx, graphPane);
         ctx.ui.notify(`Hypagoal paused because usage could not be accounted. ${normalized.message}`, "warning");
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "warning");
         return;
       }
       const canonical = revisionRequest;
@@ -474,7 +480,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       events.push(...recorded.value.events);
       updateUi(state, ctx, graphPane);
       if (state.goal?.status === "budget_limited") {
-        ctx.ui.notify(state.goal.stopReason ?? "The Hypagoal budget is exhausted.", "warning");
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
         return;
       }
       if (semanticSequenceBeforeAccounting === delivered.committedSequence) {
@@ -485,7 +491,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
     await queueGoalContinuation(ctx);
   });
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     if (hypagoalAuthoring !== undefined) {
       return {
         systemPrompt: `${event.systemPrompt}\n\nHYPAGOAL AUTHORING CONTROL:\nInspect repository context and author one complete canonical workflow. The user supplied an objective, not a graph. Do not modify repository files, run workflow nodes, start checks, invoke executors, or continue implementation. Call hypagoal_start once as the final action.`,
@@ -507,6 +513,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         await abandonPendingContinuation(validation.message ?? "The queued continuation became stale.");
         suppressContinuationAtNextAgentEnd = true;
         staleContinuationTurn = true;
+        ctx.ui.notify(`Hypagoal continuation stopped: ${validation.code ?? "stale_continuation"} — ${validation.message ?? "The continuation is stale."}`, "warning");
         return {
           systemPrompt: `${event.systemPrompt}\n\nSTALE HYPAGOAL CONTINUATION:\n${validation.code ?? "stale_continuation"}: ${validation.message ?? "The continuation is stale."} Do not change repository files or canonical workflow state during this turn.`,
         };
@@ -993,19 +1000,77 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
   });
 
   pi.registerCommand("hypagoal", {
-    description: "Create one root graph-backed goal from an ordinary prose objective",
+    description: "Create or inspect one root graph-backed goal; status, pause, resume, cancel, and graph are supported",
     handler: async (args, ctx) => {
-      const objective = args;
-      if (objective.trim().toLowerCase() === "resume") {
+      const raw = args.trim();
+      const words = raw.split(/\s+/).filter(Boolean);
+      const action = words[0]?.toLowerCase();
+
+      if (!raw || action === "help") {
+        ctx.ui.notify("Usage: /hypagoal <objective> | status | pause [reason] | resume | cancel [reason] | graph", "info");
+        return;
+      }
+      if (action === "status") {
+        if (!state?.goal) throw new Error("There is no active Hypagoal to inspect.");
+        ctx.ui.notify(renderHypagoalStatus(state), "info");
+        return;
+      }
+      if (action === "graph") {
+        graphPane.open(ctx);
+        return;
+      }
+      if (action === "pause") {
+        ensureNoActiveExecution();
+        if (!state?.goal) throw new Error("There is no active Hypagoal to pause.");
+        await abandonPendingContinuation("The user paused the Hypagoal from Pi.");
+        pendingContinuation = undefined;
+        deliveredContinuation = undefined;
+        revisionProposalHandled = false;
+        restoreContinuationTools();
+        const reason = words.slice(1).join(" ").trim() || "The user paused the Hypagoal from Pi.";
+        await runCommands([{
+          type: "pause-goal",
+          cause: "explicit",
+          reason,
+          commandId: `pause-goal:explicit:${randomUUID()}`,
+          at: new Date().toISOString(),
+        }]);
+        updateUi(state, ctx, graphPane);
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "info");
+        return;
+      }
+      if (action === "resume") {
         ensureNoActiveExecution();
         if (!state?.goal) throw new Error("There is no active Hypagoal to resume.");
         await runCommands([{ type: "resume-goal", commandId: `resume-goal:${randomUUID()}`, at: new Date().toISOString() }]);
         updateUi(state, ctx, graphPane);
-        if (state?.goal?.status === "active") await queueGoalContinuation(ctx);
-        else ctx.ui.notify(state?.goal?.stopReason ?? "The Hypagoal did not resume.", "warning");
+        if (state?.goal?.status === "active") {
+          ctx.ui.notify(renderHypagoalLifecycleMessage(state), "info");
+          await queueGoalContinuation(ctx);
+        } else ctx.ui.notify(state?.goal?.stopReason ?? "The Hypagoal did not resume.", "warning");
         return;
       }
-      if (!objective.trim()) throw new Error("Usage: /hypagoal <objective> or /hypagoal resume");
+      if (action === "cancel") {
+        ensureNoActiveExecution();
+        if (!state?.goal) throw new Error("There is no active Hypagoal to cancel.");
+        await abandonPendingContinuation("The user cancelled the Hypagoal from Pi.");
+        pendingContinuation = undefined;
+        deliveredContinuation = undefined;
+        revisionProposalHandled = false;
+        restoreContinuationTools();
+        const reason = words.slice(1).join(" ").trim() || "The user cancelled the Hypagoal from Pi.";
+        await runCommands([{
+          type: "cancel-goal",
+          reason,
+          commandId: `cancel-goal:${randomUUID()}`,
+          at: new Date().toISOString(),
+        }]);
+        updateUi(state, ctx, graphPane);
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "warning");
+        return;
+      }
+
+      const objective = args;
       ensureNoActiveExecution();
 
       const generations = { sessionGeneration, branchGeneration };
