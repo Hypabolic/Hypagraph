@@ -18,6 +18,12 @@ const replacementConfirmationSchema = Type.Object({
   branchGeneration: Type.Integer({ minimum: 0 }),
 });
 
+const creationRequestSchema = Type.Object({
+  operationId: Type.String({ minLength: 1 }),
+  sessionGeneration: Type.Integer({ minimum: 0 }),
+  branchGeneration: Type.Integer({ minimum: 0 }),
+});
+
 const advisorySchema = Type.Object({
   code: Type.String(),
   message: Type.String(),
@@ -27,15 +33,18 @@ export const hypagoalStartSchema = Type.Object({
   objective: Type.String({ minLength: 1 }),
   definition: definitionSchema,
   advisories: Type.Optional(Type.Array(advisorySchema)),
+  creationRequest: Type.Optional(creationRequestSchema),
   replacementConfirmation: Type.Optional(replacementConfirmationSchema),
 });
 
 export type HypagoalStartInput = Static<typeof hypagoalStartSchema>;
+export type HypagoalCreationRequest = Static<typeof creationRequestSchema>;
 
 export interface NormalizedHypagoalStartInput {
   objective: string;
   definition: ReturnType<typeof normalizeDefinition>;
   advisories: HypagoalAuthoringAdvisory[];
+  creationRequest?: HypagoalCreationRequest;
   replacementConfirmation?: RootReplacementConfirmation;
 }
 
@@ -47,6 +56,9 @@ export function normalizeHypagoalStartInput(input: HypagoalStartInput): Normaliz
       code: advisory.code.trim(),
       message: advisory.message.trim(),
     })).filter((advisory) => advisory.code.length > 0 && advisory.message.length > 0),
+    ...(input.creationRequest === undefined
+      ? {}
+      : { creationRequest: structuredClone(input.creationRequest) }),
     ...(input.replacementConfirmation === undefined
       ? {}
       : { replacementConfirmation: structuredClone(input.replacementConfirmation) }),
@@ -113,6 +125,7 @@ export function renderReplacementRequired(current: RootCanonicalIdentity): strin
 
 export function buildHypagoalAuthoringPrompt(
   objective: string,
+  creationRequest: HypagoalCreationRequest,
   replacementConfirmation?: RootReplacementConfirmation,
 ): string {
   const confirmation = replacementConfirmation === undefined
@@ -129,7 +142,8 @@ export function buildHypagoalAuthoringPrompt(
     "Add a progress metric only when a deterministic and defensible metric exists.",
     "Do not invent tests, acceptance criteria, commands, metrics, trust claims, or evaluation contracts.",
     "Return uncertain or useful authoring notes through the advisories field. Do not put advisories into canonical definition fields.",
-    "Call hypagoal_start one time with the preserved objective and the complete validated definition.",
+    `Use this exact creation request identity without changing any field:\n${JSON.stringify(creationRequest, null, 2)}`,
+    "Call hypagoal_start one time with the preserved objective, complete validated definition, and exact creationRequest.",
     confirmation,
     "Do not perform semantic implementation work after creation. The creation tool ends this authoring turn and does not start autonomous continuation.",
   ].join("\n\n");
