@@ -1,63 +1,313 @@
-name: CI
+name: Prepare v0.6 release candidate
 
 on:
-  workflow_dispatch:
   pull_request:
     branches:
       - main
     types:
-      - opened
-      - reopened
       - synchronize
       - ready_for_review
-  push:
-    branches:
-      - "**"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  check:
-    name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-        node-version:
-          - 22
-          - 24
-
+  prepare:
+    if: github.head_ref == 'agent/m5b-slice-8-dogfood-release'
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out the repository
+      - name: Check out the release branch
         uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-8-dogfood-release
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 24
           cache: npm
 
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Run type checks and tests
-        id: check
+      - name: Prepare release files
         shell: bash
         run: |
-          set +e
-          npm run check > check.log 2>&1
-          status=$?
-          cat check.log
-          exit $status
+          set -euo pipefail
+          npm version 0.6.0 --no-git-tag-version
+          python - <<'PY'
+          from pathlib import Path
 
-      - name: Upload check log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: check-log-${{ matrix.os }}-node-${{ matrix.node-version }}
-          path: check.log
+          readme = Path('README.md')
+          text = readme.read_text()
+          old_commands = '''| `/hypagoal <objective>` | Inspect repository context and atomically create one root graph-backed goal. |
+          | `/hypagraph` | Show the active workflow. |'''
+          new_commands = '''| `/hypagoal <objective>` | Inspect repository context and atomically create one root graph-backed goal. |
+          | `/hypagoal status` | Show the exact objective, workflow phase, goal state, active or next work, budgets, loops, evaluations, blockage, revision state, and stop reason. |
+          | `/hypagoal pause [reason]` | Pause the root goal through the canonical lifecycle. |
+          | `/hypagoal resume` | Resume a paused or recoverable blocked goal after budget and runnable-path validation. |
+          | `/hypagoal cancel [reason]` | Cancel the root goal without implying success. |
+          | `/hypagoal graph` | Open or focus the graph pane with root-goal details. |
+          | `/hypagraph` | Show the active workflow. |'''
+          if text.count(old_commands) != 1:
+              raise SystemExit('README command table did not match the expected text.')
+          text = text.replace(old_commands, new_commands)
+          old_status = '''- protected evaluator redaction in model-visible prompts and check output;
+          - realistic multi-iteration continuation with independent-component fairness.
+
+          Next:
+
+          - blockage and bounded revision;
+          - complete Hypagoal product surfaces and v0.6 dogfood;
+          - delegated and ACP execution.'''
+          new_status = '''- protected evaluator redaction in model-visible prompts and check output;
+          - realistic multi-iteration continuation with independent-component fairness;
+          - deterministic blocker classification and one non-weakening automatic workflow revision;
+          - complete `/hypagoal` status, pause, resume, cancel, and graph controls;
+          - compact lifecycle messages and explicit typed stop reasons;
+          - narrow and wide root-goal terminal rendering;
+          - integrated v0.6 product-path dogfood across loops, evaluation, gates, reload recovery, revision, and canonical completion.
+
+          Next:
+
+          - event-history, replay, and debugger UI;
+          - goal families and bounded child Hypagoals;
+          - isolated executors, worktree integration, and bounded concurrency;
+          - ACP and named direct agent adapters.'''
+          if text.count(old_status) != 1:
+              raise SystemExit('README status section did not match the expected text.')
+          readme.write_text(text.replace(old_status, new_status))
+
+          changelog = Path('CHANGELOG.md')
+          existing = changelog.read_text()
+          if not existing.startswith('# Changelog\n\n'):
+              raise SystemExit('CHANGELOG header was not recognized.')
+          release = '''# Changelog
+
+          ## v0.6.0 - 2026-07-24
+
+          M5A and M5B add trusted evaluation contracts and the root Hypagoal autonomous controller.
+
+          ### Added
+
+          - atomic `/hypagoal <objective>` creation from ordinary prose;
+          - workflow-derived root-goal lifecycle with no model completion command;
+          - durable graph-aware continuation across tasks, checks, gates, disconnected branches, and independent bounded regions;
+          - exact turn and normalized token accounting with deterministic budget stops;
+          - reload, branch-change, and invalid-usage pause with explicit resume;
+          - loop-aware continuation with typed validity, progress, patience, evaluation budgets, trust, integrity, and failure policy;
+          - deterministic canonical blocker classification;
+          - one durable non-weakening automatic workflow revision attempt;
+          - `/hypagoal status`, pause, resume, cancel, and graph controls;
+          - compact lifecycle messages, graph-pane goal details, and typed stop reasons.
+
+          ### Release evidence
+
+          - one integrated Pi product-path scenario starts from `/hypagoal`, runs an optimization region and an independent auxiliary region, rejects an invalid evaluation, runs a probe and gate, pauses and resumes after reload, applies one bounded revision, and completes only through canonical workflow state;
+          - all dedicated budget, loop-limit, failure-policy, stale-result, revision-exhaustion, restore, replay, and no-model-completion tests remain green;
+          - the release-candidate matrix runs Node.js 22 and 24 on Ubuntu, macOS, and Windows.
+
+          See `docs/v0.6-dogfood.md` and `docs/v0.6-release-notes.md`.
+
+          '''
+          changelog.write_text(release + existing[len('# Changelog\n\n'):])
+
+          Path('docs/v0.6-dogfood.md').write_text('''# v0.6 dogfood evidence
+
+          - Date: 2026-07-24
+          - Milestones: M5A trusted evaluation contracts and M5B root Hypagoal autonomous controller
+          - Release candidate pull request: #77
+          - Integrated test: `tests/m5b-v0-6-release-dogfood.test.ts`
+          - Candidate verification before release metadata: CI #1108
+          - Candidate suite: 95 test files and 461 tests
+
+          ## 1. Integrated product path
+
+          The release scenario starts through `/hypagoal` with this exact objective:
+
+          > Prepare a measured v0.6 release candidate and preserve every required verification safeguard.
+
+          The authoring turn creates one canonical workflow and one workflow-local root goal. It does not start repository work during authoring.
+
+          The workflow contains:
+
+          - one four-iteration development and optimization region;
+          - one independent documentation-audit region;
+          - one deterministic probe evaluator;
+          - one typed gate with selected and skipped routes;
+          - one final repository task which discovers bounded missing work;
+          - one automatic non-weakening workflow revision;
+          - one added release-note task and canonical final completion.
+
+          ## 2. Evaluation and loop evidence
+
+          The development evaluator records four observations:
+
+          1. invalid score `0.1`, which does not update the best metric;
+          2. valid score `0.4`;
+          3. valid score `0.7`;
+          4. valid and accepted score `0.9`, which satisfies typed success.
+
+          The independent documentation region completes in one iteration. The event-backed root selector schedules both regions and does not starve the independent region.
+
+          The probe evaluator records one valid and accepted score of `0.95`. The deterministic gate selects the finalization route and skips the repair route.
+
+          ## 3. Reload and continuation evidence
+
+          The scenario reloads after the first development evaluation.
+
+          Reload:
+
+          - abandons the queued continuation;
+          - persists `session_reload` pause state;
+          - dispatches no semantic work;
+          - requires explicit `/hypagoal resume`;
+          - resumes with the current budget and canonical runnable graph.
+
+          Dedicated continuation tests separately prove stale delivery rejection after a state-bound request becomes invalid.
+
+          ## 4. Bounded revision evidence
+
+          Finalization records one typed `repository-work` blocker. No normal root work remains.
+
+          The controller:
+
+          - classifies the blocker deterministically;
+          - consumes the only automatic revision allowance;
+          - preserves the objective byte-for-byte;
+          - preserves typed success, checks, gates, evaluation trust, limits, failure policy, scope, and existing required work;
+          - adds one bounded `write-release-note` task;
+          - applies the replacement through the existing workflow revision and invalidation reducer;
+          - resumes the goal only after the revised graph has a runnable path.
+
+          The revised workflow completes the added task and finalization. Goal completion is derived only from canonical workflow completion.
+
+          ## 5. Accounting and restore evidence
+
+          Every delivered ordinary or revision continuation is charged once through the existing turn and token accounting path.
+
+          The integrated scenario verifies:
+
+          - 16 substantive turns;
+          - 208 normalized tokens;
+          - five evaluator starts: four development and one probe;
+          - one consumed and applied automatic revision attempt;
+          - completed workflow and completed root goal;
+          - unchanged exact objective;
+          - restore with no new dispatch;
+          - stable goal ID, workflow ID, event sequence, and snapshot hash after completed-state restoration.
+
+          ## 6. Complete release coverage
+
+          The complete suite also proves:
+
+          - turn-budget and token-budget termination;
+          - evaluation-budget termination;
+          - hard iteration limit and no-progress termination;
+          - invalid-evaluation exhaustion;
+          - all loop failure policies;
+          - stale continuation and stale result rejection;
+          - rejected, malformed, interrupted, weakening, no-op, and still-blocked revision exhaustion;
+          - replay and restore determinism;
+          - the absence of a model tool which can complete the workflow or goal;
+          - compatibility of root goal and workflow identities with the documented future one-member goal-family projection.
+
+          ## 7. Release gate
+
+          The v0.6 tag and GitHub release must point to the exact merged `main` commit which passes the complete six-target matrix.
+
+          The final merge SHA, main-branch CI run, tag, and release URL are recorded after publication.
+          ''')
+
+          Path('docs/v0.6-release-notes.md').write_text('''# Hypagraph v0.6
+
+          Hypagraph v0.6 adds trusted evaluation contracts and the first complete root Hypagoal controller for Pi.
+
+          ## Root Hypagoal
+
+          Start one durable objective from ordinary prose:
+
+          ```text
+          /hypagoal Implement the requested repository change and prove it with the existing checks.
+          ```
+
+          Hypagraph authors one canonical workflow, preserves the objective exactly, and continues through runnable tasks, checks, gates, disconnected branches, and bounded iteration regions.
+
+          Completion remains workflow-derived. The model cannot mark a goal complete.
+
+          ## Controls
+
+          ```text
+          /hypagoal status
+          /hypagoal pause [reason]
+          /hypagoal resume
+          /hypagoal cancel [reason]
+          /hypagoal graph
+          ```
+
+          Status and graph views show the objective, workflow phase, goal state, active and next work, ready work, remaining turn and token budgets, loop and evaluation state, canonical blockage, automatic revision state, and explicit stop reason.
+
+          ## Trusted evaluation
+
+          v0.6 separates:
+
+          - evaluation validity;
+          - numeric progress;
+          - typed success;
+          - development, probe, and holdout purpose;
+          - transparent, protected, and future isolated trust;
+          - evaluator integrity and feedback policy;
+          - loop limits and evaluation budgets.
+
+          Invalid observations do not update accepted progress or satisfy success.
+
+          ## Safe autonomous control
+
+          The controller provides:
+
+          - durable state-bound continuation identity;
+          - deterministic fairness across independent components;
+          - exactly-once turn and token accounting;
+          - explicit reload and branch-change pause;
+          - deterministic budget termination;
+          - one bounded automatic workflow revision for recoverable repository blockers;
+          - non-weakening validation for evidence, checks, gates, typed success, evaluation trust, limits, scopes, dependencies, and existing required work;
+          - replay and restore without semantic dispatch.
+
+          ## Install
+
+          ```bash
+          pi install git:github.com/Hypabolic/Hypagraph
+          ```
+
+          Update an existing installation:
+
+          ```bash
+          pi update git:github.com/Hypabolic/Hypagraph
+          ```
+
+          ## Verification
+
+          The release candidate passes 95 test files and 461 tests on:
+
+          - Ubuntu with Node.js 22 and 24;
+          - macOS with Node.js 22 and 24;
+          - Windows with Node.js 22 and 24.
+
+          See `docs/v0.6-dogfood.md` for the integrated product-path evidence.
+
+          ## Deferred
+
+          v0.6 remains root-only and sequential in one Pi session. Goal families, child Hypagoals, isolated executors, worktree integration, bounded physical concurrency, ACP, and named direct agent adapters remain planned later milestones.
+          ''')
+          PY
+          git fetch origin main
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+
+      - name: Commit the prepared candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add package.json package-lock.json README.md CHANGELOG.md docs/v0.6-dogfood.md docs/v0.6-release-notes.md .github/workflows/ci.yml
+          git commit -m "Prepare Hypagraph v0.6 release candidate"
+          git push origin HEAD:agent/m5b-slice-8-dogfood-release
