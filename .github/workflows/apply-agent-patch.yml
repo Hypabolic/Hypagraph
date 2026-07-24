@@ -22,7 +22,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+
       - name: Apply and validate the agent patch
+        id: validate
+        continue-on-error: true
         shell: bash
         run: |
           set +e
@@ -33,17 +36,36 @@ jobs:
             npm run check
           } > .agent-run.log 2>&1
           status=$?
+          printf '%s\n' "$status" > .agent-status
+          git diff --binary > .agent-output.patch
+          exit $status
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-patch-diagnostics
+          path: |
+            .agent-run.log
+            .agent-status
+            .agent-output.patch
+          if-no-files-found: error
+
+      - name: Commit validated implementation
+        if: steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          rm -rf .agent .agent-run.log .agent-status .agent-output.patch
+          rm -f .github/workflows/apply-agent-patch.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [[ $status -ne 0 ]]; then
-            git add .agent-run.log
-            git commit -m "Record patch validation failure" || true
-            git push origin HEAD:${{ github.event.pull_request.head.ref }}
-            cat .agent-run.log
-            exit $status
-          fi
-          rm -rf .agent .agent-run.log
-          rm -f .github/workflows/apply-agent-patch.yml
           git add -A
           git commit -m "Add bounded Hypagoal revision"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report validation failure
+        if: steps.validate.outcome == 'failure'
+        shell: bash
+        run: |
+          cat .agent-run.log
+          exit 1
