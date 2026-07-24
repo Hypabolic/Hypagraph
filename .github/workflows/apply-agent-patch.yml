@@ -37,16 +37,10 @@ jobs:
           text = path.read_text()
           text = text.replace('""", count=2)', '""", count=3)')
           text = text.replace('"""       action: { kind: decision.kind', '"""      action: { kind: decision.kind')
-          text = text.replace(
-              '''"""       if (!state?.goal?.pendingContinuation) return;
-                 const semanticSequenceBeforeAccounting = state.sequence;
-                 const normalized = normalizePiGoalUsage(_event.messages);
-          """''',
-              '''"""      if (!state?.goal?.pendingContinuation) return;
-                const semanticSequenceBeforeAccounting = state.sequence;
-                const normalized = normalizePiGoalUsage(_event.messages);
-          """''',
-          )
+          text = text.replace('"""       if (!state?.goal?.pendingContinuation)', '"""      if (!state?.goal?.pendingContinuation)')
+          text = text.replace('\n       const semanticSequenceBeforeAccounting = state.sequence;', '\n      const semanticSequenceBeforeAccounting = state.sequence;')
+          text = text.replace('\n       const normalized = normalizePiGoalUsage(_event.messages);', '\n      const normalized = normalizePiGoalUsage(_event.messages);')
+          text = text.replace('"""       "hypagraph_revise",', '"""      "hypagraph_revise",')
           path.write_text(text)
           PY
             python .agent/apply.py
@@ -56,6 +50,15 @@ jobs:
           text = path.read_text()
           text = text.replace('  GoalContinuationAction,\n', '  GoalWorkContinuationAction,\n')
           text = text.replace('Pick<GoalContinuationAction, "nodeId" | "loopId">', 'Pick<GoalWorkContinuationAction, "nodeId" | "loopId">')
+          path.write_text(text)
+
+          path = Path('src/extension.ts')
+          text = path.read_text()
+          text = text.replace(
+              '       if (!state?.goal?.pendingContinuation) return;\n       if (delivered.action.kind === "request-revision" && !revisionProposalHandled && state.goal.automaticRevision.lastAttempt?.outcome === "pending") {\n         const canonical = state.goal.pendingContinuation;',
+              '      const goal = state?.goal;\n      const canonical = goal?.pendingContinuation;\n      if (!state || !goal || !canonical) return;\n      if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {',
+          )
+          text = text.replace('           goalId: state.goal.goalId,', '          goalId: goal.goalId,', 1)
           path.write_text(text)
           PY
             npm ci
@@ -83,7 +86,7 @@ jobs:
         run: |
           rm -rf .agent agent-run.log agent-status.txt agent-output.patch
           rm -f .github/workflows/apply-agent-patch.yml
-          git config user.name "github-actions[bot]]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Add bounded Hypagoal revision"
