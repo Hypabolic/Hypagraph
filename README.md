@@ -71,9 +71,11 @@ Hypagraph then:
 5. creates the workflow, initial readiness, and workflow-local goal lifecycle in one durable event batch;
 6. reports the workflow ID, goal ID, revision, goal-control state, ready work, and authoring advisories.
 
-Creation does not start a task, run a check, invoke an executor, or queue autonomous continuation. Graph-aware continuation is a separate lifecycle operation.
+The atomic creation operation does not start a task, run a check, or invoke an executor. After the authoring turn ends, the graph-aware controller stores one state-bound continuation request and sends one Pi follow-up for the selected canonical action.
 
 The current v0.6 product surface allows one root workflow and one root goal in the active Pi session. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain itself remains able to represent separate workflow aggregates for the later goal-family architecture.
+
+The controller selects from all runnable root components in stable definition order. An event-backed continuation ordinal rotates selection when multiple components remain runnable. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
 
 ## Start a workflow
 
@@ -288,6 +290,8 @@ Implemented:
 - automatic graph authoring skill;
 - atomic root `/hypagoal` creation and `hypagoal_start` model surface;
 - workflow-local goal lifecycle and workflow-derived terminal state;
+- graph-aware root continuation with deterministic component selection;
+- state-bound continuation requests and stale-delivery rejection;
 - task, check, and gate nodes;
 - live terminal graph pane;
 - typed facts and deterministic routes;
@@ -303,10 +307,10 @@ Implemented:
 
 Next:
 
-- graph-aware Hypagoal continuation across all runnable root components;
-- automatic evaluation-contract authoring;
-- transport-neutral evaluator adapters;
-- evaluation dogfood and M5A closeout;
+- token and turn budgets plus reload safety;
+- complete loop and trusted-evaluation continuation guidance;
+- blockage and bounded revision;
+- complete Hypagoal product surfaces and v0.6 dogfood;
 - delegated and ACP execution.
 
 ## Develop locally

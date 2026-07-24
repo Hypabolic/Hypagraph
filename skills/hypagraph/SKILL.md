@@ -35,11 +35,28 @@ During the authoring turn:
 7. put uncertain or useful authoring notes in `advisories`, not in canonical definition fields;
 8. call `hypagoal_start` as the final action.
 
-The creation tool validates the complete projected result and persists the workflow definition, initial readiness, and workflow-local goal start in one event batch. It does not start a task, run a check, invoke an executor, or queue autonomous continuation.
+The creation tool validates the complete projected result and persists the workflow definition, initial readiness, and workflow-local goal start in one event batch. It does not start a task, run a check, or invoke an executor. The controller can request the first canonical action only after the authoring turn ends.
 
 Do not supply goal lifecycle state. The model cannot set a Hypagoal to completed, failed, cancelled, blocked, or paused. Terminal goal state remains derived from the canonical workflow lifecycle.
 
 When a root already exists, replacement requires the exact typed confirmation supplied by Hypagraph. Do not construct, alter, or reuse a replacement confirmation from an older root state.
+
+## Hypagoal continuation
+
+When Hypagraph supplies an automatic continuation prompt, perform only the selected canonical action.
+
+1. Check the goal ID, workflow ID, revision, node ID, and loop ID when present.
+2. Use `hypagraph_transition` for task and gate actions.
+3. Use `hypagraph_run_check` for a selected check.
+4. Continue an active task before starting another node.
+5. Do not revise the graph, replace the root, or mark the goal complete during the selected action.
+6. Let canonical workflow state determine the next continuation or stop decision.
+
+The controller selects across all runnable root components. Do not assume that the component which produced the latest event owns the next turn. Disconnected branches and independent loops remain eligible.
+
+A continuation prompt is valid only for the exact state which requested it. If Hypagraph reports that the continuation is stale, do not change files or canonical workflow state. Read the current graph before another action.
+
+A user message has priority over a queued continuation. Do not recreate or resend a skipped continuation.
 
 ## Evaluation-contract authoring
 

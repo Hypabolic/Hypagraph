@@ -8,6 +8,18 @@ export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "fa
 
 export type GoalStatus = "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
 
+export type GoalContinuationActionKind =
+  | "continue-active-task"
+  | "start-ready-task"
+  | "run-ready-check"
+  | "evaluate-ready-gate";
+
+export interface GoalContinuationAction {
+  kind: GoalContinuationActionKind;
+  nodeId: string;
+  loopId?: string;
+}
+
 export interface GoalRuntime {
   goalId: string;
   workflowId: string;
@@ -461,6 +473,7 @@ export type EventType =
   | "hypagraph.goal.completed"
   | "hypagraph.goal.failed"
   | "hypagraph.goal.cancelled"
+  | "hypagraph.goal.continuation-requested"
   | "hypagraph.node.ready"
   | "hypagraph.node.skipped"
   | "hypagraph.node.invalidated"
@@ -531,7 +544,17 @@ export type HypagraphCommand =
   | (CommandBase & { type: "start-goal"; goalId: string })
   | (CommandBase & { type: "pause-goal"; reason?: string })
   | (CommandBase & { type: "resume-goal" })
-  | (CommandBase & { type: "cancel-goal"; reason?: string });
+  | (CommandBase & { type: "cancel-goal"; reason?: string })
+  | (CommandBase & {
+    type: "request-goal-continuation";
+    goalId: string;
+    workflowId: string;
+    expectedRevision: number;
+    expectedSequence: number;
+    expectedSnapshotHash: string;
+    expectedContinuationOrdinal: number;
+    action: GoalContinuationAction;
+  });
 
 export type ReducerResult =
   | { ok: true; state: HypagraphState; events: DomainEvent[] }

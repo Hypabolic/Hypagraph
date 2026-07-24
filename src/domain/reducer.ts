@@ -26,6 +26,7 @@ import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./wo
 import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEvaluationKind } from "./evaluation-policy.js";
 import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";
 import { goalIsTerminal, goalOutcomeFromWorkflow } from "./goal-policy.js";
+import { continuationActionMatches, isRunnableGoalContinuation, selectGoalContinuation } from "./goal-continuation.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -359,6 +360,38 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
     if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
     next = append(next, events, command, { type: "hypagraph.goal.cancelled", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was cancelled explicitly." } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "request-goal-continuation") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (state.goal.status !== "active") return reject("goal_not_active", `The goal is ${state.goal.status}.`);
+    if (command.goalId !== state.goal.goalId) return reject("stale_goal_continuation", "The continuation belongs to a different goal.", "goalId");
+    if (command.workflowId !== state.workflowId) return reject("stale_goal_continuation", "The continuation belongs to a different workflow.", "workflowId");
+    if (command.expectedRevision !== state.revision) return reject("stale_goal_continuation", "The workflow revision changed before the continuation request was stored.", "expectedRevision");
+    if (command.expectedSequence !== state.sequence) return reject("stale_goal_continuation", "The workflow sequence changed before the continuation request was stored.", "expectedSequence");
+    if (command.expectedSnapshotHash !== state.snapshotHash) return reject("stale_goal_continuation", "The workflow snapshot changed before the continuation request was stored.", "expectedSnapshotHash");
+    if (command.expectedContinuationOrdinal !== state.goal.continuationOrdinal) return reject("stale_goal_continuation", "The continuation ordinal changed before the continuation request was stored.", "expectedContinuationOrdinal");
+    const selected = selectGoalContinuation(state);
+    if (!isRunnableGoalContinuation(selected)) {
+      return reject("goal_continuation_not_runnable", selected.kind === "invariant-error" ? selected.reason : `The goal cannot continue from '${selected.kind}'.`);
+    }
+    if (!continuationActionMatches(selected, command.action)) {
+      return reject("stale_goal_continuation", "The selected continuation action changed before the request was stored.", "action");
+    }
+    const ordinal = state.goal.continuationOrdinal + 1;
+    next = append(next, events, command, {
+      type: "hypagraph.goal.continuation-requested",
+      nodeId: command.action.nodeId,
+      ...(command.action.loopId ? { loopId: command.action.loopId } : {}),
+      data: {
+        goalId: state.goal.goalId,
+        ordinal,
+        action: structuredClone(command.action),
+        selectedRevision: state.revision,
+        selectedSequence: state.sequence,
+        selectedSnapshotHash: state.snapshotHash,
+      },
+    });
     return { ok: true, state: next, events };
   }
   if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }

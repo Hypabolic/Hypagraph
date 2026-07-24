@@ -16,12 +16,20 @@ import {
   replacementConfirmationFor,
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
+import { isRunnableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
 import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
+import {
+  continuationSystemPrompt,
+  createPendingGoalContinuation,
+  requiredContinuationTools,
+  validatePendingGoalContinuation,
+  type PendingGoalContinuation,
+} from "./pi/hypagoal-continuation.js";
 import {
   buildHypagoalAuthoringPrompt,
   hypagoalReadyWork,
@@ -123,6 +131,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let sessionGeneration = 0;
   let branchGeneration = 0;
   let hypagoalAuthoring: PendingHypagoalAuthoring | undefined;
+  let pendingContinuation: PendingGoalContinuation | undefined;
+  let deliveredContinuation: PendingGoalContinuation | undefined;
+  let suppressContinuationAtNextAgentEnd = false;
+  let staleContinuationTurn = false;
+  let continuationToolsBeforeDelivery: string[] | undefined;
   const graphPane = new GraphPaneController();
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
@@ -134,10 +147,21 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
   };
 
+  const restoreContinuationTools = (): void => {
+    if (!continuationToolsBeforeDelivery) return;
+    pi.setActiveTools(continuationToolsBeforeDelivery);
+    continuationToolsBeforeDelivery = undefined;
+  };
+
   const restore = async (ctx: ExtensionContext, branchChanged: boolean): Promise<void> => {
     sessionGeneration += 1;
     if (branchChanged) branchGeneration += 1;
     hypagoalAuthoring = undefined;
+    pendingContinuation = undefined;
+    deliveredContinuation = undefined;
+    suppressContinuationAtNextAgentEnd = false;
+    staleContinuationTurn = false;
+    restoreContinuationTools();
     activeExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     eventStore.synchronize(session);
@@ -194,11 +218,80 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => restore(ctx, false));
   pi.on("session_tree", async (_event, ctx) => restore(ctx, true));
   pi.on("session_shutdown", async () => {
+    pendingContinuation = undefined;
+    deliveredContinuation = undefined;
+    staleContinuationTurn = false;
+    restoreContinuationTools();
     activeExecutions.cancelAll();
     graphPane.dispose();
   });
-  pi.on("agent_end", async () => {
+
+  pi.on("input", (event) => {
+    if (event.source !== "extension" && event.streamingBehavior !== undefined) {
+      suppressContinuationAtNextAgentEnd = true;
+    }
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
     hypagoalAuthoring = undefined;
+    staleContinuationTurn = false;
+    restoreContinuationTools();
+    if (suppressContinuationAtNextAgentEnd) {
+      suppressContinuationAtNextAgentEnd = false;
+      pendingContinuation = undefined;
+      deliveredContinuation = undefined;
+      return;
+    }
+    if (deliveredContinuation) {
+      const delivered = deliveredContinuation;
+      deliveredContinuation = undefined;
+      if (state && state.sequence === delivered.committedSequence) {
+        ctx.ui.notify(`Hypagoal continuation '${delivered.operationId}' made no canonical progress. Automatic continuation stopped.`, "warning");
+        return;
+      }
+    }
+    if (pendingContinuation || !state || activeExecutions.hasActive()) return;
+
+    const decision = selectGoalContinuation(state);
+    if (!isRunnableGoalContinuation(decision)) {
+      if (decision.kind === "invariant-error" && state.goal?.status === "active") {
+        ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
+      }
+      return;
+    }
+
+    const operationId = `hypagoal-continuation:${randomUUID()}`;
+    const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
+      type: "request-goal-continuation",
+      goalId: decision.goalId,
+      workflowId: decision.workflowId,
+      expectedRevision: decision.revision,
+      expectedSequence: decision.sequence,
+      expectedSnapshotHash: decision.snapshotHash,
+      expectedContinuationOrdinal: decision.continuationOrdinal,
+      action: {
+        kind: decision.kind,
+        nodeId: decision.nodeId,
+        ...(decision.loopId ? { loopId: decision.loopId } : {}),
+      },
+      commandId: operationId,
+      correlationId: operationId,
+      at: new Date().toISOString(),
+    }]);
+    if (!request.ok) {
+      ctx.ui.notify(`Hypagoal continuation was not queued.\n${formatDiagnostics(request.diagnostics)}`, "warning");
+      return;
+    }
+    state = request.value.state;
+    events.push(...request.value.events);
+    updateUi(state, ctx, graphPane);
+    pendingContinuation = createPendingGoalContinuation(
+      decision,
+      state,
+      { sessionGeneration, branchGeneration },
+      operationId,
+    );
+    pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -207,6 +300,35 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         systemPrompt: `${event.systemPrompt}\n\nHYPAGOAL AUTHORING CONTROL:\nInspect repository context and author one complete canonical workflow. The user supplied an objective, not a graph. Do not modify repository files, run workflow nodes, start checks, invoke executors, or continue implementation. Call hypagoal_start once as the final action.`,
       };
     }
+
+    if (pendingContinuation) {
+      const pending = pendingContinuation;
+      const validation = validatePendingGoalContinuation(
+        pending,
+        state,
+        { sessionGeneration, branchGeneration },
+      );
+      pendingContinuation = undefined;
+      if (event.prompt !== pending.prompt) {
+        suppressContinuationAtNextAgentEnd = true;
+      } else if (!validation.ok || !state) {
+        suppressContinuationAtNextAgentEnd = true;
+        staleContinuationTurn = true;
+        return {
+          systemPrompt: `${event.systemPrompt}\n\nSTALE HYPAGOAL CONTINUATION:\n${validation.code ?? "stale_continuation"}: ${validation.message ?? "The continuation is stale."} Do not change repository files or canonical workflow state during this turn.`,
+        };
+      } else {
+        deliveredContinuation = pending;
+        continuationToolsBeforeDelivery = [...pi.getActiveTools()];
+        const tools = new Set(continuationToolsBeforeDelivery);
+        for (const tool of requiredContinuationTools(pending.action)) tools.add(tool);
+        pi.setActiveTools([...tools]);
+        return {
+          systemPrompt: `${event.systemPrompt}\n\n${continuationSystemPrompt(pending, state)}\n\n${renderWorkflow(state)}`,
+        };
+      }
+    }
+
     if (!state || ["completed", "cancelled", "failed"].includes(state.phase)) return;
     const ready = readyNodeIds(state);
     const at = new Date().toISOString();
@@ -225,6 +347,18 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (staleContinuationTurn && [
+      "write",
+      "edit",
+      "hypagoal_start",
+      "hypagraph_define",
+      "hypagraph_transition",
+      "hypagraph_run_check",
+      "hypagraph_cancel_check",
+      "hypagraph_revise",
+    ].includes(event.toolName)) {
+      return { block: true, reason: "The queued Hypagoal continuation is stale. Read current state before another canonical change." };
+    }
     if (hypagoalAuthoring !== undefined && (event.toolName === "write" || event.toolName === "edit")) {
       return { block: true, reason: "Hypagoal authoring is read-only. Create the workflow before semantic repository work starts." };
     }
