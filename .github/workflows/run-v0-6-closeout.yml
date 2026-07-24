@@ -26,7 +26,6 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          from textwrap import dedent
           import traceback
 
           workflow = Path('.github/workflows/ci.yml').read_text()
@@ -35,8 +34,12 @@ jobs:
           try:
               if workflow.count(start) != 1 or workflow.count(end) != 1:
                   raise RuntimeError('Stored closeout script markers were not unique.')
-              script = workflow.split(start, 1)[1].split(end, 1)[0]
-              exec(compile(dedent(script), 'stored-closeout.py', 'exec'))
+              block = workflow.split(start, 1)[1].split(end, 1)[0]
+              script = '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in block.splitlines()
+              )
+              exec(compile(script, 'stored-closeout.py', 'exec'))
           except Exception:
               Path('closeout-error.txt').write_text(traceback.format_exc())
               raise
