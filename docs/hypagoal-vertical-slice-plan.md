@@ -421,4 +421,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slice 1 is complete. Slice 2 is the current implementation target.
+M5B is active. Slices 1, 2, and 3 are complete. Slice 4 is the current implementation target.
