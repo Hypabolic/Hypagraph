@@ -65,20 +65,34 @@ jobs:
           text = path.read_text()
           blocker_field = '      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),\n'
           text = text.replace(blocker_field, '', 1)
-          old = '''       if (!state?.goal?.pendingContinuation) return;
+          old = '''      if (!state?.goal?.pendingContinuation) return;
            if (delivered.action.kind === "request-revision" && !revisionProposalHandled && state.goal.automaticRevision.lastAttempt?.outcome === "pending") {
              const canonical = state.goal.pendingContinuation;'''
           new = '''      const goal = state?.goal;
           const canonical = goal?.pendingContinuation;
           if (!state || !goal || !canonical) return;
           if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {'''
+          if old not in text:
+              raise RuntimeError('agent-end revision narrowing target was not found')
           text = text.replace(old, new, 1)
           marker = '      const goal = state?.goal;'
           start = text.find(marker)
           end = text.find('const semanticSequenceBeforeAccounting', start)
-          if start >= 0 and end > start:
-              segment = text[start:end].replace('goalId: state.goal.goalId', 'goalId: goal.goalId')
-              text = text[:start] + segment + text[end:]
+          if start < 0 or end <= start:
+              raise RuntimeError('agent-end revision narrowing range was not found')
+          segment = text[start:end].replace('goalId: state.goal.goalId', 'goalId: goal.goalId')
+          text = text[:start] + segment + text[end:]
+          path.write_text(text)
+
+          path = Path('tests/hypagoal-revision.test.ts')
+          text = path.read_text()
+          old = '    expect(selectGoalContinuation({ ...structuredClone(value.state), goal: { ...structuredClone(value.state.goal!), pendingContinuation: undefined } })).toMatchObject({ kind: "stop-blocked" });'
+          new = '    const exhausted = structuredClone(value.state);\n    delete exhausted.goal!.pendingContinuation;\n    expect(selectGoalContinuation(exhausted)).toMatchObject({ kind: "stop-blocked" });'
+          text = text.replace(old, new)
+          text = text.replace('runtime.nodes.migration.status', 'runtime.nodes.migration!.status')
+          text = text.replace('runtime.nodes.independent.status', 'runtime.nodes.independent!.status')
+          text = text.replace('runtime.nodes.independent.attemptCount', 'runtime.nodes.independent!.attemptCount')
+          text = text.replace('runtime.nodes.prepare.status', 'runtime.nodes.prepare!.status')
           path.write_text(text)
           PY
             npm ci
