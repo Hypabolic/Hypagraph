@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { Diagnostic, EvidenceReference, FactInput, FileAssertionDefinition } from "../domain/model.js";
 
@@ -25,6 +25,33 @@ const insideRoot = (rootDirectory: string, path: string): string => {
     throw new Error("The asserted file path is outside the configured workspace root.");
   }
   return target;
+};
+
+const realPathInsideRoot = async (rootDirectory: string, target: string): Promise<void> => {
+  const root = await realpath(resolve(rootDirectory));
+  const actual = await realpath(target);
+  const local = relative(root, actual);
+  if (local === ".." || local.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error("The asserted file resolves outside the configured workspace root.");
+  }
+};
+
+const readBounded = async (target: string, maxBytes: number): Promise<Buffer | undefined> => {
+  const handle = await open(target, "r");
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (total <= maxBytes) {
+      const buffer = Buffer.allocUnsafe(Math.min(65_536, maxBytes - total + 1));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) return Buffer.concat(chunks, total);
+      chunks.push(buffer.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    return undefined;
+  } finally {
+    await handle.close();
+  }
 };
 
 const fileEvidence = (path: string, summary: string): EvidenceReference[] => [{ ref: path, kind: "file", summary }];
@@ -79,6 +106,11 @@ export async function evaluateFileAssertion(
   }
 
   if (!metadata.isFile()) return failure(definition, "file_assertion_not_file", `The asserted path '${definition.path}' is not a regular file.`);
+  try {
+    await realPathInsideRoot(rootDirectory, target);
+  } catch (error) {
+    return failure(definition, "file_assertion_outside_root", error instanceof Error ? error.message : String(error));
+  }
   if (definition.kind === "absent") return failure(definition, "file_assertion_present", `The asserted file '${definition.path}' exists.`);
 
   const evidence = fileEvidence(target, "File assertion input.");
@@ -103,7 +135,13 @@ export async function evaluateFileAssertion(
     const maxBytes = definition.maxBytes ?? DEFAULT_MAX_HASH_BYTES;
     if (!Number.isInteger(maxBytes) || maxBytes < 1) return failure(definition, "invalid_file_assertion_limit", "The maximum hash input size must be a positive integer.");
     if (metadata.size > maxBytes) return failure(definition, "file_assertion_too_large", `The file is ${metadata.size} bytes and exceeds the ${maxBytes} byte hash assertion limit.`);
-    const content = await readFile(target);
+    let content: Buffer | undefined;
+    try {
+      content = await readBounded(target, maxBytes);
+    } catch (error) {
+      return failure(definition, "file_assertion_read_failed", `The asserted file could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (content === undefined) return failure(definition, "file_assertion_too_large", `The file exceeds the ${maxBytes} byte hash assertion limit.`);
     const actual = createHash("sha256").update(content).digest("hex");
     passed = actual.toLowerCase() === definition.hash.toLowerCase();
     baseFacts.push({ name: "file.sha256", type: "string", value: actual, evidence });
@@ -112,8 +150,14 @@ export async function evaluateFileAssertion(
     const maxBytes = definition.maxBytes ?? DEFAULT_MAX_TEXT_BYTES;
     if (!Number.isInteger(maxBytes) || maxBytes < 1) return failure(definition, "invalid_file_assertion_limit", "The maximum text size must be a positive integer.");
     if (metadata.size > maxBytes) return failure(definition, "file_assertion_too_large", `The file is ${metadata.size} bytes and exceeds the ${maxBytes} byte text assertion limit.`);
-    const content = await readFile(target, "utf8");
-    passed = content.includes(definition.text);
+    let content: Buffer | undefined;
+    try {
+      content = await readBounded(target, maxBytes);
+    } catch (error) {
+      return failure(definition, "file_assertion_read_failed", `The asserted file could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (content === undefined) return failure(definition, "file_assertion_too_large", `The file exceeds the ${maxBytes} byte text assertion limit.`);
+    passed = content.toString("utf8").includes(definition.text);
     baseFacts.push({ name: "file.textContains", type: "boolean", value: passed, evidence });
     if (!passed) diagnostics.push({ code: "file_text_not_found", message: "The expected text was not found in the file.", location: "assertion.text" });
   }

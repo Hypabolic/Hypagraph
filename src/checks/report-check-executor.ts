@@ -12,6 +12,7 @@ import type {
 } from "../domain/model.js";
 import type { CheckArtifactStore } from "./artifacts.js";
 import { CommandCheckExecutor } from "./command-executor.js";
+import { evaluateEvaluationIntegrity } from "./evaluation-integrity.js";
 import { parseReport } from "./report-parser-registry.js";
 
 const DEFAULT_MAX_REPORT_BYTES = 1_048_576;
@@ -135,6 +136,22 @@ export class ReportCheckExecutor implements CheckExecutor {
     this.now = options.now ?? (() => new Date());
   }
 
+  private async applyEvaluationIntegrity(
+    definition: ExecutableReportCheckDefinition,
+    result: CheckResult,
+    publishVersionFact = false,
+  ): Promise<CheckResult> {
+    const integrity = definition.kind === "metric-report" ? definition.evaluation?.integrity : undefined;
+    if (!integrity) return result;
+    const evaluated = await evaluateEvaluationIntegrity(this.rootDirectory, integrity);
+    const next = structuredClone(result);
+    next.evaluation ??= evaluationSummary(definition)!;
+    next.evaluation.integrity = structuredClone(evaluated.observation);
+    next.evidence.push(...structuredClone(evaluated.evidence));
+    if (publishVersionFact && evaluated.versionFact) next.facts.push(structuredClone(evaluated.versionFact));
+    return next;
+  }
+
   async execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult> {
     if (request.definition.kind === "command") {
       return this.producerExecutor.execute(request, signal);
@@ -177,14 +194,14 @@ export class ReportCheckExecutor implements CheckExecutor {
 
     const producer = await this.producerExecutor.execute(producerRequest, signal);
     if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
-      return filteredSource(producer, definition);
+      return this.applyEvaluationIntegrity(definition, filteredSource(producer, definition));
     }
 
     let reportPath: string;
     try {
       reportPath = resolveReportPath(this.rootDirectory, definition);
     } catch (error) {
-      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
     }
 
     const maxReportBytes = definition.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
@@ -193,7 +210,7 @@ export class ReportCheckExecutor implements CheckExecutor {
       if (!metadata.isFile()) throw new Error("The declared report path is not a file.");
       if (metadata.size > maxReportBytes) throw new Error("The report exceeds the maximum read size.");
     } catch (error) {
-      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
     }
 
     let reportBytes: Uint8Array;
@@ -202,7 +219,7 @@ export class ReportCheckExecutor implements CheckExecutor {
       reportBytes = new Uint8Array(await readFile(reportPath));
       reportText = new TextDecoder("utf-8", { fatal: true }).decode(reportBytes);
     } catch (error) {
-      return errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
     }
 
     const protectedOutput = protectsOutput(definition);
@@ -233,13 +250,13 @@ export class ReportCheckExecutor implements CheckExecutor {
         : {},
     );
     if (!parsed.ok) {
-      return errorResult(
+      return this.applyEvaluationIntegrity(definition, errorResult(
         definition,
         request,
         { ...producer, evidence },
         this.now().toISOString(),
         parsed.diagnostics.map((diagnostic) => diagnostic.message).join(" "),
-      );
+      ));
     }
 
     const publicEvidence = evidence.filter((item) => item.visibility !== "protected");
@@ -266,6 +283,6 @@ export class ReportCheckExecutor implements CheckExecutor {
       delete result.stdoutRef;
       delete result.stderrRef;
     }
-    return result;
+    return this.applyEvaluationIntegrity(definition, result, true);
   }
 }

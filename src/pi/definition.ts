@@ -1,8 +1,17 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import type { CheckRetryPolicy, HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
+import { canonicalProtectedPath } from "../domain/integrity-policy.js";
 
-const factTypeSchema = StringEnum(["boolean", "integer", "number", "string", "duration", "timestamp", "string-list"] as const);
+const factTypeSchema = Type.Union([
+  Type.Literal("boolean"),
+  Type.Literal("integer"),
+  Type.Literal("number"),
+  Type.Literal("string"),
+  Type.Literal("duration"),
+  Type.Literal("timestamp"),
+  Type.Literal("string-list"),
+]);
 const factValueSchema = Type.Union([Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String())]);
 const conditionSchema = Type.Any({ description: "A Hypagraph typed condition AST. The domain validator checks its recursive structure, fact references, types, and limits." });
 const checkFactSourceSchema = Type.Union([Type.Literal("passed"), Type.Literal("status"), Type.Literal("exitCode"), Type.Literal("durationMs"), Type.Literal("timedOut"), Type.Literal("cancelled")]);
@@ -52,9 +61,32 @@ const evaluationFeedbackSchema = Type.Union([
   Type.Object({ mode: Type.Literal("aggregate"), exposeRawReport: Type.Optional(Type.Boolean()) }),
   Type.Object({ mode: Type.Literal("bounded-diagnostics"), maximumDiagnosticItems: Type.Integer({ minimum: 1, maximum: 100 }), exposeRawReport: Type.Optional(Type.Boolean()) }),
 ]);
+const evaluatorTrustLevelSchema = Type.Union([
+  Type.Literal("transparent"),
+  Type.Literal("protected"),
+  Type.Literal("isolated"),
+]);
+const evaluationIntegritySchema = Type.Object({
+  trustLevel: evaluatorTrustLevelSchema,
+  protectedPaths: Type.Optional(Type.Array(Type.Object({
+    path: Type.String(),
+    sha256: Type.String(),
+    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  }), { uniqueItems: true })),
+  git: Type.Optional(Type.Object({
+    expectedRevision: Type.Optional(Type.String()),
+    requireCleanWorktree: Type.Optional(Type.Literal(true)),
+    protectedPathsUnchangedFrom: Type.Optional(Type.String()),
+  })),
+  evaluatorVersion: Type.Optional(Type.Object({
+    value: Type.String({ minLength: 1, maxLength: 128 }),
+    fact: Type.Optional(Type.String()),
+  })),
+});
 const metricEvaluationSchema = Type.Object({
   kind: Type.Union([Type.Literal("development"), Type.Literal("probe"), Type.Literal("holdout")]),
   feedback: evaluationFeedbackSchema,
+  integrity: Type.Optional(evaluationIntegritySchema),
 });
 const metricReportCheckSchema = Type.Object({
   kind: Type.Literal("metric-report"),
@@ -78,6 +110,12 @@ const gitAssertionSchema = Type.Union([
   Type.Object({ kind: Type.Literal("clean") }),
   Type.Object({ kind: Type.Literal("branch"), name: Type.String({ minLength: 1 }) }),
   Type.Object({ kind: Type.Literal("revision"), sha: Type.String({ pattern: "^[A-Fa-f0-9]{7,64}$" }) }),
+  Type.Object({ kind: Type.Literal("exact-revision"), sha: Type.String({ pattern: "^(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$" }) }),
+  Type.Object({
+    kind: Type.Literal("unchanged-paths"),
+    paths: Type.Array(Type.String(), { minItems: 1, uniqueItems: true }),
+    baseRevision: Type.String({ pattern: "^(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$" }),
+  }),
   Type.Object({
     kind: Type.Literal("changed-paths"),
     paths: Type.Array(Type.String(), { uniqueItems: true }),
@@ -162,9 +200,9 @@ export const definitionSchema = Type.Object({
 
 export const evidenceSchema = Type.Object({
   ref: Type.String({ description: "Tool call, command, file, approval, or event reference" }),
-  kind: Type.Optional(StringEnum(["tool", "command", "file", "approval", "note"] as const)),
+  kind: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("command"), Type.Literal("file"), Type.Literal("approval"), Type.Literal("note")])),
   summary: Type.Optional(Type.String()),
-  visibility: Type.Optional(StringEnum(["public", "protected"] as const)),
+  visibility: Type.Optional(Type.Union([Type.Literal("public"), Type.Literal("protected")])),
 });
 export const factInputSchema = Type.Object({ name: Type.String(), type: factTypeSchema, value: factValueSchema, evidence: Type.Optional(Type.Array(evidenceSchema)) });
 export type HypagraphDefineInput = Static<typeof definitionSchema>;
@@ -233,7 +271,37 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                   parser: { name: "metric-json" as const, version: 1 as const },
                   mappings: node.check.mappings.map((mapping) => ({ ...mapping })),
                   ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
-                  ...(node.check.evaluation === undefined ? {} : { evaluation: structuredClone(node.check.evaluation) }),
+                  ...(node.check.evaluation === undefined ? {} : {
+                    evaluation: {
+                      kind: node.check.evaluation.kind,
+                      feedback: structuredClone(node.check.evaluation.feedback),
+                      ...(node.check.evaluation.integrity === undefined ? {} : {
+                        integrity: {
+                          trustLevel: node.check.evaluation.integrity.trustLevel,
+                          ...(node.check.evaluation.integrity.protectedPaths === undefined ? {} : {
+                            protectedPaths: node.check.evaluation.integrity.protectedPaths.map((item) => ({
+                              path: canonicalProtectedPath(item.path) ?? item.path,
+                              sha256: item.sha256.toLowerCase(),
+                              ...(item.maxBytes === undefined ? {} : { maxBytes: item.maxBytes }),
+                            })),
+                          }),
+                          ...(node.check.evaluation.integrity.git === undefined ? {} : {
+                            git: {
+                              ...(node.check.evaluation.integrity.git.expectedRevision === undefined ? {} : { expectedRevision: node.check.evaluation.integrity.git.expectedRevision.toLowerCase() }),
+                              ...(node.check.evaluation.integrity.git.requireCleanWorktree === undefined ? {} : { requireCleanWorktree: node.check.evaluation.integrity.git.requireCleanWorktree }),
+                              ...(node.check.evaluation.integrity.git.protectedPathsUnchangedFrom === undefined ? {} : { protectedPathsUnchangedFrom: node.check.evaluation.integrity.git.protectedPathsUnchangedFrom.toLowerCase() }),
+                            },
+                          }),
+                          ...(node.check.evaluation.integrity.evaluatorVersion === undefined ? {} : {
+                            evaluatorVersion: {
+                              value: node.check.evaluation.integrity.evaluatorVersion.value.trim(),
+                              ...(node.check.evaluation.integrity.evaluatorVersion.fact === undefined ? {} : { fact: node.check.evaluation.integrity.evaluatorVersion.fact }),
+                            },
+                          }),
+                        },
+                      }),
+                    },
+                  }),
                 }
                 : {
                   kind: node.check.kind,

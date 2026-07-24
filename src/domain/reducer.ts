@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { evaluateCheckStart } from "./check-policy.js";
 import type {
+  CheckDefinition,
   CheckResult,
   Diagnostic,
   DomainEvent,
@@ -23,6 +24,7 @@ import { sha256 } from "./hash.js";
 import { validateDefinition } from "./validate.js";
 import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./workflow-outcome.js";
 import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEvaluationKind } from "./evaluation-policy.js";
+import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -158,11 +160,15 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
 
 const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => ACTIVE_ATTEMPT_STATUSES.has(item.status));
 
-const validateCheckResult = (result: CheckResult, attemptId: string, checkKind: string): Rejection | undefined => {
+const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
   if (result.attemptId !== attemptId) return reject("stale_check_result", "The check result does not match the current attempt.");
-  if (result.checkKind !== checkKind) return reject("check_kind_mismatch", `The result kind '${result.checkKind}' does not match check kind '${checkKind}'.`);
+  if (result.checkKind !== definition.kind) return reject("check_kind_mismatch", `The result kind '${result.checkKind}' does not match check kind '${definition.kind}'.`);
   if (!Number.isFinite(Date.parse(result.startedAt)) || !Number.isFinite(Date.parse(result.completedAt))) return reject("invalid_check_timestamps", "The check result must contain valid start and completion timestamps.");
   if (Date.parse(result.completedAt) < Date.parse(result.startedAt)) return reject("invalid_check_duration", "The check completion time must not be before its start time.");
+  if (definition.kind === "metric-report") {
+    const diagnostics = validateEvaluationIntegrityResult(definition, result);
+    if (diagnostics.length > 0) return { ok: false, diagnostics };
+  }
   return undefined;
 };
 
@@ -181,6 +187,7 @@ interface LoopEvaluation {
   bestIteration?: number;
   noProgressCount: number;
   evaluationError?: string;
+  evaluatorIntegrity?: NonNullable<CheckResult["evaluation"]>["integrity"];
 }
 
 const currentProgressMetric = (state: HypagraphState, definition: LoopDefinition, iteration: number): number | undefined => {
@@ -202,11 +209,15 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
   if (!runtime || runtime.status !== "running") return reject("loop_not_running", `Loop '${definition.id}' is not running.`);
   if (isLegacyPredicate(definition.successWhen)) return reject("loop_predicate_revision_required", `Loop '${definition.id}' requires a typed success condition before it can run.`, `loops.${definition.id}.successWhen`);
 
+  const evaluatorNode = state.runtime.nodes[nodeId];
+  const evaluatorResult = evaluatorNode?.currentAttemptId === undefined ? undefined : evaluatorNode.attempts[evaluatorNode.currentAttemptId]?.checkResult;
+  const evaluatorIntegrity = evaluatorResult?.evaluation?.integrity;
+  const integrityValid = evaluatorIntegrity?.status !== "invalid";
   const validity = definition.evaluation ? evaluateCondition(definition.evaluation.validWhen, state.runtime.facts) : undefined;
   if (validity && !validity.ok) return reject(validity.code, validity.message, `loops.${definition.id}.evaluation.validWhen`);
-  const valid = validity?.value ?? true;
+  const valid = integrityValid && (validity?.value ?? true);
   const validityFactsUsed = validity?.factsUsed ?? [];
-  const invalidEvaluationCount = valid ? (runtime.invalidEvaluationCount ?? 0) : (runtime.invalidEvaluationCount ?? 0) + 1;
+  const invalidEvaluationCount = valid || !definition.evaluation ? (runtime.invalidEvaluationCount ?? 0) : (runtime.invalidEvaluationCount ?? 0) + 1;
   const metric = currentProgressMetric(state, definition, runtime.currentIteration);
   if (!valid) {
     return {
@@ -220,6 +231,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       semanticsVersion: CONDITION_SEMANTICS_VERSION,
       ...(metric === undefined ? {} : { metric }),
       noProgressCount: runtime.noProgressCount ?? 0,
+      ...(evaluatorIntegrity === undefined ? {} : { evaluatorIntegrity: structuredClone(evaluatorIntegrity) }),
     };
   }
 
@@ -236,6 +248,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       factsUsed: [...new Set([...validityFactsUsed, ...result.factsUsed])],
       semanticsVersion: CONDITION_SEMANTICS_VERSION,
       noProgressCount: runtime.noProgressCount ?? 0,
+      ...(evaluatorIntegrity === undefined ? {} : { evaluatorIntegrity: structuredClone(evaluatorIntegrity) }),
     };
   }
   if (metric === undefined) {
@@ -250,6 +263,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       semanticsVersion: CONDITION_SEMANTICS_VERSION,
       noProgressCount: runtime.noProgressCount ?? 0,
       evaluationError: `Loop '${definition.id}' requires numeric progress fact '${definition.progress.fact}' from iteration ${runtime.currentIteration}.`,
+      ...(evaluatorIntegrity === undefined ? {} : { evaluatorIntegrity: structuredClone(evaluatorIntegrity) }),
     };
   }
   const first = runtime.bestMetric === undefined;
@@ -271,6 +285,7 @@ const prepareLoopEvaluation = (state: HypagraphState, nodeId: string): LoopEvalu
       ...(runtime.bestIteration === undefined ? {} : { bestIteration: runtime.bestIteration }),
     }),
     noProgressCount: improved ? 0 : (runtime.noProgressCount ?? 0) + 1,
+    ...(evaluatorIntegrity === undefined ? {} : { evaluatorIntegrity: structuredClone(evaluatorIntegrity) }),
   };
 };
 
@@ -279,7 +294,7 @@ const isFailedCheckLoopObservation = (state: HypagraphState, nodeId: string, att
   if ((definition?.kind ?? "task") !== "check") return false;
   if (!state.definition.loops.some((loop) => loop.evaluateAfter === nodeId)) return false;
   const attempt = state.runtime.nodes[nodeId]?.attempts[attemptId];
-  if (attempt?.checkResult?.status !== "failed") return false;
+  if (attempt?.checkResult?.status !== "failed" && !invalidEvaluatorIntegrity(attempt?.checkResult)) return false;
   return requiredFactsArePresent(state, nodeId, attemptId).length === 0;
 };
 
@@ -372,7 +387,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     case "record-check-result": {
       if ((definitionNode.kind ?? "task") !== "check" || !definitionNode.check) return reject("node_not_check", `Node '${command.nodeId}' is not a check.`);
       if (node.status !== "running" || node.currentAttemptId !== command.attemptId) return reject("stale_check_attempt", "The check result does not match the current running attempt.");
-      const invalid = validateCheckResult(command.result, command.attemptId, definitionNode.check.kind); if (invalid) return invalid;
+      const invalid = validateCheckResult(command.result, command.attemptId, definitionNode.check); if (invalid) return invalid;
       next = append(next, events, command, { type: "hypagraph.check.result-recorded", nodeId: command.nodeId, attemptId: command.attemptId, data: { result: structuredClone(command.result) } }); break;
     }
     case "evaluate-gate": {
@@ -417,17 +432,28 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
       }
       const checkResultStatus = definitionNode.check ? node.attempts[command.attemptId]?.checkResult?.status : undefined;
+      const integrityInvalid = invalidEvaluatorIntegrity(node.attempts[command.attemptId]?.checkResult) !== undefined;
+      const verificationPassed = command.passed && !integrityInvalid;
       const interruptedLoopCheck = !command.passed && (checkResultStatus === "cancelled" || checkResultStatus === "interrupted");
-      const failedCheckObservation = !command.passed && isFailedCheckLoopObservation(state, command.nodeId, command.attemptId);
-      const evaluation = command.passed || failedCheckObservation ? prepareLoopEvaluation(state, command.nodeId) : undefined;
+      const failedCheckObservation = !verificationPassed && isFailedCheckLoopObservation(state, command.nodeId, command.attemptId);
+      const evaluation = verificationPassed || failedCheckObservation ? prepareLoopEvaluation(state, command.nodeId) : undefined;
       if (evaluation && "ok" in evaluation) return evaluation;
-      next = append(next, events, command, { type: command.passed ? "hypagraph.verification.passed" : "hypagraph.verification.failed", nodeId: command.nodeId, attemptId: command.attemptId, data: command.reason ? { reason: command.reason } : {} });
+      next = append(next, events, command, {
+        type: verificationPassed ? "hypagraph.verification.passed" : "hypagraph.verification.failed",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: command.reason
+          ? { reason: command.reason }
+          : integrityInvalid
+            ? { reason: "The evaluator integrity check failed." }
+            : {},
+      });
       if (evaluation) {
         const loopRuntime = next.runtime.loops[evaluation.loopId];
         const loopDefinition = next.definition.loops.find((loop) => loop.id === evaluation.loopId)!;
         const evaluationFailed = evaluation.evaluationError !== undefined;
         const invalidLimitReached = !evaluationFailed && !evaluation.valid && loopDefinition.evaluation !== undefined && evaluation.invalidEvaluationCount >= loopDefinition.evaluation.maximumInvalidEvaluations;
-        const completes = !evaluationFailed && evaluation.valid && command.passed && evaluation.success;
+        const completes = !evaluationFailed && evaluation.valid && verificationPassed && evaluation.success;
         const evaluatorCheck = next.definition.nodes.find((item) => item.id === loopDefinition.evaluateAfter)?.check;
         const evaluatorKind = evaluatorCheck?.kind === "metric-report" ? metricEvaluationKind(evaluatorCheck) : undefined;
         const evaluationBudgetExhausted = !evaluationFailed && !completes && !invalidLimitReached && evaluatorKind !== undefined && evaluationBudgetExhaustedForKind(next, evaluatorKind);
@@ -449,13 +475,14 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             factsUsed: structuredClone(evaluation.factsUsed),
             semanticsVersion: evaluation.semanticsVersion,
             decision,
-            verificationPassed: command.passed,
+            verificationPassed,
             noProgressCount: evaluation.noProgressCount,
             ...(evaluation.metric === undefined ? {} : { metric: evaluation.metric }),
             ...(evaluation.improved === undefined ? {} : { improved: evaluation.improved }),
             ...(evaluation.bestMetric === undefined ? {} : { bestMetric: evaluation.bestMetric }),
             ...(evaluation.bestIteration === undefined ? {} : { bestIteration: evaluation.bestIteration }),
             ...(evaluation.evaluationError === undefined ? {} : { evaluationError: evaluation.evaluationError }),
+            ...(evaluation.evaluatorIntegrity === undefined ? {} : { evaluatorIntegrity: structuredClone(evaluation.evaluatorIntegrity) }),
             ...(failedCheckObservation ? { observationStatus: "failed" } : {}),
             ...(exitReason === undefined ? {} : { exitReason }),
           },
@@ -535,7 +562,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           });
         }
       }
-      if ((command.passed || evaluation !== undefined) && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
+      if ((verificationPassed || evaluation !== undefined) && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
     }
     case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim() } }); break; }

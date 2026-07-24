@@ -227,13 +227,16 @@ export async function runAutomaticCheckLifecycle(
   const requiredFactsReason = requiredFacts.length === 0
     ? undefined
     : `The check did not publish required facts: ${requiredFacts.join(", ")}.`;
-  const passed = result.status === "passed" && publication.ok && requiredFacts.length === 0;
+  const integrityReason = result.evaluation?.integrity?.status === "invalid"
+    ? `The evaluator integrity check failed: ${result.evaluation.integrity.diagnosticCodes[0] ?? "integrity_check_failed"}.`
+    : undefined;
+  const passed = result.status === "passed" && publication.ok && requiredFacts.length === 0 && integrityReason === undefined;
   const completeCommand: HypagraphCommand = {
     type: "complete-verification",
     nodeId: input.nodeId,
     attemptId: input.attemptId,
     passed,
-    ...(!passed ? { reason: normalizationReason ?? requiredFactsReason ?? failureReason(result) } : {}),
+    ...(!passed ? { reason: normalizationReason ?? requiredFactsReason ?? integrityReason ?? failureReason(result) } : {}),
     commandId: commandId(state, input.nodeId, input.attemptId, "complete-check-verification", {
       result,
       normalized: publication.ok,

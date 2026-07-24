@@ -86,6 +86,7 @@ export interface ReportCheckDefinition extends CommandExecutionDefinition {
 export type MetricScalarType = "boolean" | "integer" | "number" | "string";
 export type EvaluationKind = "development" | "probe" | "holdout";
 export type EvaluationFeedbackMode = "aggregate" | "bounded-diagnostics";
+export type EvaluatorTrustLevel = "transparent" | "protected" | "isolated";
 
 export interface EvaluationFeedbackPolicy {
   mode: EvaluationFeedbackMode;
@@ -93,14 +94,60 @@ export interface EvaluationFeedbackPolicy {
   exposeRawReport?: boolean;
 }
 
+export interface ProtectedPathDefinition {
+  path: string;
+  sha256: string;
+  maxBytes?: number;
+}
+
+export interface EvaluationGitIntegrityDefinition {
+  expectedRevision?: string;
+  requireCleanWorktree?: true;
+  protectedPathsUnchangedFrom?: string;
+}
+
+export interface EvaluatorVersionDefinition {
+  value: string;
+  fact?: string;
+}
+
+export interface EvaluationIntegrityDefinition {
+  trustLevel: EvaluatorTrustLevel;
+  protectedPaths?: ProtectedPathDefinition[];
+  git?: EvaluationGitIntegrityDefinition;
+  evaluatorVersion?: EvaluatorVersionDefinition;
+}
+
 export interface MetricEvaluationDefinition {
   kind: EvaluationKind;
   feedback: EvaluationFeedbackPolicy;
+  integrity?: EvaluationIntegrityDefinition;
 }
 
 export interface EvaluationDiagnostic {
   code: string;
   message: string;
+}
+
+export type EvaluationIntegrityEvidenceKind =
+  | "protected-file-sha256"
+  | "git-exact-revision"
+  | "git-clean-worktree"
+  | "git-protected-paths-unchanged";
+
+export interface EvaluationIntegrityEvidence {
+  kind: EvaluationIntegrityEvidenceKind;
+  status: "verified" | "mismatch" | "error";
+}
+
+export interface EvaluationIntegrityObservation {
+  version: 1;
+  trustLevel: "transparent" | "protected";
+  status: "valid" | "invalid";
+  evaluatorVersion?: string;
+  evaluatorFingerprint: string;
+  diagnosticCodes: string[];
+  protectedEvidence: EvaluationIntegrityEvidence[];
 }
 
 export interface MetricReportMapping {
@@ -130,6 +177,8 @@ export type GitAssertionDefinition =
   | { kind: "clean" }
   | { kind: "branch"; name: string }
   | { kind: "revision"; sha: string }
+  | { kind: "exact-revision"; sha: string }
+  | { kind: "unchanged-paths"; paths: string[]; baseRevision: string }
   | { kind: "changed-paths"; paths: string[]; mode?: "exact" | "contains" };
 
 export interface FileAssertionCheckDefinition {
@@ -171,6 +220,7 @@ export interface CheckResult {
     feedbackMode: EvaluationFeedbackMode;
     diagnostics: EvaluationDiagnostic[];
     diagnosticsTruncated: boolean;
+    integrity?: EvaluationIntegrityObservation;
   };
   error?: string;
 }
@@ -280,6 +330,7 @@ export interface LoopIterationRuntime {
   bestIteration?: number;
   noProgressCount?: number;
   invalidEvaluationCount?: number;
+  evaluatorIntegrity?: EvaluationIntegrityObservation;
 }
 
 export interface LoopRuntime {
@@ -298,6 +349,7 @@ export interface LoopRuntime {
   bestIteration?: number;
   noProgressCount?: number;
   invalidEvaluationCount?: number;
+  evaluatorIntegrity?: EvaluationIntegrityObservation;
   startedAt?: string;
   completedAt?: string;
   exitReason?: LoopExitReason;

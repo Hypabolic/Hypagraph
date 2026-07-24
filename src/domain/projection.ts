@@ -14,6 +14,7 @@ import type {
   RouteSelection,
 } from "./model.js";
 import { HYPAGRAPH_SCHEMA_VERSION } from "./model.js";
+import { validateEvaluationIntegrityResult } from "./integrity-policy.js";
 import { workflowBlockedByFailedLoop, workflowCanComplete } from "./workflow-outcome.js";
 
 const hashState = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => ({
@@ -200,6 +201,11 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
     case "hypagraph.check.result-recorded":
       if (node && attempt) {
         const result = structuredClone(event.data.result as CheckResult);
+        const definition = next.definition.nodes.find((item) => item.id === event.nodeId)?.check;
+        if (definition?.kind === "metric-report") {
+          const diagnostics = validateEvaluationIntegrityResult(definition, result);
+          if (diagnostics.length > 0) throw new Error(`The stored metric result has invalid evaluator integrity data: ${diagnostics[0]!.code}.`);
+        }
         attempt.status = "submitted";
         attempt.submittedAt = event.timestamp;
         attempt.checkResult = result;
@@ -352,6 +358,11 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         const semanticsVersion = Number(event.data.semanticsVersion ?? CONDITION_SEMANTICS_VERSION);
         const invalidEvaluationCount = typeof event.data.invalidEvaluationCount === "number" ? event.data.invalidEvaluationCount : runtime.invalidEvaluationCount ?? 0;
         const decision = event.data.decision === "complete" ? "complete" : event.data.decision === "continue" ? "continue" : event.data.decision === "fail" ? "fail" : "pending";
+        const definition = next.definition.loops.find((item) => item.id === loopId);
+        const evaluatorNode = definition === undefined ? undefined : next.runtime.nodes[definition.evaluateAfter];
+        const evaluatorIntegrity = evaluatorNode?.currentAttemptId === undefined
+          ? undefined
+          : evaluatorNode.attempts[evaluatorNode.currentAttemptId]?.checkResult?.evaluation?.integrity;
         if (record) {
           record.evaluatedAt = event.timestamp;
           record.evaluationEventId = event.eventId;
@@ -363,6 +374,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
           record.semanticsVersion = semanticsVersion;
           record.decision = decision;
           record.invalidEvaluationCount = invalidEvaluationCount;
+          if (evaluatorIntegrity !== undefined) record.evaluatorIntegrity = structuredClone(evaluatorIntegrity);
           if (typeof event.data.metric === "number") record.metric = event.data.metric;
           if (typeof event.data.improved === "boolean") record.improved = event.data.improved;
           if (typeof event.data.bestMetric === "number") record.bestMetric = event.data.bestMetric;
@@ -375,6 +387,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         runtime.factsUsed = structuredClone(factsUsed);
         runtime.semanticsVersion = semanticsVersion;
         runtime.invalidEvaluationCount = invalidEvaluationCount;
+        if (evaluatorIntegrity !== undefined) runtime.evaluatorIntegrity = structuredClone(evaluatorIntegrity);
         if (valid && typeof event.data.metric === "number") runtime.currentMetric = event.data.metric;
         if (typeof event.data.bestMetric === "number") runtime.bestMetric = event.data.bestMetric;
         if (typeof event.data.bestIteration === "number") runtime.bestIteration = event.data.bestIteration;

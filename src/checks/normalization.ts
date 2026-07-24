@@ -9,6 +9,7 @@ import type {
 } from "../domain/model.js";
 import type { FactValue } from "../domain/facts.js";
 import { sha256 } from "../domain/hash.js";
+import { validateEvaluationIntegrityResult } from "../domain/integrity-policy.js";
 
 export interface NormalizedCheckResult {
   facts: FactInput[];
@@ -51,6 +52,7 @@ export function normalizeCheckResult(request: CheckExecutionRequest, result: Che
   if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || completedAt < startedAt) {
     diagnostics.push({ code: "invalid_check_result_time", message: "The check result must contain valid ordered timestamps.", location: "result.completedAt" });
   }
+  if (request.definition.kind === "metric-report") diagnostics.push(...validateEvaluationIntegrityResult(request.definition, result));
 
   const facts: FactInput[] = [];
   if (request.definition.kind === "command") {

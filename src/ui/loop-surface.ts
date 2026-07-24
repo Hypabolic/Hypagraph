@@ -24,6 +24,15 @@ export interface LoopSurfaceSummary {
     totalMaximum?: number;
     totalRemaining?: number;
   };
+  evaluator?: {
+    purpose: "development" | "probe" | "holdout";
+    trustLevel?: "transparent" | "protected" | "isolated";
+    evaluatorVersion?: string;
+    evaluatorFingerprint?: string;
+    integrityStatus?: "pending" | "valid" | "invalid";
+    integrityDiagnosticCode?: string;
+    protectedEvidence: { verified: number; invalid: number; total: number };
+  };
   progress?: {
     fact: string;
     direction: "minimize" | "maximize";
@@ -76,6 +85,7 @@ export function loopSurfaceSummaries(state: HypagraphState): LoopSurfaceSummary[
     const evaluatorCheck = state.definition.nodes.find((node) => node.id === loop.evaluateAfter)?.check;
     const evaluatorKind = evaluatorCheck?.kind === "metric-report" ? evaluatorCheck.evaluation?.kind ?? "development" : undefined;
     const budget = view.evaluationBudget;
+    const evaluator = view.loops.find((item) => item.id === loop.id)?.evaluator;
     const kindMaximum = evaluatorKind === "development" ? budget?.limits.maximumDevelopmentEvaluations
       : evaluatorKind === "probe" ? budget?.limits.maximumProbeEvaluations
         : evaluatorKind === "holdout" ? budget?.limits.maximumHoldoutEvaluations
@@ -108,6 +118,7 @@ export function loopSurfaceSummaries(state: HypagraphState): LoopSurfaceSummary[
           ...(budget.remaining.total === undefined ? {} : { totalRemaining: budget.remaining.total }),
         },
       }),
+      ...(evaluator === undefined ? {} : { evaluator: structuredClone(evaluator) }),
       ...(loop.progress === undefined ? {} : {
         progress: {
           fact: loop.progress.fact,
@@ -145,10 +156,13 @@ export function renderLoopStatus(state: HypagraphState): string {
     const budget = loop.evaluationBudget === undefined
       ? ""
       : ` | budget ${loop.evaluationBudget.kind} ${loop.evaluationBudget.count}${loop.evaluationBudget.maximum === undefined ? "" : `/${loop.evaluationBudget.maximum}`}, total ${loop.evaluationBudget.totalCount}${loop.evaluationBudget.totalMaximum === undefined ? "" : `/${loop.evaluationBudget.totalMaximum}`}`;
+    const evaluator = loop.evaluator === undefined
+      ? ""
+      : ` | evaluator ${loop.evaluator.purpose}, trust ${loop.evaluator.trustLevel ?? "undeclared"}, version ${loop.evaluator.evaluatorVersion ?? "none"}, fingerprint ${loop.evaluator.evaluatorFingerprint ?? "pending"}, integrity ${loop.evaluator.integrityStatus ?? "undeclared"}, diagnostic ${loop.evaluator.integrityDiagnosticCode ?? "none"}, protected evidence ${loop.evaluator.protectedEvidence.verified}/${loop.evaluator.protectedEvidence.total}`;
     const metric = loop.progress === undefined
       ? ""
       : ` | metric ${loop.progress.currentMetric ?? "none"}, best ${loop.progress.bestMetric ?? "none"}${loop.progress.bestIteration === undefined ? "" : ` at ${loop.progress.bestIteration}`}, no-progress ${loop.progress.noProgressCount}${loop.progress.patience === undefined ? "" : `/${loop.progress.patience}`}`;
     const warning = loop.warning ? `\n  warning ${loop.warning.code}: ${loop.warning.message}` : "";
-    return `${loop.id}: ${loop.status} | iteration ${loop.iteration.current}/${loop.iteration.limit} | evaluate ${loop.evaluationNodeId} | feedback ${feedback} | policy ${loop.failurePolicy} | component ${loop.componentId ?? "none"} | outcome ${loop.localOutcome} | workflow ${loop.workflowEffect}${loop.exitReason ? ` | exit ${loop.exitReason}` : ""}${validity}${budget}${metric}${warning}`;
+    return `${loop.id}: ${loop.status} | iteration ${loop.iteration.current}/${loop.iteration.limit} | evaluate ${loop.evaluationNodeId} | feedback ${feedback} | policy ${loop.failurePolicy} | component ${loop.componentId ?? "none"} | outcome ${loop.localOutcome} | workflow ${loop.workflowEffect}${loop.exitReason ? ` | exit ${loop.exitReason}` : ""}${validity}${budget}${evaluator}${metric}${warning}`;
   }).join("\n");
 }

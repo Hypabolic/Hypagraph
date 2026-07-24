@@ -1,5 +1,8 @@
 import type {
   CheckResultStatus,
+  EvaluationIntegrityObservation,
+  EvaluationKind,
+  EvaluatorTrustLevel,
   HypagraphState,
   LoopStatus,
   NodeKind,
@@ -15,6 +18,21 @@ export interface GraphViewCheckSummary {
   status: CheckResultStatus;
   exitCode?: number;
   error?: string;
+  evaluator?: GraphViewEvaluatorSummary;
+}
+
+export interface GraphViewEvaluatorSummary {
+  purpose: EvaluationKind;
+  trustLevel?: EvaluatorTrustLevel;
+  evaluatorVersion?: string;
+  evaluatorFingerprint?: string;
+  integrityStatus?: "pending" | "valid" | "invalid";
+  integrityDiagnosticCode?: string;
+  protectedEvidence: {
+    verified: number;
+    invalid: number;
+    total: number;
+  };
 }
 
 export interface GraphViewNode {
@@ -32,6 +50,7 @@ export interface GraphViewNode {
   loopId?: string;
   iteration?: number;
   check?: GraphViewCheckSummary;
+  evaluator?: GraphViewEvaluatorSummary;
 }
 
 export interface GraphViewEdge {
@@ -70,6 +89,7 @@ export interface GraphViewLoop {
   invalidEvaluationCount?: number;
   maximumInvalidEvaluations?: number;
   remainingInvalidEvaluations?: number;
+  evaluator?: GraphViewEvaluatorSummary;
   componentId?: string;
   failurePolicy?: "fail-workflow" | "block-dependants" | "record-and-continue";
 }
@@ -122,6 +142,34 @@ const edgeSort = (left: GraphViewEdge, right: GraphViewEdge): number =>
   || left.kind.localeCompare(right.kind)
   || (left.outcome ?? "").localeCompare(right.outcome ?? "");
 
+const evaluatorSummary = (
+  state: HypagraphState,
+  nodeId: string,
+  observation?: EvaluationIntegrityObservation,
+): GraphViewEvaluatorSummary | undefined => {
+  const check = state.definition.nodes.find((node) => node.id === nodeId)?.check;
+  if (check?.kind !== "metric-report" || !check.evaluation) return undefined;
+  const integrity = check.evaluation.integrity;
+  const evidence = observation?.protectedEvidence ?? [];
+  return {
+    purpose: check.evaluation.kind,
+    ...(integrity === undefined ? {} : {
+      trustLevel: integrity.trustLevel,
+      integrityStatus: observation?.status ?? "pending",
+    }),
+    ...(observation?.evaluatorVersion === undefined && integrity?.evaluatorVersion?.value === undefined
+      ? {}
+      : { evaluatorVersion: observation?.evaluatorVersion ?? integrity!.evaluatorVersion!.value }),
+    ...(observation?.evaluatorFingerprint === undefined ? {} : { evaluatorFingerprint: observation.evaluatorFingerprint }),
+    ...(observation?.diagnosticCodes[0] === undefined ? {} : { integrityDiagnosticCode: observation.diagnosticCodes[0] }),
+    protectedEvidence: {
+      verified: evidence.filter((item) => item.status === "verified").length,
+      invalid: evidence.filter((item) => item.status !== "verified").length,
+      total: evidence.length,
+    },
+  };
+};
+
 const graphComponents = (state: HypagraphState): { componentByNode: Map<string, string>; components: GraphViewComponent[] } => {
   const adjacency = new Map(state.definition.nodes.map((node) => [node.id, new Set<string>()]));
   for (const node of state.definition.nodes) {
@@ -169,6 +217,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
       for (const edge of feedbackEdges) feedbackKeys.add(`${edge.source}\u0000${edge.target}`);
       const runtime = state.runtime.loops[loop.id];
       const invalidEvaluationCount = runtime?.invalidEvaluationCount ?? 0;
+      const evaluator = evaluatorSummary(state, loop.evaluateAfter, runtime?.evaluatorIntegrity);
       return {
         id: loop.id,
         nodeIds: [...loop.nodes].sort(),
@@ -193,6 +242,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
           maximumInvalidEvaluations: loop.evaluation.maximumInvalidEvaluations,
           remainingInvalidEvaluations: Math.max(0, loop.evaluation.maximumInvalidEvaluations - invalidEvaluationCount),
         }),
+        ...(evaluator === undefined ? {} : { evaluator }),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
@@ -207,9 +257,13 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
       const runtime = state.runtime.nodes[definition.id];
       if (!runtime) throw new Error(`Graph projection cannot find runtime state for node '${definition.id}'.`);
       const attempt = runtime.currentAttemptId === undefined
-        ? undefined
+        ? Object.values(runtime.attempts).sort((left, right) => right.number - left.number)[0]
         : runtime.attempts[runtime.currentAttemptId];
       const checkResult = attempt?.checkResult;
+      const evaluator = evaluatorSummary(state, definition.id, checkResult?.evaluation?.integrity);
+      const protectsEvaluatorOutput = definition.check?.kind === "metric-report"
+        && definition.check.evaluation !== undefined
+        && definition.check.evaluation.feedback.exposeRawReport !== true;
       return {
         id: definition.id,
         title: definition.title,
@@ -224,13 +278,15 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         ...(componentByNode.get(definition.id) === undefined ? {} : { componentId: componentByNode.get(definition.id)! }),
         ...(loopByNode.get(definition.id) === undefined ? {} : { loopId: loopByNode.get(definition.id)! }),
         ...(attempt?.iteration === undefined ? {} : { iteration: attempt.iteration }),
+        ...(evaluator === undefined ? {} : { evaluator }),
         ...(checkResult === undefined
           ? {}
           : {
               check: {
                 status: checkResult.status,
                 ...(checkResult.exitCode === undefined ? {} : { exitCode: checkResult.exitCode }),
-                ...(checkResult.error === undefined ? {} : { error: checkResult.error }),
+                ...(checkResult.error === undefined ? {} : { error: protectsEvaluatorOutput ? "The protected evaluator failed." : checkResult.error }),
+                ...(evaluator === undefined ? {} : { evaluator }),
               },
             }),
       };
