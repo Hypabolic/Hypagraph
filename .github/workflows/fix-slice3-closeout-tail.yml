@@ -1,0 +1,43 @@
+name: Fix Slice 3 closeout tail
+
+on:
+  push:
+    branches:
+      - agent/m5b-slice-3-closeout
+    paths:
+      - .github/workflows/fix-slice3-closeout-tail.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out closeout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-3-closeout
+          fetch-depth: 0
+
+      - name: Correct the current Slice status
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('docs/hypagoal-vertical-slice-plan.md')
+          text = path.read_text()
+          old = 'M5B is active. Slice 1 is complete. Slice 2 is the current implementation target.'
+          new = 'M5B is active. Slices 1, 2, and 3 are complete. Slice 4 is the current implementation target.'
+          if old not in text:
+              raise SystemExit('Expected stale status line was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/hypagoal-vertical-slice-plan.md
+          git commit -m "Correct M5B current slice status"
+          git push origin HEAD:agent/m5b-slice-3-closeout
