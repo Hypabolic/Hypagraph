@@ -139,11 +139,12 @@ export class ReportCheckExecutor implements CheckExecutor {
   private async applyEvaluationIntegrity(
     definition: ExecutableReportCheckDefinition,
     result: CheckResult,
+    signal: AbortSignal,
     publishVersionFact = false,
   ): Promise<CheckResult> {
     const integrity = definition.kind === "metric-report" ? definition.evaluation?.integrity : undefined;
     if (!integrity) return result;
-    const evaluated = await evaluateEvaluationIntegrity(this.rootDirectory, integrity);
+    const evaluated = await evaluateEvaluationIntegrity(this.rootDirectory, integrity, signal);
     const next = structuredClone(result);
     next.evaluation ??= evaluationSummary(definition)!;
     next.evaluation.integrity = structuredClone(evaluated.observation);
@@ -194,14 +195,14 @@ export class ReportCheckExecutor implements CheckExecutor {
 
     const producer = await this.producerExecutor.execute(producerRequest, signal);
     if (producer.status === "timed_out" || producer.status === "cancelled" || producer.status === "interrupted" || producer.status === "error") {
-      return this.applyEvaluationIntegrity(definition, filteredSource(producer, definition));
+      return this.applyEvaluationIntegrity(definition, filteredSource(producer, definition), signal);
     }
 
     let reportPath: string;
     try {
       reportPath = resolveReportPath(this.rootDirectory, definition);
     } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
     }
 
     const maxReportBytes = definition.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
@@ -210,7 +211,7 @@ export class ReportCheckExecutor implements CheckExecutor {
       if (!metadata.isFile()) throw new Error("The declared report path is not a file.");
       if (metadata.size > maxReportBytes) throw new Error("The report exceeds the maximum read size.");
     } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
     }
 
     let reportBytes: Uint8Array;
@@ -219,7 +220,7 @@ export class ReportCheckExecutor implements CheckExecutor {
       reportBytes = new Uint8Array(await readFile(reportPath));
       reportText = new TextDecoder("utf-8", { fatal: true }).decode(reportBytes);
     } catch (error) {
-      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)));
+      return this.applyEvaluationIntegrity(definition, errorResult(definition, request, producer, this.now().toISOString(), error instanceof Error ? error.message : String(error)), signal);
     }
 
     const protectedOutput = protectsOutput(definition);
@@ -256,7 +257,7 @@ export class ReportCheckExecutor implements CheckExecutor {
         { ...producer, evidence },
         this.now().toISOString(),
         parsed.diagnostics.map((diagnostic) => diagnostic.message).join(" "),
-      ));
+      ), signal);
     }
 
     const publicEvidence = evidence.filter((item) => item.visibility !== "protected");
@@ -267,7 +268,11 @@ export class ReportCheckExecutor implements CheckExecutor {
     }));
     const names = facts.map((fact) => fact.name);
     if (new Set(names).size !== names.length) {
-      return errorResult(definition, request, { ...producer, evidence }, this.now().toISOString(), "The report parser produced duplicate public fact names.");
+      return this.applyEvaluationIntegrity(
+        definition,
+        errorResult(definition, request, { ...producer, evidence }, this.now().toISOString(), "The report parser produced duplicate public fact names."),
+        signal,
+      );
     }
 
     const result: CheckResult = {
@@ -283,6 +288,6 @@ export class ReportCheckExecutor implements CheckExecutor {
       delete result.stdoutRef;
       delete result.stderrRef;
     }
-    return this.applyEvaluationIntegrity(definition, result, true);
+    return this.applyEvaluationIntegrity(definition, result, signal, true);
   }
 }
