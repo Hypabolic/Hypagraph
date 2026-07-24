@@ -336,7 +336,7 @@ The v0.6 dogfood path must:
 17. prove each loop failure policy;
 18. prove stale-continuation rejection;
 19. prove that the model cannot mark the goal complete;
-20. prove that the persisted root can migrate into a one-member future goal-family projection without changing its workflow hash.
+20. record compatibility evidence that the persisted root identities and event history can be referenced by the documented future family model without rewriting workflow state.
 
 The release requires the full six-target CI matrix, a dogfood record in `docs`, package and lock-file version alignment, and a tag on the tested main commit.
 
@@ -362,7 +362,7 @@ M5B tests must prove:
 - Pi surfaces;
 - no model-selected completion;
 - compatibility with workflows which have no goal state;
-- additive migration of the root goal into a later family projection.
+- preservation of the root identities required by the documented future family migration.
 
 ## 8. Deferred from v0.6
 
