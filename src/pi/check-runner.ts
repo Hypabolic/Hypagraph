@@ -66,9 +66,13 @@ export async function runPiCheck(input: PiCheckRunInput): Promise<AutomaticCheck
 }
 
 const formatValue = (value: unknown): string => Array.isArray(value) ? value.join(", ") : String(value);
-const protectsEvaluatorOutput = (definition: CheckDefinition | undefined): boolean => definition?.kind === "metric-report"
+export const protectsEvaluatorOutput = (definition: CheckDefinition | undefined): boolean => definition?.kind === "metric-report"
   && definition.evaluation !== undefined
   && definition.evaluation.feedback.exposeRawReport !== true;
+
+export const formatPiCheckCommand = (definition: CheckDefinition): string => protectsEvaluatorOutput(definition)
+  ? "protected evaluator command"
+  : [definition.command, ...(definition.arguments ?? [])].join(" ");
 
 const evaluatorAdapter = (result: CheckResult): string | undefined => {
   const reference = result.evidence.find((item) => item.ref.startsWith("evaluator-adapter://"))?.ref;
@@ -172,9 +176,9 @@ export function formatPiCheckResult(state: HypagraphState, nodeId: string, resul
       lines.push("Evaluator integrity: undeclared");
     }
   }
-  lines.push(`Stdout: ${result.stdoutRef ?? "none"}`);
-  lines.push(`Stderr: ${result.stderrRef ?? "none"}`);
   const protectedEvaluator = protectsEvaluatorOutput(definition);
+  lines.push(`Stdout: ${protectedEvaluator ? "protected" : result.stdoutRef ?? "none"}`);
+  lines.push(`Stderr: ${protectedEvaluator ? "protected" : result.stderrRef ?? "none"}`);
   if (result.error) lines.push(protectedEvaluator
     ? "Error: The protected evaluator did not produce an accepted result."
     : `${result.status === "failed" ? "Assertion/check failure" : "Error"}: ${result.error}`);

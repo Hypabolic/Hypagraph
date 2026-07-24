@@ -79,6 +79,10 @@ The controller selects from all runnable root components in stable definition or
 
 A Hypagoal can also declare a maximum substantive-turn count, a maximum token count, or both. Pi assistant usage is normalized from input, output, cache-read, and cache-write tokens. Each delivered continuation is charged once through a durable turn event before another continuation can be requested. Budget exhaustion stops autonomous continuation as `budget_limited`; it does not mark the workflow successful.
 
+When the selected action belongs to a bounded iteration region, the continuation includes canonical loop and evaluation context. It reports the current iteration, typed success condition, current and best accepted metrics, progress direction, patience, invalid-evaluation count, evaluation-attempt budget, purpose, trust, feedback mode, and failure policy when these values exist. It does not expose protected evaluator commands, paths, hashes, raw reports, standard output, standard error, hidden assertions, or holdout details.
+
+Evaluation validity, numeric progress, and typed success remain separate. An invalid evaluation cannot update the best metric or satisfy success. The same root selector continues to rotate across disconnected branches and independent loop components. A loop does not own the next turn because it produced the latest event.
+
 A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Review canonical state and use `/hypagoal resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
 
 ## Start a workflow
@@ -310,11 +314,13 @@ Implemented:
 - independent loop components and explicit failure policies;
 - evaluation validity and invalid-observation limits;
 - protected feedback and event-backed evaluation budgets;
-- evaluator purpose, trust, integrity, version, and fingerprint surfaces.
+- evaluator purpose, trust, integrity, version, and fingerprint surfaces;
+- loop-aware Hypagoal continuation from canonical iteration and evaluation state;
+- protected evaluator redaction in model-visible prompts and check output;
+- realistic multi-iteration continuation with independent-component fairness.
 
 Next:
 
-- complete loop and trusted-evaluation continuation guidance;
 - blockage and bounded revision;
 - complete Hypagoal product surfaces and v0.6 dogfood;
 - delegated and ACP execution.
