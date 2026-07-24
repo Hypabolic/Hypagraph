@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   apply-closeout:
-    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
