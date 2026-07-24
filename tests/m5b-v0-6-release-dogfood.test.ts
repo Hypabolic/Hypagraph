@@ -448,14 +448,15 @@ describe("M5B v0.6 release dogfood", () => {
         await invoke(value, "session_start", { type: "session_start", reason: "reload" });
         expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload);
         expect(latestState(value).goal).toMatchObject({ status: "paused", pauseCause: "session_reload" });
-        await value.commands.get("hypagoal")!.handler("resume", value.ctx);
-        expect(latestState(value).goal.status).toBe("active");
-        expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload + 1);
 
         const sequenceBeforeStaleDelivery = latestState(value).sequence;
         const staleSystem = await deliver(value, stalePrompt);
         expect(staleSystem).toContain("STALE HYPAGOAL CONTINUATION");
         expect(latestState(value).sequence).toBe(sequenceBeforeStaleDelivery);
+
+        await value.commands.get("hypagoal")!.handler("resume", value.ctx);
+        expect(latestState(value).goal.status).toBe("active");
+        expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload + 1);
         reloadVerified = true;
         staleVerified = true;
       }
