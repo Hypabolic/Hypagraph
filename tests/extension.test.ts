@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 
 describe("Pi extension registration", () => {
-  it("registers the Hypagraph tools and command", () => {
+  it("registers the Hypagraph tools and commands", () => {
     const tools: string[] = [];
     const commands: string[] = [];
     const events: string[] = [];
@@ -16,6 +16,7 @@ describe("Pi extension registration", () => {
     hypagraphExtension(pi);
 
     expect(tools).toEqual([
+      "hypagoal_start",
       "hypagraph_define",
       "hypagraph_read",
       "hypagraph_run_check",
@@ -23,7 +24,7 @@ describe("Pi extension registration", () => {
       "hypagraph_transition",
       "hypagraph_revise",
     ]);
-    expect(commands).toEqual(["hypagraph"]);
-    expect(events).toEqual(expect.arrayContaining(["session_start", "session_tree", "before_agent_start", "tool_call"]));
+    expect(commands).toEqual(["hypagoal", "hypagraph"]);
+    expect(events).toEqual(expect.arrayContaining(["session_start", "session_tree", "agent_end", "before_agent_start", "tool_call"]));
   });
 });

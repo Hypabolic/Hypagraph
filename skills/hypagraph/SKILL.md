@@ -17,8 +17,29 @@ Treat the user's prose, issue, checklist, or plan as source intent. Compile it i
 4. Keep simple work simple. One bounded task and one check can be sufficient.
 5. Preserve explicit intent. Do not invent product scope, silently widen writable paths, or convert every sentence into a node.
 6. Ask a question only when product intent, safety, destructive choice, external authority, or a material trade-off cannot be inferred safely. Do not ask the user to design nodes or edges.
-7. Call `hypagraph_define` before execution. Use stable lowercase IDs and explicit contracts.
+7. For `/hypagoal`, call `hypagoal_start` once with the exact prose objective and complete definition. For ordinary workflow authoring, call `hypagraph_define` before execution.
 8. Review any evaluation authoring advisories returned by the definition. Revise weak contracts before execution when the advisory identifies a real risk.
+
+## Hypagoal creation
+
+`/hypagoal <objective>` creates one root graph-backed goal for the current Pi session.
+
+During the authoring turn:
+
+1. preserve the objective exactly in `HypagraphDefinition.goal`;
+2. inspect relevant repository state before compiling the graph;
+3. build the smallest useful canonical workflow;
+4. keep independent top-level components independent;
+5. use a bounded iteration region only when repetition is justified;
+6. add a metric only when a deterministic and defensible instrument exists;
+7. put uncertain or useful authoring notes in `advisories`, not in canonical definition fields;
+8. call `hypagoal_start` as the final action.
+
+The creation tool validates the complete projected result and persists the workflow definition, initial readiness, and workflow-local goal start in one event batch. It does not start a task, run a check, invoke an executor, or queue autonomous continuation.
+
+Do not supply goal lifecycle state. The model cannot set a Hypagoal to completed, failed, cancelled, blocked, or paused. Terminal goal state remains derived from the canonical workflow lifecycle.
+
+When a root already exists, replacement requires the exact typed confirmation supplied by Hypagraph. Do not construct, alter, or reuse a replacement confirmation from an older root state.
 
 ## Evaluation-contract authoring
 
