@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.6.0 - 2026-07-24
+
+M5A and M5B add trusted evaluation contracts and the root Hypagoal autonomous controller.
+
+### Added
+
+- atomic `/hypagoal <objective>` creation from ordinary prose;
+- workflow-derived root-goal lifecycle with no model completion command;
+- durable graph-aware continuation across tasks, checks, gates, disconnected branches, and independent bounded regions;
+- exact turn and normalized token accounting with deterministic budget stops;
+- reload, branch-change, and invalid-usage pause with explicit resume;
+- loop-aware continuation with typed validity, progress, patience, evaluation budgets, trust, integrity, and failure policy;
+- deterministic canonical blocker classification;
+- one durable non-weakening automatic workflow revision attempt;
+- `/hypagoal status`, pause, resume, cancel, and graph controls;
+- compact lifecycle messages, graph-pane goal details, and typed stop reasons.
+
+### Release evidence
+
+- one integrated Pi product-path scenario starts from `/hypagoal`, runs an optimization region and an independent auxiliary region, rejects an invalid evaluation, runs a probe and gate, pauses and resumes after reload, applies one bounded revision, and completes only through canonical workflow state;
+- all dedicated budget, loop-limit, failure-policy, stale-result, revision-exhaustion, restore, replay, and no-model-completion tests remain green;
+- the release-candidate matrix runs Node.js 22 and 24 on Ubuntu, macOS, and Windows.
+
+See `docs/v0.6-dogfood.md` and `docs/v0.6-release-notes.md`.
+
 ## v0.5.0 - 2026-07-23
 
 M4 adds generic executable bounded iteration regions. A loop is a deterministic graph region, not a repair-specific construct.
