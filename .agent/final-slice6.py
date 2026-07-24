@@ -107,3 +107,4 @@ if not text.endswith(closing):
 path.write_text(text[:-len(closing)] + insert + closing)
 
 # Temporary branch-local patch; the validation workflow removes it after success.
+# Diagnostic rerun trigger.
