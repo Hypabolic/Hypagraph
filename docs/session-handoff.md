@@ -1,13 +1,13 @@
-# Session handoff: M5B Slice 2 complete to Slice 3
+# Session handoff: M5B Slice 3 complete to Slice 4
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Last merged baseline: `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`
-- Last merged pull request: #65 — Add atomic Hypagoal creation
+- Last merged baseline: `836ac10ea8c13c6b0839902d175f718359d1bd07`
+- Last merged pull request: #67 — Add graph-aware Hypagoal continuation
 - Active milestone: M5B Hypagoal
-- Completed slice: M5B Slice 2, atomic `/hypagoal` creation
-- Current slice: M5B Slice 3, graph-aware continuation
+- Completed slice: M5B Slice 3, graph-aware continuation
+- Current slice: M5B Slice 4, budgets and reload safety
 - Hypagoal tracking issue: #25
 - Release marker: v0.6 after M5B dogfood and release evidence
 
@@ -25,135 +25,168 @@ Read these files in order:
 8. `docs/loop-region-product-model.md`;
 9. `docs/trusted-evaluation-contract-plan.md`;
 10. `docs/execution-roadmap.md`;
-11. `docs/m5b-slice-2-dogfood.md`.
+11. `docs/m5b-slice-3-dogfood.md`.
 
 Use issue #25 as the active M5B checklist.
 
-The goal-family plan is authoritative for later family scheduling, child goals, isolated executors, worktrees, and physical concurrency. Slice 3 must preserve compatibility with that plan without implementing it.
+The goal-family plan remains authoritative for later family budgets, descendant accounting, child goals, isolated executors, worktrees, and physical concurrency. Slice 4 must preserve compatible usage identity without implementing those later aggregates.
 
 ## 2. Product decisions that must not change
 
-### 2.1 One workflow-local lifecycle per goal
+### 2.1 Goal lifecycle remains workflow-local
 
 Each Hypagoal owns one canonical Hypagraph workflow.
 
-The existing `GoalRuntime` remains the workflow-local lifecycle for the root and every future child goal. Do not replace or duplicate its commands, events, reducer policy, replay, restore validation, snapshot hashing, or workflow-derived terminal state.
+The existing `GoalRuntime` remains the workflow-local lifecycle for the root and every future child goal. Slice 4 can add workflow-local budget and usage state, but it must not add parent, child, family, executor, workspace, or scheduler ownership fields.
 
-`HypagraphDefinition.goal` remains the human-readable objective. Lifecycle state remains separate under `goalControl`.
+`HypagraphDefinition.goal` remains the human-readable objective. Lifecycle and budget state remain separate under `goalControl` or another explicit structured field.
 
-There is no goal node, second task model, second workflow definition, parallel completion state machine, `complete-goal` command, or model-owned terminal state.
+There is no goal node, second task model, duplicate workflow definition, parallel completion state machine, `complete-goal` command, or model-owned terminal state.
 
-### 2.2 Root-only is a v0.6 product boundary
+### 2.2 Budget exhaustion is a stop, not success
 
-The current Pi product surface has one root goal and one root workflow.
+Token or turn exhaustion must stop autonomous continuation deterministically.
 
-This is not a domain invariant that a session can never persist more than one workflow aggregate. Later family persistence composes separate workflow-local goals under one family controller.
+Budget exhaustion must not:
 
-Slice 3 must use identities and action contracts that can later be lifted into that family scheduler without replacement.
+- mark the workflow completed;
+- satisfy a task, check, gate, or loop;
+- replace workflow-derived goal completion;
+- present cancellation as success;
+- discard the reason, limit, or consumed amount.
 
-### 2.3 Workflow state remains authoritative
+The stop must be event-backed, replayable, and visible through goal-control state.
 
-Goal completion, failure, blockage, cancellation, and pause remain derived from canonical workflow state.
+### 2.3 Usage accounting is explicit and reproducible
 
-Continuation decides whether another action may be requested or dispatched. It does not decide that semantic work is complete.
+The reducer must not read Pi messages, a clock, token counters, or model metadata directly.
 
-### 2.4 Independent components remain independent
+The Pi adapter supplies normalized usage observations through explicit commands. Domain logic validates and stores those observations.
 
-A disconnected branch or loop region remains a normal runnable root component.
+At minimum, usage identity must distinguish:
 
-The continuation selector must inspect all runnable root components. It must not assume that:
+- goal ID;
+- workflow ID;
+- workflow revision;
+- continuation operation or ordinal;
+- session generation;
+- branch generation;
+- turn identity;
+- token values and their source or measurement contract.
 
-- the most recently active component owns the next turn;
-- the component which produced the last event has priority;
-- a connected main path outranks a disconnected loop automatically;
-- an active or completed component can pause, reset, release, fail, or complete an unrelated component.
+Use names which can later aggregate child-goal and executor usage into a family budget. Do not assume that every future token is consumed by the root Pi process.
 
-The v0.6 controller interleaves components through sequential Pi turns. Later family scheduling can apply the same selection contract across multiple workflow aggregates and isolated executors.
+### 2.4 Continuation remains state-bound
 
-### 2.5 Restore remains side-effect free
+Slice 3 delivered one durable continuation request before each Pi follow-up.
 
-Restore and replay rebuild canonical state only.
+Slice 4 must account for a turn against the exact continuation which caused it. Stale usage observations must not mutate current state.
 
-They must not queue a continuation, send a user message, dispatch model work, run a check, invoke an executor, resume a component, or start a subagent.
+Budget decisions must run before another continuation request is stored. A continuation cannot be queued when the next turn would exceed a hard turn limit or when the current token budget is exhausted.
 
-Reload and branch-change pause behavior belongs to Slice 4.
+### 2.5 Final-turn and wrap-up behavior is bounded
 
-### 2.6 Existing loop and evaluation semantics remain canonical
+If the product permits one final wrap-up turn near a budget boundary, that permission must be explicit, deterministic, and counted.
 
-Slice 3 consumes existing node readiness, loop state, check policy, gate readiness, evaluation validity, integrity, budget, and failure-policy state.
+Do not create an uncounted summary turn or a prose-only exemption. A final turn cannot perform new semantic implementation work unless the declared policy permits it.
 
-It must not add a second loop, evaluator, loss, progress, or outcome model.
+### 2.6 Reload and branch changes pause autonomous work
 
-Trusted holdout acceptance still requires isolated execution. Slice 3 must not claim that isolated execution exists.
+Session reload and branch change must invalidate pending continuation delivery and pause an active goal before another autonomous turn can run.
 
-## 3. M5B Slice 2 delivered
+Restore still rebuilds canonical state only. It must not queue a continuation, dispatch model work, run a check, invoke an executor, resume a component, or start a subagent.
 
-PR #65 adds atomic root Hypagoal creation.
+A user must explicitly resume after reload or branch change. Resume must re-evaluate current canonical state and budgets before it can queue work.
+
+### 2.7 Independent components remain independent
+
+The Slice 3 selector remains canonical for runnable root work.
+
+Budget or reload handling must not reset, release, fail, complete, or transfer ownership between disconnected branches or independent loop components. A global root budget can stop further dispatch without rewriting component-local state.
+
+### 2.8 Existing loop and evaluation budgets remain separate
+
+Goal token and turn budgets are not loop iteration limits or evaluator budgets.
+
+Do not merge:
+
+- model token usage;
+- substantive continuation turns;
+- loop iteration count;
+- evaluation attempt budget;
+- invalid-evaluation count;
+- patience or no-progress limits.
+
+Each counter keeps its own event and policy semantics.
+
+## 3. M5B Slice 3 delivered
+
+PR #67 adds graph-aware root continuation.
 
 The merged implementation provides:
 
-- `/hypagoal <objective>`;
-- model-facing `hypagoal_start`;
-- repository-aware graph-authoring guidance;
-- exact preservation of the user objective;
-- one pure workflow-plus-goal creation operation;
-- deterministic event ordering;
-- workflow definition, initial readiness, and goal start in one event batch;
-- one append against expected empty sequence;
-- candidate validation before persistence;
-- no active-state exposure before persistence succeeds;
-- explicit workflow, goal, revision, event, session, branch, operation, and correlation identity;
-- typed replacement-required results;
-- replacement confirmation bound to workflow ID, goal ID, revision, sequence, snapshot hash, session generation, and branch generation;
-- stale authoring-operation rejection after session or branch change;
-- rejection of silent replacement through `hypagraph_define`;
-- replay and restore without work dispatch;
-- structured and text output which separates objective and `goalControl`;
-- explicit confirmation that autonomous continuation has not started.
+- `src/domain/goal-continuation.ts` with a pure workflow-local selector;
+- typed runnable and stop decisions;
+- explicit goal, workflow, revision, sequence, snapshot, ordinal, node, and loop identity;
+- stable definition-order candidate enumeration;
+- event-backed round-robin selection through `GoalRuntime.continuationOrdinal`;
+- `hypagraph.goal.continuation-requested`;
+- `request-goal-continuation` with stale-state validation;
+- one Pi scheduling authority in `agent_end`;
+- state-bound delivery in `before_agent_start`;
+- user-message priority;
+- no-progress stop behavior;
+- stale-delivery protection and mutating-tool blocking;
+- dynamic continuation tool exposure and restoration;
+- deterministic selection across disconnected branches and independent loop components;
+- replay and restore compatibility;
+- realistic Pi command-to-tool smoke evidence.
 
-### Slice 2 implementation map
+### Slice 3 implementation map
 
-- `src/domain/hypagoal-creation.ts`: pure atomic creation operation.
-- `src/hypagoal/root-creation.ts`: root product boundary, replacement, validation, and one-append persistence.
-- `src/pi/hypagoal.ts`: model schema, authoring prompt, ready-work projection, and output formatting.
-- `src/extension.ts`: `/hypagoal`, `hypagoal_start`, authoring lease, and Pi exposure.
-- `tests/hypagoal-creation.test.ts`: domain, persistence, replay, restore, conflict, and replacement coverage.
-- `tests/hypagoal-pi.test.ts`: command/tool equivalence, authoring identity, smoke, and no-continuation coverage.
-- `docs/m5b-slice-2-dogfood.md`: executable evidence.
+- `src/domain/check-policy.ts`: pure immediate check-start eligibility used by the selector.
+- `src/domain/goal-continuation.ts`: candidate enumeration, selection, stop decisions, and action matching.
+- `src/domain/model.ts`: continuation action, command, and event contracts.
+- `src/domain/reducer.ts`: canonical request validation and event creation.
+- `src/domain/projection.ts`: continuation ordinal projection.
+- `src/pi/hypagoal-continuation.ts`: pending action, prompt, delivery validation, and action guidance.
+- `src/extension.ts`: one queued follow-up, user priority, stale protection, and tool exposure.
+- `tests/hypagoal-continuation.test.ts`: pure selector, replay, restore, identity, and independent-loop fairness.
+- `tests/hypagoal-continuation-pi.test.ts`: Pi scheduling, user priority, stale delivery, no progress, restore, and routed smoke.
+- `docs/m5b-slice-3-dogfood.md`: executable evidence.
 
-### Slice 2 evidence
+### Slice 3 evidence
 
 Implementation baseline:
 
 ```text
-3656caf3e62d26d3dc406e93b5b5e71e96cbfae8
+836ac10ea8c13c6b0839902d175f718359d1bd07
 ```
 
-Final CI #722 passed:
+CI #770 and final PR CI #772 passed:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The complete suite contains 83 test files and 333 tests.
+The complete suite contains 85 test files and 357 tests.
 
 ## 4. Current architecture map
 
-### Domain and projection
+### Workflow-local domain
 
-- `src/domain/model.ts`: workflow, goal, loop, evaluation, command, and event contracts.
-- `src/domain/reducer.ts`: canonical transitions and workflow-to-goal synchronization.
+- `src/domain/model.ts`: workflow, goal, loop, evaluation, continuation, command, and event contracts.
+- `src/domain/reducer.ts`: canonical state transitions and stale request validation.
 - `src/domain/projection.ts`: deterministic replay and snapshot hashing.
-- `src/domain/readiness.ts`: canonical runnable-node derivation.
-- `src/domain/goal-policy.ts`: pure workflow-to-goal outcome policy.
-- `src/domain/hypagoal-creation.ts`: atomic creation candidate.
+- `src/domain/goal-policy.ts`: workflow-derived goal outcome policy.
+- `src/domain/goal-continuation.ts`: pure runnable-action selection.
+- `src/domain/check-policy.ts`: canonical check-start policy.
 
-### Root creation and Pi
+### Pi controller
 
-- `src/hypagoal/root-creation.ts`: current root product boundary.
-- `src/pi/hypagoal.ts`: creation schema and presentation.
-- `src/extension.ts`: Pi events, commands, tools, authoring state, and UI.
-- `skills/hypagraph/SKILL.md`: bundled authoring and execution guidance.
+- `src/extension.ts`: creation, continuation scheduling, tool delivery, session events, and UI.
+- `src/pi/hypagoal.ts`: root creation schema and presentation.
+- `src/pi/hypagoal-continuation.ts`: pending continuation identity and prompt guidance.
 
 ### Persistence and recovery
 
@@ -161,163 +194,161 @@ The complete suite contains 83 test files and 333 tests.
 - `src/persistence/pi-session-store.ts`: Pi session event batches.
 - `src/persistence/session-rebuild.ts`: replay, snapshot verification, loop validation, and goal validation.
 
-### Future seams
+### Future seam
 
-The current Pi adapter exposes one active root. Do not convert that adapter limitation into a workflow-domain invariant.
+The current Pi adapter accounts only the root Pi session. Slice 4 must use additive usage contracts which a later family aggregate can sum across root, child, and executor sources. It must not add the family aggregate now.
 
-Later work adds family membership, multiple workflow aggregates, one family scheduler, executor dispatch, workspace leases, and concurrent execution above the current workflow-local lifecycle.
-
-## 5. Current task: M5B Slice 3 — graph-aware continuation
+## 5. Current task: M5B Slice 4 — budgets and reload safety
 
 ### 5.1 User result
 
-After `/hypagoal` creates the root, Hypagraph can request the next Pi turn automatically until canonical state says to stop.
+A user can configure or receive bounded autonomous execution. Hypagraph counts substantive continuation turns and normalized token usage, stops before another over-budget continuation, records the exact stop reason, and does not silently resume after a reload or branch change.
 
-Slice 3 must complete a multi-node root workflow, including disconnected or independent runnable components, without a manual continuation prompt after every turn.
+### 5.2 Domain budget model
 
-### 5.2 Pure continuation decision
+Add the smallest workflow-local budget state required for v0.6.
 
-Add one pure decision function over canonical state.
+It should represent at least:
 
-The function must return a typed decision such as:
+- optional maximum substantive turns;
+- consumed substantive turns;
+- optional maximum tokens;
+- consumed input, output, cached, or total tokens according to one documented normalization contract;
+- final-turn or wrap-up allowance when supported;
+- budget stop reason and relevant limit;
+- last accounted continuation or turn identity.
 
-```ts
-export type GoalContinuationDecision =
-  | { kind: "stop-completed"; goalId: string; workflowId: string; revision: number }
-  | { kind: "stop-paused"; goalId: string; workflowId: string; revision: number }
-  | { kind: "stop-blocked"; goalId: string; workflowId: string; revision: number; reason: string }
-  | { kind: "stop-failed"; goalId: string; workflowId: string; revision: number; reason: string }
-  | { kind: "continue-active-task"; goalId: string; workflowId: string; revision: number; nodeId: string }
-  | { kind: "start-ready-task"; goalId: string; workflowId: string; revision: number; nodeId: string }
-  | { kind: "run-ready-check"; goalId: string; workflowId: string; revision: number; nodeId: string }
-  | { kind: "evaluate-ready-gate"; goalId: string; workflowId: string; revision: number; nodeId: string }
-  | { kind: "invariant-error"; goalId?: string; workflowId?: string; revision?: number; reason: string };
-```
+Do not duplicate evaluator budgets or loop limits.
 
-Include loop identity when the selected action is materially associated with a loop region. Do not create a root-only action shape which must later be replaced for family scheduling.
+### 5.3 Commands and events
 
-The pure function must not call Pi, read the clock, generate IDs, inspect files, run commands, invoke a model, or mutate state.
+Prefer explicit commands and events for:
 
-### 5.3 Deterministic selection across all runnable root components
+- configuring or starting goal budgets where the current creation contract requires it;
+- recording one completed continuation turn and its usage;
+- recording a deterministic budget stop;
+- pausing because the session reloaded;
+- pausing because the active branch changed;
+- resuming explicitly after validation.
 
-The selector must enumerate all runnable actions from canonical state before it chooses one.
+All timestamps, usage values, operation IDs, and session or branch generations enter through commands. Pure reducers generate no external values.
 
-Selection must be deterministic and tested against stable definition order or another explicit stable key. It must not depend on object-map iteration, wall-clock time, event-recency heuristics, UI focus, or the most recently active component.
+A duplicate or stale usage report must be rejected without double charging.
 
-At minimum, candidate enumeration must include:
+### 5.4 Accounting boundary
 
-- the current active task when it can continue;
-- every ready task;
-- every runnable check;
-- every ready gate;
-- ready work in disconnected branches;
-- ready entries or nodes in independent loop components.
+Define exactly which Pi activity counts as a substantive Hypagoal turn.
 
-No component may starve solely because another component emitted the latest event.
+The default should count the model turn caused by a durable continuation request. Root creation, graph inspection, user-only messages, stale rejected delivery, restore, and internal UI updates must not consume a substantive turn unless the documented policy explicitly says otherwise.
 
-### 5.4 Continuation action identity and stale rejection
+Account the completed turn once. Include failed, interrupted, or no-progress turns when they consumed model execution, unless Pi cannot provide trustworthy usage and the limitation is documented.
 
-Every queued continuation must bind to the exact canonical state which selected it.
+### 5.5 Pre-dispatch decision
 
-At minimum include:
+Before storing another continuation request, evaluate canonical budget state.
 
-- goal ID;
-- workflow ID;
-- workflow revision;
-- node ID or gate/check identity;
-- loop ID when applicable;
-- session generation;
-- branch generation;
-- canonical sequence or snapshot hash where the current adapter supports it;
-- continuation ordinal or operation identity.
+The controller must choose one of:
 
-Before delivery, re-read active state and reject the continuation if any bound identity is stale.
+- dispatch the normal selected action;
+- dispatch one explicitly permitted final or wrap-up turn;
+- stop as turn-budget-limited;
+- stop as token-budget-limited;
+- stop because required usage data is invalid or stale.
 
-### 5.5 Pi delivery
+Budget state must not alter the Slice 3 component selector. It decides whether the selected action can be dispatched, not which component semantically owns work.
 
-Use one scheduling authority in the extension.
+### 5.6 Reload and branch-change pause
 
-The adapter may queue at most one continuation. It must not queue when:
+On `session_start` restore and `session_tree` branch change:
 
-- goal control is not active;
-- workflow state is terminal;
-- a user or tool message has priority;
-- another continuation is already queued;
-- the session or branch generation changed;
-- the selected action is stale;
-- no runnable action exists.
+1. invalidate adapter-local pending and delivered continuations;
+2. rebuild and validate canonical state;
+3. if a non-terminal goal was active, persist an explicit pause reason before autonomous work can resume;
+4. do not send a follow-up;
+5. require explicit resume;
+6. re-check budget and current runnable state after resume.
 
-`agent_end` can request delivery only after the prior turn's state changes are durable.
+Do not use an adapter-only boolean as the canonical pause record.
 
-The continuation prompt must identify the selected goal, workflow, revision, and node or loop action. It must guide the model to use existing Hypagraph tools and must not bypass node lifecycle rules.
+### 5.7 Pi integration
 
-### 5.6 Required tests
+Use Pi-provided usage metadata where available. Normalize it once at the adapter boundary and test absent, partial, malformed, and repeated data.
 
-Add focused domain and Pi tests proving:
+The Pi adapter must not infer success from token exhaustion. It should display a clear stop or pause message with consumed and maximum values.
 
-- pure decisions for terminal, paused, blocked, active-task, ready-task, check, and gate states;
-- deterministic candidate ordering;
-- selection across disconnected branches and independent loops;
-- no assumption that the last active component owns the next turn;
-- no starvation in a representative interleaving sequence;
-- explicit goal and workflow identity on every runnable action;
-- revision, sequence/hash, session-generation, and branch-generation stale rejection;
-- at most one queued continuation;
-- no continuation during creation;
-- no continuation during restore or replay;
-- no continuation after user interruption;
-- command and check lifecycle rules remain canonical;
-- one realistic Pi smoke completes a multi-node graph with an independent component without manual follow-up prompts.
+Keep at most one queued continuation and preserve every Slice 3 stale-delivery rule.
 
-### 5.7 Deferred from Slice 3
+### 5.8 Required tests
+
+Add focused domain, persistence, Pi, and integration tests proving:
+
+- turn usage is recorded once per durable continuation;
+- duplicate usage cannot double charge;
+- stale goal, workflow, revision, sequence, snapshot, session, branch, continuation, or turn identity is rejected;
+- token normalization is deterministic;
+- absent or malformed usage follows explicit policy;
+- the final permitted turn is counted;
+- no continuation is queued when a hard budget is exhausted;
+- budget exhaustion is not workflow completion;
+- replay and restore reproduce usage and stop state;
+- reload pauses an active goal and queues no work;
+- branch change pauses an active goal and queues no work;
+- terminal goals are not rewritten by reload handling;
+- explicit resume re-checks canonical budget and runnable state;
+- independent components keep their own lifecycle while the root budget stops dispatch;
+- loop limits and evaluation budgets remain unchanged;
+- a realistic Pi smoke stops at a turn limit;
+- a realistic Pi smoke stops at a token limit;
+- a restore smoke proves no silent continuation after reload.
+
+### 5.9 Deferred from Slice 4
 
 Do not add:
 
-- token or turn budgets;
-- reload-time pause or resume policy;
+- detailed loop and trusted-evaluation continuation guidance from Slice 5;
 - automatic graph revision;
 - child Hypagoals or family persistence;
-- executor or subagent abstraction;
+- family budget aggregation;
+- executor or subagent usage accounting;
 - worktree leases;
 - physical concurrency;
-- a new loop or evaluation model;
-- production isolated evaluation;
-- the full administrative `/hypagoal` command surface.
+- the complete administrative `/hypagoal` surface;
+- release packaging or a v0.6 tag.
 
-### 5.8 Done when
+### 5.10 Done when
 
-Slice 3 is complete when:
+Slice 4 is complete when:
 
-- continuation decisions are pure, deterministic, replay-compatible, and identity-rich;
-- one queued Pi continuation drives the root graph without manual prompts;
-- all runnable root components participate in deterministic selection;
-- disconnected and independent loop components can progress without recency-based ownership or starvation;
-- stale continuation delivery is rejected;
-- creation and restore remain side-effect free;
-- the action contract can later be lifted into the family scheduler;
-- the realistic Pi smoke and full six-target CI matrix pass.
+- token and substantive-turn usage is event-backed and replayable;
+- every counted turn maps to an explicit continuation identity;
+- duplicate and stale usage cannot mutate current state;
+- budget exhaustion prevents another continuation and remains distinct from success;
+- reload and branch change persist a pause and queue no work;
+- explicit resume re-checks current budgets and runnable state;
+- the contracts can later aggregate descendant usage without replacing workflow-local history;
+- realistic Pi budget and reload smoke tests pass;
+- the full six-target CI matrix passes.
 
 Suggested branch:
 
 ```text
-agent/m5b-slice-3-graph-aware-continuation
+agent/m5b-slice-4-budgets-reload-safety
 ```
 
 Suggested pull request title:
 
 ```text
-Add graph-aware Hypagoal continuation
+Add Hypagoal budgets and reload safety
 ```
 
-## 6. Work after Slice 3
+## 6. Work after Slice 4
 
 Continue M5B in this order:
 
-1. Slice 4: token and turn budgets plus reload safety.
-2. Slice 5: loop and trusted-evaluation continuation details and fairness.
-3. Slice 6: blockage and bounded revision.
-4. Slice 7: complete Pi product surface.
-5. Slice 8: dogfood and v0.6 release.
+1. Slice 5: loop and trusted-evaluation continuation details and fairness.
+2. Slice 6: blockage and bounded revision.
+3. Slice 7: complete Pi product surface.
+4. Slice 8: dogfood and v0.6 release.
 
 After v0.6:
 
@@ -325,4 +356,4 @@ After v0.6:
 2. M7: family persistence, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 3. M8: worktree integration and bounded concurrent scheduling.
 
-Do not tag or release v0.6 during Slice 3.
+Do not tag or release v0.6 during Slice 4.
