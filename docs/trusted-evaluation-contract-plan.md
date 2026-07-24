@@ -602,6 +602,42 @@ Add:
 
 Done when a changed protected evaluator artifact voids the score before progress state changes.
 
+The Slice 4 contract uses `evaluation.integrity` on a metric evaluator.
+
+The integrity definition contains:
+
+- a separate `trustLevel` value;
+- SHA-256 protected paths with bounded read limits;
+- optional exact Git revision, clean-worktree, and protected-path constraints;
+- an optional declared evaluator version and version fact.
+
+Hypagraph supports `transparent` and `protected` trust in this slice.
+
+Hypagraph rejects `isolated` trust until the isolated evaluator adapter exists.
+
+Each protected path has a declared SHA-256 value.
+
+The Git protected-path constraint compares all declared protected paths with an exact base revision.
+
+An unrelated path change does not fail this constraint.
+
+The metric result stores a versioned integrity observation in `CheckResult`.
+
+The observation contains:
+
+- the trust level;
+- the integrity status;
+- stable diagnostic codes;
+- a declared evaluator version when one exists;
+- a derived evaluator fingerprint;
+- coarse protected-evidence status.
+
+Replay uses this stored observation.
+
+Replay does not read protected files or run Git.
+
+Normal Pi, graph, and loop output does not show protected paths, expected hashes, protected commands, raw reports, or raw Git output.
+
 ### Slice 5 - Add evaluation-contract authoring
 
 Add:

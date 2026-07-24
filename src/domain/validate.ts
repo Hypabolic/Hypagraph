@@ -12,6 +12,7 @@ import type {
   MetricReportCheckDefinition,
   NodeDefinition,
 } from "./model.js";
+import { canonicalProtectedPath } from "./integrity-policy.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -27,6 +28,7 @@ const MAX_ASSERTION_BYTES = 16_777_216;
 const MAX_INVALID_EVALUATIONS = 1_000;
 const MAX_EVALUATIONS = 1_000_000;
 const MAX_DIAGNOSTIC_ITEMS = 100;
+const MAX_EVALUATOR_VERSION_LENGTH = 128;
 const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 const REPORT_PARSERS = {
   "test-report": "vitest-json",
@@ -210,6 +212,13 @@ const assertionFacts = (check: FileAssertionCheckDefinition | GitAssertionCheckD
   } else if (check.assertion.kind === "revision") {
     facts.set(`${check.namespace}.revision`, { type: "string", required: false });
     facts.set(`${check.namespace}.expected-revision`, { type: "string", required: false });
+  } else if (check.assertion.kind === "exact-revision") {
+    facts.set(`${check.namespace}.revision`, { type: "string", required: false });
+    facts.set(`${check.namespace}.expected-revision`, { type: "string", required: false });
+  } else if (check.assertion.kind === "unchanged-paths") {
+    facts.set(`${check.namespace}.changed-paths`, { type: "string-list", required: false });
+    facts.set(`${check.namespace}.protected-paths`, { type: "string-list", required: false });
+    facts.set(`${check.namespace}.base-revision`, { type: "string", required: false });
   } else {
     facts.set(`${check.namespace}.changed-paths`, { type: "string-list", required: false });
     facts.set(`${check.namespace}.expected-changed-paths`, { type: "string-list", required: false });
@@ -256,6 +265,16 @@ const validateAssertion = (node: NodeDefinition, check: FileAssertionCheckDefini
     const assertion = check.assertion;
     if (assertion.kind === "branch" && !assertion.name.trim()) diagnostics.push({ code: "git_assertion_branch_required", message: "A branch assertion requires a branch name.", location: `${location}.assertion.name` });
     if (assertion.kind === "revision" && !/^[a-f0-9]{7,64}$/i.test(assertion.sha)) diagnostics.push({ code: "invalid_git_revision", message: "The expected revision must be a hexadecimal Git object ID.", location: `${location}.assertion.sha` });
+    if (assertion.kind === "exact-revision" && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(assertion.sha)) diagnostics.push({ code: "invalid_git_exact_revision", message: "An exact Git revision must contain 40 or 64 hexadecimal characters.", location: `${location}.assertion.sha` });
+    if (assertion.kind === "unchanged-paths") {
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(assertion.baseRevision)) diagnostics.push({ code: "invalid_git_base_revision", message: "A Git base revision must contain 40 or 64 hexadecimal characters.", location: `${location}.assertion.baseRevision` });
+      if (assertion.paths.length === 0) diagnostics.push({ code: "git_unchanged_path_required", message: "An unchanged-path assertion requires at least one path.", location: `${location}.assertion.paths` });
+      const canonicalPaths = assertion.paths.map(canonicalProtectedPath);
+      if (new Set(canonicalPaths).size !== canonicalPaths.length) diagnostics.push({ code: "duplicate_git_unchanged_path", message: "An unchanged-path assertion must not repeat canonical paths.", location: `${location}.assertion.paths` });
+      assertion.paths.forEach((path, index) => {
+        if (canonicalProtectedPath(path) === undefined) diagnostics.push({ code: "invalid_git_unchanged_path", message: `Protected path '${path}' must be workspace-relative.`, location: `${location}.assertion.paths[${index}]` });
+      });
+    }
     if (assertion.kind === "changed-paths") {
       if (new Set(assertion.paths).size !== assertion.paths.length) diagnostics.push({ code: "duplicate_git_changed_path", message: "A changed-path assertion must not repeat paths.", location: `${location}.assertion.paths` });
       assertion.paths.forEach((path, index) => {
@@ -285,16 +304,65 @@ const validateMetricReport = (node: NodeDefinition, check: MetricReportCheckDefi
     } else diagnostics.push({ code: "invalid_feedback_mode", message: `Metric report check '${node.id}' has an invalid feedback mode.`, location: `${evaluationLocation}.feedback.mode` });
     if (check.evaluation.kind === "holdout" && feedback.mode !== "aggregate") diagnostics.push({ code: "holdout_feedback_must_be_aggregate", message: "A holdout evaluation must use aggregate feedback.", location: `${evaluationLocation}.feedback.mode` });
     if (check.evaluation.kind === "holdout" && feedback.exposeRawReport === true) diagnostics.push({ code: "holdout_raw_report_not_allowed", message: "A holdout evaluation must not expose the raw report.", location: `${evaluationLocation}.feedback.exposeRawReport` });
+    const integrity = check.evaluation.integrity;
+    if (integrity) {
+      const integrityLocation = `${evaluationLocation}.integrity`;
+      if (!["transparent", "protected", "isolated"].includes(integrity.trustLevel)) diagnostics.push({ code: "invalid_evaluator_trust_level", message: "The evaluator trust level is invalid.", location: `${integrityLocation}.trustLevel` });
+      if (integrity.trustLevel === "isolated") diagnostics.push({ code: "isolated_evaluator_unavailable", message: "Isolated evaluator trust is unavailable until an isolated evaluator adapter exists.", location: `${integrityLocation}.trustLevel` });
+      if (check.evaluation.kind === "holdout" && integrity.trustLevel !== "isolated") diagnostics.push({ code: "holdout_requires_isolated_trust", message: "A holdout evaluation requires isolated evaluator trust.", location: `${integrityLocation}.trustLevel` });
+      if (integrity.trustLevel === "protected" && feedback.exposeRawReport === true) diagnostics.push({ code: "protected_raw_report_not_allowed", message: "A protected evaluator must not expose the raw report.", location: `${evaluationLocation}.feedback.exposeRawReport` });
+
+      const protectedPaths = integrity.protectedPaths ?? [];
+      const canonicalPaths = protectedPaths.map((item) => canonicalProtectedPath(item.path));
+      if (new Set(canonicalPaths).size !== canonicalPaths.length) diagnostics.push({ code: "duplicate_protected_path", message: "Evaluator integrity must not repeat canonical protected paths.", location: `${integrityLocation}.protectedPaths` });
+      protectedPaths.forEach((item, index) => {
+        const itemLocation = `${integrityLocation}.protectedPaths[${index}]`;
+        if (canonicalProtectedPath(item.path) === undefined) diagnostics.push({ code: "invalid_protected_path", message: `Protected path '${item.path}' must be a non-empty workspace-relative path.`, location: `${itemLocation}.path` });
+        if (!/^[a-f0-9]{64}$/i.test(item.sha256)) diagnostics.push({ code: "invalid_protected_path_hash", message: "A protected path SHA-256 value must contain 64 hexadecimal characters.", location: `${itemLocation}.sha256` });
+        if (item.maxBytes !== undefined && (!Number.isInteger(item.maxBytes) || item.maxBytes < 1 || item.maxBytes > MAX_ASSERTION_BYTES)) diagnostics.push({ code: "invalid_protected_path_limit", message: `A protected path read limit must be between 1 and ${MAX_ASSERTION_BYTES} bytes.`, location: `${itemLocation}.maxBytes` });
+      });
+
+      const git = integrity.git;
+      if (git) {
+        const gitEntries = Object.keys(git);
+        if (gitEntries.length === 0) diagnostics.push({ code: "git_integrity_constraint_required", message: "A Git integrity declaration must contain at least one constraint.", location: `${integrityLocation}.git` });
+        if (git.expectedRevision !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(git.expectedRevision)) diagnostics.push({ code: "invalid_integrity_git_revision", message: "An integrity Git revision must contain 40 or 64 hexadecimal characters.", location: `${integrityLocation}.git.expectedRevision` });
+        if (git.requireCleanWorktree !== undefined && git.requireCleanWorktree !== true) diagnostics.push({ code: "invalid_integrity_git_clean_constraint", message: "The clean-worktree constraint must be true when it is present.", location: `${integrityLocation}.git.requireCleanWorktree` });
+        if (git.protectedPathsUnchangedFrom !== undefined) {
+          if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(git.protectedPathsUnchangedFrom)) diagnostics.push({ code: "invalid_integrity_git_base_revision", message: "An integrity Git base revision must contain 40 or 64 hexadecimal characters.", location: `${integrityLocation}.git.protectedPathsUnchangedFrom` });
+          if (protectedPaths.length === 0) diagnostics.push({ code: "git_protected_paths_required", message: "The protected-path Git constraint requires at least one protected path.", location: `${integrityLocation}.git.protectedPathsUnchangedFrom` });
+        }
+      }
+
+      const hasIntegrityInstrument = protectedPaths.length > 0 || (git !== undefined && Object.keys(git).length > 0);
+      if (integrity.trustLevel === "protected" && !hasIntegrityInstrument) diagnostics.push({ code: "protected_integrity_instrument_required", message: "A protected evaluator requires a file or Git integrity instrument.", location: integrityLocation });
+      if (!integrity.evaluatorVersion && !hasIntegrityInstrument) diagnostics.push({ code: "evaluator_identity_evidence_required", message: "Evaluator integrity requires a declared version or a derived artifact fingerprint.", location: integrityLocation });
+
+      const version = integrity.evaluatorVersion;
+      if (version) {
+        if (!version.value.trim() || version.value.length > MAX_EVALUATOR_VERSION_LENGTH) diagnostics.push({ code: "invalid_evaluator_version", message: `The evaluator version must contain between 1 and ${MAX_EVALUATOR_VERSION_LENGTH} characters.`, location: `${integrityLocation}.evaluatorVersion.value` });
+        if (version.fact !== undefined) {
+          const contract = contracts.get(version.fact);
+          if (!contract) diagnostics.push({ code: "evaluator_version_fact_not_declared", message: `Evaluator version fact '${version.fact}' requires a declared fact contract.`, location: `${integrityLocation}.evaluatorVersion.fact` });
+          else {
+            if (contract.type !== "string") diagnostics.push({ code: "evaluator_version_fact_type_mismatch", message: `Evaluator version fact '${version.fact}' must use type 'string'.`, location: `${integrityLocation}.evaluatorVersion.fact` });
+            if (!contract.required) diagnostics.push({ code: "evaluator_version_fact_must_be_required", message: `Evaluator version fact '${version.fact}' must use a required fact contract.`, location: `${integrityLocation}.evaluatorVersion.fact` });
+          }
+        }
+      }
+    }
   }
 
   const sources = new Set<string>();
   const mappedFacts = new Set<string>();
+  const versionFact = check.evaluation?.integrity?.evaluatorVersion?.fact;
+  if (versionFact !== undefined) mappedFacts.add(versionFact);
   check.mappings.forEach((mapping, index) => {
     const mappingLocation = `${location}.mappings[${index}]`;
     const segments = mapping.source.split(".");
     if (!METRIC_SOURCE_PATH_PATTERN.test(mapping.source) || segments.some((segment) => FORBIDDEN_METRIC_SEGMENTS.has(segment))) diagnostics.push({ code: "invalid_metric_source_path", message: `Metric source '${mapping.source}' is not a safe scalar path.`, location: `${mappingLocation}.source` });
     if (sources.has(mapping.source)) diagnostics.push({ code: "duplicate_metric_source", message: `Metric source '${mapping.source}' is mapped more than one time.`, location: `${mappingLocation}.source` });
-    if (mappedFacts.has(mapping.fact)) diagnostics.push({ code: "duplicate_metric_fact", message: `Metric fact '${mapping.fact}' is mapped more than one time.`, location: `${mappingLocation}.fact` });
+    if (mappedFacts.has(mapping.fact)) diagnostics.push({ code: versionFact === mapping.fact ? "evaluator_version_fact_conflict" : "duplicate_metric_fact", message: `Metric fact '${mapping.fact}' is mapped more than one time.`, location: `${mappingLocation}.fact` });
     sources.add(mapping.source);
     mappedFacts.add(mapping.fact);
     const contract = contracts.get(mapping.fact);

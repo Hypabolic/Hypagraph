@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { relative, resolve } from "node:path";
 import type { Diagnostic, EvidenceReference, FactInput, GitAssertionDefinition } from "../domain/model.js";
+import { canonicalProtectedPath } from "../domain/integrity-policy.js";
 
 export const GIT_ASSERTION_VERSION = 1 as const;
 export type { GitAssertionDefinition } from "../domain/model.js";
@@ -35,9 +36,14 @@ const runGit = async (rootDirectory: string, args: readonly string[]): Promise<s
   const stderr: Buffer[] = [];
   let stdoutBytes = 0;
   let stderrBytes = 0;
+  let outputExceeded = false;
   const append = (target: Buffer[], chunk: Buffer, current: number): number => {
-    if (current >= MAX_GIT_OUTPUT_BYTES) return current;
+    if (current >= MAX_GIT_OUTPUT_BYTES) {
+      outputExceeded = true;
+      return current;
+    }
     const accepted = chunk.subarray(0, MAX_GIT_OUTPUT_BYTES - current);
+    if (accepted.length !== chunk.length) outputExceeded = true;
     target.push(Buffer.from(accepted));
     return current + accepted.length;
   };
@@ -49,6 +55,7 @@ const runGit = async (rootDirectory: string, args: readonly string[]): Promise<s
     child.once("close", (code) => resolveExit(code ?? -1));
   });
   const errorText = Buffer.concat(stderr).toString("utf8").trim();
+  if (outputExceeded) throw new Error("Git output exceeded the fixed read limit.");
   if (exitCode !== 0) throw new Error(errorText || `Git exited with code ${exitCode}.`);
   return Buffer.concat(stdout).toString("utf8").replace(/\r\n/g, "\n").trim();
 };
@@ -102,21 +109,50 @@ export async function evaluateGitAssertion(
       ], passed ? [] : [{ code: "git_branch_mismatch", message: `Expected branch '${definition.name}' but found '${branch || "detached HEAD"}'.`, location: "assertion.name" }]);
     }
 
-    if (definition.kind === "revision") {
+    if (definition.kind === "revision" || definition.kind === "exact-revision") {
       if (!/^[a-f0-9]{7,64}$/i.test(definition.sha)) {
         return result(definition, false, [], [{ code: "invalid_git_revision", message: "The expected revision must be a hexadecimal Git object ID.", location: "assertion.sha" }]);
       }
-      const revision = await runGit(rootDirectory, ["rev-parse", "HEAD"]);
-      const passed = revision.toLowerCase().startsWith(definition.sha.toLowerCase());
+      if (definition.kind === "exact-revision" && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(definition.sha)) {
+        return result(definition, false, [], [{ code: "invalid_git_exact_revision", message: "An exact Git revision must contain 40 or 64 hexadecimal characters.", location: "assertion.sha" }]);
+      }
+      const revision = await runGit(rootDirectory, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      const passed = definition.kind === "exact-revision"
+        ? revision.toLowerCase() === definition.sha.toLowerCase()
+        : revision.toLowerCase().startsWith(definition.sha.toLowerCase());
       return result(definition, passed, [
         { name: "git.revision", type: "string", value: revision },
         { name: "git.expectedRevision", type: "string", value: definition.sha },
       ], passed ? [] : [{ code: "git_revision_mismatch", message: "The current Git revision does not match the expected revision.", location: "assertion.sha" }]);
     }
 
-    const expected = [...new Set(definition.paths.map((path) => path.replaceAll("\\", "/")))].sort((left, right) => left.localeCompare(right));
+    const expected = [...new Set(definition.paths.map((path) => canonicalProtectedPath(path) ?? ""))].sort((left, right) => left.localeCompare(right));
     if (expected.some((path) => path.length === 0 || path === ".." || path.startsWith("../") || path.startsWith("/"))) {
       return result(definition, false, [], [{ code: "invalid_git_changed_path", message: "Expected changed paths must be non-empty workspace-relative paths.", location: "assertion.paths" }]);
+    }
+    if (definition.kind === "unchanged-paths") {
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(definition.baseRevision)) {
+        return result(definition, false, [], [{ code: "invalid_git_base_revision", message: "A Git base revision must contain 40 or 64 hexadecimal characters.", location: "assertion.baseRevision" }]);
+      }
+      if (expected.length === 0) return result(definition, false, [], [{ code: "git_unchanged_path_required", message: "An unchanged-path assertion requires at least one path.", location: "assertion.paths" }]);
+      const baseRevision = await runGit(rootDirectory, ["rev-parse", "--verify", `${definition.baseRevision}^{commit}`]);
+      if (baseRevision.toLowerCase() !== definition.baseRevision.toLowerCase()) {
+        return result(definition, false, [], [{ code: "git_base_revision_mismatch", message: "The resolved Git base revision does not match the declared exact revision.", location: "assertion.baseRevision" }]);
+      }
+      const tracked = normalizedPaths(await runGit(rootDirectory, ["ls-tree", "-r", "--name-only", definition.baseRevision, "--", ...expected]));
+      const missing = expected.filter((path) => !tracked.includes(path));
+      const changed = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "--no-renames", definition.baseRevision, "--", ...expected]));
+      const untracked = normalizedPaths(await runGit(rootDirectory, ["ls-files", "--others", "--exclude-standard", "--", ...expected]));
+      const actual = [...new Set([...changed, ...untracked])].sort((left, right) => left.localeCompare(right));
+      const diagnostics: Diagnostic[] = [
+        ...(missing.length === 0 ? [] : [{ code: "git_protected_path_not_tracked", message: "A declared protected path is not tracked at the exact base revision.", location: "assertion.paths" }]),
+        ...(actual.length === 0 ? [] : [{ code: "git_protected_paths_changed", message: "A declared protected path changed from the exact base revision.", location: "assertion.paths" }]),
+      ];
+      return result(definition, diagnostics.length === 0, [
+        { name: "git.changedPaths", type: "string-list", value: actual },
+        { name: "git.protectedPaths", type: "string-list", value: expected },
+        { name: "git.baseRevision", type: "string", value: baseRevision },
+      ], diagnostics);
     }
     const actual = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "HEAD", "--"]));
     const mode = definition.mode ?? "exact";
