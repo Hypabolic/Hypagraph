@@ -25,6 +25,7 @@ import { validateDefinition } from "./validate.js";
 import { affectedDependants, loopFailurePolicy, workflowCanComplete } from "./workflow-outcome.js";
 import { evaluationBudgetExhaustedForKind, evaluationStartDiagnostic, metricEvaluationKind } from "./evaluation-policy.js";
 import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";
+import { goalIsTerminal, goalOutcomeFromWorkflow } from "./goal-policy.js";
 
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
@@ -59,6 +60,21 @@ const appendReadyEvents = (state: HypagraphState, events: DomainEvent[], command
 };
 
 const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => workflowCanComplete(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;
+
+const GOAL_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+
+const appendGoalOutcomeIfNeeded = (
+  state: HypagraphState,
+  events: DomainEvent[],
+  command: { commandId: string; correlationId?: string; at: string },
+): HypagraphState => {
+  const outcome = goalOutcomeFromWorkflow(state);
+  if (!outcome || !state.goal) return state;
+  return append(state, events, command, {
+    type: outcome.type,
+    data: { goalId: state.goal.goalId, reason: outcome.reason },
+  });
+};
 
 export function createWorkflow(definition: HypagraphDefinition, at: string, workflowId: string = randomUUID()): ReducerResult {
   const diagnostics = validateDefinition(definition);
@@ -314,8 +330,39 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   }
   const events: DomainEvent[] = [];
   let next = state;
-  if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); return { ok: true, state: next, events }; }
-  if (command.type === "resume-workflow") { if (state.phase !== "paused") return reject("workflow_not_paused", "The workflow is not paused."); next = append(next, events, command, { type: "hypagraph.workflow.resumed" }); next = appendReadyEvents(next, events, command); return { ok: true, state: next, events }; }
+  if (command.type === "start-goal") {
+    if (state.goal) return reject("goal_already_started", `Goal '${state.goal.goalId}' already controls this workflow.`);
+    if (!GOAL_ID_PATTERN.test(command.goalId)) return reject("invalid_goal_id", "A goal ID must start with a lower-case letter and contain at most 64 lower-case letters, numbers, underscores, or hyphens.", "goalId");
+    next = append(next, events, command, { type: "hypagraph.goal.started", data: { goalId: command.goalId } });
+    next = appendGoalOutcomeIfNeeded(next, events, command);
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "pause-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    if (state.goal.status === "paused") return reject("goal_already_paused", "The goal is already paused.");
+    if (state.goal.status === "blocked") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
+    next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly." } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "resume-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    if (state.goal.status !== "paused" && state.goal.status !== "blocked") return reject("goal_not_paused", "The goal is not paused or blocked.");
+    if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you resume the goal.");
+    if (state.phase === "blocked") return reject("workflow_blocked", "Revise or unblock the workflow before you resume the goal.");
+    next = append(next, events, command, { type: "hypagraph.goal.resumed", data: { goalId: state.goal.goalId } });
+    next = appendGoalOutcomeIfNeeded(next, events, command);
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "cancel-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    next = append(next, events, command, { type: "hypagraph.goal.cancelled", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was cancelled explicitly." } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }
+  if (command.type === "resume-workflow") { if (state.phase !== "paused") return reject("workflow_not_paused", "The workflow is not paused."); next = append(next, events, command, { type: "hypagraph.workflow.resumed" }); next = appendReadyEvents(next, events, command); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }
   if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you change a node.");
   if (command.type === "revise") {
     const activeLoop = activeLoopForRevision(state);
@@ -329,7 +376,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     events.push(revised); next = applyEvent(next, revised);
     for (const loopId of [...invalidatedLoops].sort()) next = append(next, events, command, { type: "hypagraph.loop.invalidated", loopId, data: { loopId, reason: "definition_revision" } });
     for (const nodeId of [...invalidated].sort()) if (next.runtime.nodes[nodeId]) next = append(next, events, command, { type: "hypagraph.node.invalidated", nodeId });
-    next = appendReadyEvents(next, events, command); return { ok: true, state: next, events };
+    next = appendReadyEvents(next, events, command); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events };
   }
 
   const node = state.runtime.nodes[command.nodeId];
@@ -591,6 +638,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       break;
     }
   }
+  next = appendGoalOutcomeIfNeeded(next, events, command);
   return { ok: true, state: next, events };
 }
 

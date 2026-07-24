@@ -15,65 +15,9 @@ on:
       - "**"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-goal-lifecycle:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/m5b-slice-1-goal-lifecycle'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-
-      - name: Execute the temporary patch
-        shell: bash
-        run: |
-          set +e
-          python - <<'PY' > goal-patch.log 2>&1
-          from pathlib import Path
-
-          workflow = Path('.github/workflows/apply-m5b-goal-lifecycle.yml').read_text()
-          lines = workflow.splitlines()
-          start_marker = "          python - <<'PY'"
-          end_marker = "          PY"
-          try:
-              start = lines.index(start_marker) + 1
-              end = lines.index(end_marker, start)
-          except ValueError as error:
-              raise SystemExit('The temporary patch script markers were not found.') from error
-          prefix = '          '
-          block = '\n'.join(line[len(prefix):] if line.startswith(prefix) else line for line in lines[start:end])
-          block = block.replace("'  runtime: WorkflowRuntime;\\n  createdAt: string;\\n'", "'    evaluations?: EvaluationRuntime;\\n  };\\n  createdAt: string;\\n'")
-          block = block.replace("'  runtime: WorkflowRuntime;\\n  goal?: GoalRuntime;\\n  createdAt: string;\\n'", "'    evaluations?: EvaluationRuntime;\\n  };\\n  goal?: GoalRuntime;\\n  createdAt: string;\\n'")
-          block = block.replace("'  | { type: \"pause-workflow\"; commandId: string; correlationId?: string; at: string }\\n  | { type: \"resume-workflow\"; commandId: string; correlationId?: string; at: string };\\n'", "'  | (CommandBase & { type: \"pause-workflow\" })\\n  | (CommandBase & { type: \"resume-workflow\" });\\n'")
-          block = block.replace("'''  | { type: \"pause-workflow\"; commandId: string; correlationId?: string; at: string }\n  | { type: \"resume-workflow\"; commandId: string; correlationId?: string; at: string }\n  | { type: \"start-goal\"; goalId: string; commandId: string; correlationId?: string; at: string }\n  | { type: \"pause-goal\"; reason?: string; commandId: string; correlationId?: string; at: string }\n  | { type: \"resume-goal\"; commandId: string; correlationId?: string; at: string }\n  | { type: \"cancel-goal\"; reason?: string; commandId: string; correlationId?: string; at: string };\n'''", "'''  | (CommandBase & { type: \"pause-workflow\" })\n  | (CommandBase & { type: \"resume-workflow\" })\n  | (CommandBase & { type: \"start-goal\"; goalId: string })\n  | (CommandBase & { type: \"pause-goal\"; reason?: string })\n  | (CommandBase & { type: \"resume-goal\" })\n  | (CommandBase & { type: \"cancel-goal\"; reason?: string });\n'''")
-          exec(compile(block, '.github/workflows/apply-m5b-goal-lifecycle.yml', 'exec'), {'__name__': '__main__'})
-          PY
-          status=$?
-          cat goal-patch.log
-          exit $status
-
-      - name: Upload patch log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: goal-lifecycle-patch-log
-          path: goal-patch.log
-
-      - name: Restore CI and commit the product patch
-        shell: bash
-        run: |
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git config user.name "Hypagraph Automation"
-          git config user.email "actions@users.noreply.github.com"
-          git add src/domain/model.ts src/domain/reducer.ts src/domain/projection.ts src/persistence/session-rebuild.ts src/ui/format.ts src/domain/goal-policy.ts .github/workflows/ci.yml .github/workflows/apply-m5b-goal-lifecycle.yml
-          git commit -m "Implement canonical goal lifecycle"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}

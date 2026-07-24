@@ -169,6 +169,22 @@ const migrateVersionOne = (value: unknown): PersistedHypagraph | undefined => {
   return { events, snapshot };
 };
 
+export function validateRestoredGoalState(state: HypagraphState): void {
+  const goal = state.goal;
+  if (!goal) return;
+  if (goal.workflowId !== state.workflowId) throw new Error(`Restored goal '${goal.goalId}' belongs to a different workflow.`);
+  if (!goal.goalId.trim()) throw new Error("Restored goal-control state has no goal ID.");
+  if (!Number.isFinite(Date.parse(goal.startedAt)) || !Number.isFinite(Date.parse(goal.updatedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid timestamps.`);
+  if (Date.parse(goal.updatedAt) < Date.parse(goal.startedAt)) throw new Error(`Restored goal '${goal.goalId}' was updated before it started.`);
+  const terminal = goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled";
+  if (terminal && (!goal.completedAt || !Number.isFinite(Date.parse(goal.completedAt)))) throw new Error(`Restored terminal goal '${goal.goalId}' has no valid completion time.`);
+  if (!terminal && goal.completedAt !== undefined) throw new Error(`Restored non-terminal goal '${goal.goalId}' has a completion time.`);
+  if (goal.status === "completed" && state.phase !== "completed") throw new Error(`Restored completed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if (goal.status === "failed" && state.phase !== "failed") throw new Error(`Restored failed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if (goal.status === "active" && state.phase !== "running") throw new Error(`Restored active goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if ((goal.status === "blocked" || goal.status === "failed" || goal.status === "cancelled") && !goal.stopReason?.trim()) throw new Error(`Restored goal '${goal.goalId}' has status '${goal.status}' without a stop reason.`);
+}
+
 export function validateRestoredLoopState(state: HypagraphState): void {
   const active = new Set(["starting", "running", "awaiting_evidence", "verifying"]);
   for (const definition of state.definition.loops) {
@@ -215,6 +231,7 @@ export function validateRestoredLoopState(state: HypagraphState): void {
 const acceptPersisted = (stored: StoredPersisted): PersistedHypagraph => {
   const snapshot = replayEvents(stored.events);
   validateRestoredLoopState(snapshot);
+  validateRestoredGoalState(snapshot);
   if (stored.snapshot.schemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== stored.snapshot.snapshotHash) throw new Error("The stored Hypagraph snapshot does not match its event stream.");
   return { events: structuredClone(stored.events), snapshot };
 };
@@ -233,6 +250,7 @@ const appendStoredBatch = (
   const events = [...(sameWorkflow ? latest.events : []), ...structuredClone(batch.events)];
   const snapshot = replayEvents(events);
   validateRestoredLoopState(snapshot);
+  validateRestoredGoalState(snapshot);
   const storedSchemaVersion = (batch.snapshot as unknown as StoredSnapshotShape).schemaVersion;
   if (storedSchemaVersion === HYPAGRAPH_SCHEMA_VERSION && snapshot.snapshotHash !== batch.snapshot.snapshotHash) {
     throw new Error("The stored Hypagraph event batch does not match its snapshot.");

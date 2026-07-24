@@ -30,6 +30,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
     loops: loopSurfaceSummaries(state),
+    ...(state.goal === undefined ? {} : { goal: structuredClone(state.goal) }),
     evaluationAuthoringAdvisories: assessEvaluationAuthoring(state.definition),
     snapshotHash: state.snapshotHash,
   };
@@ -42,6 +43,7 @@ export function renderWorkflow(state: HypagraphState): string {
     `Goal: ${state.definition.goal}`,
     `Active: ${String(summary.active ?? "none")}`,
     `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,
+    ...(state.goal === undefined ? [] : [`Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`]),
   ];
   if (state.definition.loops.length > 0) {
     lines.push("Loops:");
@@ -70,7 +72,7 @@ export function renderWidget(state: HypagraphState): string[] {
   const policy = shownLoop ? ` ${shownLoop.failurePolicy}` : "";
   const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
   return [
-    `Hypagraph: ${state.definition.title} [${state.phase}]`,
+    `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}` : ""}`,
     `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
   ];
 }
