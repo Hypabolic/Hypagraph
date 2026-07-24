@@ -1,0 +1,294 @@
+name: Apply M5B goal lifecycle
+
+on:
+  pull_request:
+    types: [ready_for_review]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'agent/m5b-slice-1-goal-lifecycle'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply canonical goal lifecycle
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}: {old[:80]!r}')
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/domain/model.ts',
+              'export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";\n',
+              '''export type WorkflowPhase = "running" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+
+export type GoalStatus = "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+
+export interface GoalRuntime {
+  goalId: string;
+  workflowId: string;
+  status: GoalStatus;
+  continuationOrdinal: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  stopReason?: string;
+}
+''',
+          )
+          replace_once(
+              'src/domain/model.ts',
+              '  runtime: WorkflowRuntime;\n  createdAt: string;\n',
+              '  runtime: WorkflowRuntime;\n  goal?: GoalRuntime;\n  createdAt: string;\n',
+          )
+          replace_once(
+              'src/domain/model.ts',
+              '  | "hypagraph.workflow.failed"\n',
+              '''  | "hypagraph.workflow.failed"
+  | "hypagraph.goal.started"
+  | "hypagraph.goal.paused"
+  | "hypagraph.goal.resumed"
+  | "hypagraph.goal.blocked"
+  | "hypagraph.goal.completed"
+  | "hypagraph.goal.failed"
+  | "hypagraph.goal.cancelled"
+''',
+          )
+          replace_once(
+              'src/domain/model.ts',
+              '  | { type: "pause-workflow"; commandId: string; correlationId?: string; at: string }\n  | { type: "resume-workflow"; commandId: string; correlationId?: string; at: string };\n',
+              '''  | { type: "pause-workflow"; commandId: string; correlationId?: string; at: string }
+  | { type: "resume-workflow"; commandId: string; correlationId?: string; at: string }
+  | { type: "start-goal"; goalId: string; commandId: string; correlationId?: string; at: string }
+  | { type: "pause-goal"; reason?: string; commandId: string; correlationId?: string; at: string }
+  | { type: "resume-goal"; commandId: string; correlationId?: string; at: string }
+  | { type: "cancel-goal"; reason?: string; commandId: string; correlationId?: string; at: string };
+''',
+          )
+
+          replace_once(
+              'src/domain/reducer.ts',
+              'import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";\n',
+              'import { invalidEvaluatorIntegrity, validateEvaluationIntegrityResult } from "./integrity-policy.js";\nimport { goalIsTerminal, goalOutcomeFromWorkflow } from "./goal-policy.js";\n',
+          )
+          replace_once(
+              'src/domain/reducer.ts',
+              'const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => workflowCanComplete(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;\n',
+              '''const appendCompletionIfNeeded = (state: HypagraphState, events: DomainEvent[], command: { commandId: string; correlationId?: string; at: string }): HypagraphState => workflowCanComplete(state) ? append(state, events, command, { type: "hypagraph.workflow.completed" }) : state;
+
+const GOAL_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+
+const appendGoalOutcomeIfNeeded = (
+  state: HypagraphState,
+  events: DomainEvent[],
+  command: { commandId: string; correlationId?: string; at: string },
+): HypagraphState => {
+  const outcome = goalOutcomeFromWorkflow(state);
+  if (!outcome || !state.goal) return state;
+  return append(state, events, command, {
+    type: outcome.type,
+    data: { goalId: state.goal.goalId, reason: outcome.reason },
+  });
+};
+''',
+          )
+          replace_once(
+              'src/domain/reducer.ts',
+              '''  const events: DomainEvent[] = [];
+  let next = state;
+  if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); return { ok: true, state: next, events }; }
+  if (command.type === "resume-workflow") { if (state.phase !== "paused") return reject("workflow_not_paused", "The workflow is not paused."); next = append(next, events, command, { type: "hypagraph.workflow.resumed" }); next = appendReadyEvents(next, events, command); return { ok: true, state: next, events }; }
+  if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you change a node.");
+''',
+              '''  const events: DomainEvent[] = [];
+  let next = state;
+  if (command.type === "start-goal") {
+    if (state.goal) return reject("goal_already_started", `Goal '${state.goal.goalId}' already controls this workflow.`);
+    if (!GOAL_ID_PATTERN.test(command.goalId)) return reject("invalid_goal_id", "A goal ID must start with a lower-case letter and contain at most 64 lower-case letters, numbers, underscores, or hyphens.", "goalId");
+    next = append(next, events, command, { type: "hypagraph.goal.started", data: { goalId: command.goalId } });
+    next = appendGoalOutcomeIfNeeded(next, events, command);
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "pause-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    if (state.goal.status === "paused") return reject("goal_already_paused", "The goal is already paused.");
+    if (state.goal.status === "blocked") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
+    next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly." } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "resume-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    if (state.goal.status !== "paused" && state.goal.status !== "blocked") return reject("goal_not_paused", "The goal is not paused or blocked.");
+    if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you resume the goal.");
+    if (state.phase === "blocked") return reject("workflow_blocked", "Revise or unblock the workflow before you resume the goal.");
+    next = append(next, events, command, { type: "hypagraph.goal.resumed", data: { goalId: state.goal.goalId } });
+    next = appendGoalOutcomeIfNeeded(next, events, command);
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "cancel-goal") {
+    if (!state.goal) return reject("goal_not_started", "This workflow has no goal-control state.");
+    if (goalIsTerminal(state.goal)) return reject("terminal_goal", `The goal is ${state.goal.status}.`);
+    next = append(next, events, command, { type: "hypagraph.goal.cancelled", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was cancelled explicitly." } });
+    return { ok: true, state: next, events };
+  }
+  if (command.type === "pause-workflow") { if (state.phase === "paused") return reject("workflow_already_paused", "The workflow is already paused."); next = append(next, events, command, { type: "hypagraph.workflow.paused" }); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }
+  if (command.type === "resume-workflow") { if (state.phase !== "paused") return reject("workflow_not_paused", "The workflow is not paused."); next = append(next, events, command, { type: "hypagraph.workflow.resumed" }); next = appendReadyEvents(next, events, command); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events }; }
+  if (state.phase === "paused") return reject("workflow_paused", "Resume the workflow before you change a node.");
+''',
+          )
+          replace_once(
+              'src/domain/reducer.ts',
+              '    next = appendReadyEvents(next, events, command); return { ok: true, state: next, events };\n  }\n\n  const node = state.runtime.nodes[command.nodeId];\n',
+              '    next = appendReadyEvents(next, events, command); next = appendGoalOutcomeIfNeeded(next, events, command); return { ok: true, state: next, events };\n  }\n\n  const node = state.runtime.nodes[command.nodeId];\n',
+          )
+          replace_once(
+              'src/domain/reducer.ts',
+              '  return { ok: true, state: next, events };\n}\n\nexport const reduceHypagraph = handleCommand;\n',
+              '  next = appendGoalOutcomeIfNeeded(next, events, command);\n  return { ok: true, state: next, events };\n}\n\nexport const reduceHypagraph = handleCommand;\n',
+          )
+
+          replace_once(
+              'src/domain/projection.ts',
+              '    case "hypagraph.workflow.failed": next.phase = "failed"; break;\n',
+              '''    case "hypagraph.workflow.failed": next.phase = "failed"; break;
+    case "hypagraph.goal.started": {
+      if (next.goal) throw new Error("The event stream starts more than one goal for one workflow.");
+      const goalId = event.data.goalId;
+      if (typeof goalId !== "string" || !goalId.trim()) throw new Error("A goal-started event requires a goal ID.");
+      next.goal = {
+        goalId,
+        workflowId: next.workflowId,
+        status: "active",
+        continuationOrdinal: 0,
+        startedAt: event.timestamp,
+        updatedAt: event.timestamp,
+      };
+      break;
+    }
+    case "hypagraph.goal.paused": {
+      if (!next.goal) throw new Error("A goal-paused event requires existing goal-control state.");
+      next.goal.status = "paused";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The goal is paused.");
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.resumed": {
+      if (!next.goal) throw new Error("A goal-resumed event requires existing goal-control state.");
+      if (next.goal.status !== "paused" && next.goal.status !== "blocked") throw new Error("A goal can resume only from paused or blocked state.");
+      next.goal.status = "active";
+      next.goal.updatedAt = event.timestamp;
+      delete next.goal.stopReason;
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.blocked": {
+      if (!next.goal) throw new Error("A goal-blocked event requires existing goal-control state.");
+      next.goal.status = "blocked";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The workflow is blocked.");
+      delete next.goal.completedAt;
+      break;
+    }
+    case "hypagraph.goal.completed": {
+      if (!next.goal) throw new Error("A goal-completed event requires existing goal-control state.");
+      next.goal.status = "completed";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The canonical workflow completed.");
+      break;
+    }
+    case "hypagraph.goal.failed": {
+      if (!next.goal) throw new Error("A goal-failed event requires existing goal-control state.");
+      next.goal.status = "failed";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The canonical workflow failed.");
+      break;
+    }
+    case "hypagraph.goal.cancelled": {
+      if (!next.goal) throw new Error("A goal-cancelled event requires existing goal-control state.");
+      next.goal.status = "cancelled";
+      next.goal.updatedAt = event.timestamp;
+      next.goal.completedAt = event.timestamp;
+      next.goal.stopReason = String(event.data.reason ?? "The goal was cancelled.");
+      break;
+    }
+''',
+          )
+
+          replace_once(
+              'src/persistence/session-rebuild.ts',
+              'export function validateRestoredLoopState(state: HypagraphState): void {\n',
+              '''export function validateRestoredGoalState(state: HypagraphState): void {
+  const goal = state.goal;
+  if (!goal) return;
+  if (goal.workflowId !== state.workflowId) throw new Error(`Restored goal '${goal.goalId}' belongs to a different workflow.`);
+  if (!goal.goalId.trim()) throw new Error("Restored goal-control state has no goal ID.");
+  if (!Number.isFinite(Date.parse(goal.startedAt)) || !Number.isFinite(Date.parse(goal.updatedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid timestamps.`);
+  if (Date.parse(goal.updatedAt) < Date.parse(goal.startedAt)) throw new Error(`Restored goal '${goal.goalId}' was updated before it started.`);
+  const terminal = goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled";
+  if (terminal && (!goal.completedAt || !Number.isFinite(Date.parse(goal.completedAt)))) throw new Error(`Restored terminal goal '${goal.goalId}' has no valid completion time.`);
+  if (!terminal && goal.completedAt !== undefined) throw new Error(`Restored non-terminal goal '${goal.goalId}' has a completion time.`);
+  if (goal.status === "completed" && state.phase !== "completed") throw new Error(`Restored completed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if (goal.status === "failed" && state.phase !== "failed") throw new Error(`Restored failed goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if (goal.status === "active" && state.phase !== "running") throw new Error(`Restored active goal '${goal.goalId}' does not match workflow phase '${state.phase}'.`);
+  if ((goal.status === "blocked" || goal.status === "failed" || goal.status === "cancelled") && !goal.stopReason?.trim()) throw new Error(`Restored goal '${goal.goalId}' has status '${goal.status}' without a stop reason.`);
+}
+
+export function validateRestoredLoopState(state: HypagraphState): void {
+''',
+          )
+          replace_once(
+              'src/persistence/session-rebuild.ts',
+              '  validateRestoredLoopState(snapshot);\n  if (stored.snapshot.schemaVersion === HYPAGRAPH_SCHEMA_VERSION',
+              '  validateRestoredLoopState(snapshot);\n  validateRestoredGoalState(snapshot);\n  if (stored.snapshot.schemaVersion === HYPAGRAPH_SCHEMA_VERSION',
+          )
+          replace_once(
+              'src/persistence/session-rebuild.ts',
+              '  validateRestoredLoopState(snapshot);\n  const storedSchemaVersion =',
+              '  validateRestoredLoopState(snapshot);\n  validateRestoredGoalState(snapshot);\n  const storedSchemaVersion =',
+          )
+
+          replace_once(
+              'src/ui/format.ts',
+              '    loops: loopSurfaceSummaries(state),\n    evaluationAuthoringAdvisories:',
+              '    loops: loopSurfaceSummaries(state),\n    ...(state.goal === undefined ? {} : { goal: structuredClone(state.goal) }),\n    evaluationAuthoringAdvisories:',
+          )
+          replace_once(
+              'src/ui/format.ts',
+              '    `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,\n  ];\n',
+              '    `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,\n    ...(state.goal === undefined ? [] : [`Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`]),\n  ];\n',
+          )
+          replace_once(
+              'src/ui/format.ts',
+              '    `Hypagraph: ${state.definition.title} [${state.phase}]`,\n',
+              '    `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}` : ""}`,\n',
+          )
+
+          git_file = Path('.github/workflows/apply-m5b-goal-lifecycle.yml')
+          git_file.unlink()
+          PY
+      - name: Commit goal lifecycle
+        shell: bash
+        run: |
+          git config user.name "Hypagraph Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/domain/model.ts src/domain/reducer.ts src/domain/projection.ts src/persistence/session-rebuild.ts src/ui/format.ts .github/workflows/apply-m5b-goal-lifecycle.yml
+          git commit -m "Implement canonical goal lifecycle"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
