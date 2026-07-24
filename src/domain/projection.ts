@@ -161,6 +161,17 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       };
       break;
     }
+    case "hypagraph.goal.continuation-requested": {
+      if (!next.goal) throw new Error("A continuation-requested event requires existing goal-control state.");
+      if (event.data.goalId !== next.goal.goalId) throw new Error("A continuation-requested event belongs to a different goal.");
+      const ordinal = event.data.ordinal;
+      if (!Number.isInteger(ordinal) || ordinal !== next.goal.continuationOrdinal + 1) {
+        throw new Error("A continuation-requested event has a non-contiguous ordinal.");
+      }
+      next.goal.continuationOrdinal = ordinal;
+      next.goal.updatedAt = event.timestamp;
+      break;
+    }
     case "hypagraph.goal.paused": {
       if (!next.goal) throw new Error("A goal-paused event requires existing goal-control state.");
       next.goal.status = "paused";

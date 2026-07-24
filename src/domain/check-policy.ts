@@ -9,6 +9,22 @@ const reject = (code: string, message: string, suggestion?: string): CheckStartE
   diagnostic: { code, message, ...(suggestion ? { suggestion } : {}) },
 });
 
+export function checkCanStartWithoutWaiting(
+  runtime: NodeRuntime,
+  definition: CheckDefinition,
+): boolean {
+  if (runtime.status === "ready") return true;
+  if (runtime.status !== "failed") return false;
+  const policy = definition.retry;
+  if (!policy || (policy.backoffMs ?? 0) > 0 || runtime.attemptCount >= policy.maxAttempts) return false;
+  const previousAttemptId = runtime.currentAttemptId;
+  const previousStatus = previousAttemptId
+    ? runtime.attempts[previousAttemptId]?.checkResult?.status
+    : undefined;
+  if (previousStatus !== "failed" && previousStatus !== "timed_out" && previousStatus !== "error") return false;
+  return policy.retryOn.includes(previousStatus);
+}
+
 export function evaluateCheckStart(
   runtime: NodeRuntime,
   definition: CheckDefinition,

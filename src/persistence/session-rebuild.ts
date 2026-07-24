@@ -174,6 +174,7 @@ export function validateRestoredGoalState(state: HypagraphState): void {
   if (!goal) return;
   if (goal.workflowId !== state.workflowId) throw new Error(`Restored goal '${goal.goalId}' belongs to a different workflow.`);
   if (!goal.goalId.trim()) throw new Error("Restored goal-control state has no goal ID.");
+  if (!Number.isInteger(goal.continuationOrdinal) || goal.continuationOrdinal < 0) throw new Error(`Restored goal '${goal.goalId}' has an invalid continuation ordinal.`);
   if (!Number.isFinite(Date.parse(goal.startedAt)) || !Number.isFinite(Date.parse(goal.updatedAt))) throw new Error(`Restored goal '${goal.goalId}' has invalid timestamps.`);
   if (Date.parse(goal.updatedAt) < Date.parse(goal.startedAt)) throw new Error(`Restored goal '${goal.goalId}' was updated before it started.`);
   const terminal = goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled";
