@@ -27,7 +27,7 @@ new = '''  it("durably exhausts the consumed allowance for a stale proposal with
     expect(result.state.revision).toBe(1);
     expect(result.events.map((event) => event.type)).not.toContain("hypagraph.workflow.revised");
     expect(result.state.goal?.automaticRevision.lastAttempt).toMatchObject({ outcome: "abandoned", outcomeCode: "stale_goal_revision" });
-    expect(result.state.goal?.pendingContinuation).toBeUndefined();
+    expect(result.state.goal?.pendingContinuation).toMatchObject({ action: { kind: "request-revision" } });
   });'''
 if old not in text:
     raise RuntimeError("stale revision test target was not found")
