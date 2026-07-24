@@ -23,13 +23,21 @@ const workspaceRoot = (rootDirectory: string): string => {
   return root;
 };
 
-const runGit = async (rootDirectory: string, args: readonly string[]): Promise<string> => {
+const abortError = (): Error => {
+  const error = new Error("The Git assertion was cancelled.");
+  error.name = "AbortError";
+  return error;
+};
+
+const runGit = async (rootDirectory: string, args: readonly string[], signal?: AbortSignal): Promise<string> => {
+  if (signal?.aborted) throw abortError();
   const root = workspaceRoot(rootDirectory);
   const child = spawn("git", args, {
     cwd: root,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    ...(signal === undefined ? {} : { signal }),
   });
 
   const stdout: Buffer[] = [];
@@ -89,10 +97,12 @@ const result = (
 export async function evaluateGitAssertion(
   rootDirectory: string,
   definition: GitAssertionDefinition,
+  signal?: AbortSignal,
 ): Promise<GitAssertionResult> {
   try {
+    if (signal?.aborted) throw abortError();
     if (definition.kind === "clean") {
-      const paths = normalizedPaths(await runGit(rootDirectory, ["status", "--porcelain=v1", "--untracked-files=all"]));
+      const paths = normalizedPaths(await runGit(rootDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], signal));
       const passed = paths.length === 0;
       return result(definition, passed, [
         { name: "git.clean", type: "boolean", value: passed },
@@ -101,7 +111,7 @@ export async function evaluateGitAssertion(
     }
 
     if (definition.kind === "branch") {
-      const branch = await runGit(rootDirectory, ["branch", "--show-current"]);
+      const branch = await runGit(rootDirectory, ["branch", "--show-current"], signal);
       const passed = branch === definition.name;
       return result(definition, passed, [
         { name: "git.branch", type: "string", value: branch },
@@ -116,7 +126,7 @@ export async function evaluateGitAssertion(
       if (definition.kind === "exact-revision" && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(definition.sha)) {
         return result(definition, false, [], [{ code: "invalid_git_exact_revision", message: "An exact Git revision must contain 40 or 64 hexadecimal characters.", location: "assertion.sha" }]);
       }
-      const revision = await runGit(rootDirectory, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      const revision = await runGit(rootDirectory, ["rev-parse", "--verify", "HEAD^{commit}"], signal);
       const passed = definition.kind === "exact-revision"
         ? revision.toLowerCase() === definition.sha.toLowerCase()
         : revision.toLowerCase().startsWith(definition.sha.toLowerCase());
@@ -135,14 +145,14 @@ export async function evaluateGitAssertion(
         return result(definition, false, [], [{ code: "invalid_git_base_revision", message: "A Git base revision must contain 40 or 64 hexadecimal characters.", location: "assertion.baseRevision" }]);
       }
       if (expected.length === 0) return result(definition, false, [], [{ code: "git_unchanged_path_required", message: "An unchanged-path assertion requires at least one path.", location: "assertion.paths" }]);
-      const baseRevision = await runGit(rootDirectory, ["rev-parse", "--verify", `${definition.baseRevision}^{commit}`]);
+      const baseRevision = await runGit(rootDirectory, ["rev-parse", "--verify", `${definition.baseRevision}^{commit}`], signal);
       if (baseRevision.toLowerCase() !== definition.baseRevision.toLowerCase()) {
         return result(definition, false, [], [{ code: "git_base_revision_mismatch", message: "The resolved Git base revision does not match the declared exact revision.", location: "assertion.baseRevision" }]);
       }
-      const tracked = normalizedPaths(await runGit(rootDirectory, ["ls-tree", "-r", "--name-only", definition.baseRevision, "--", ...expected]));
+      const tracked = normalizedPaths(await runGit(rootDirectory, ["ls-tree", "-r", "--name-only", definition.baseRevision, "--", ...expected], signal));
       const missing = expected.filter((path) => !tracked.includes(path));
-      const changed = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "--no-renames", definition.baseRevision, "--", ...expected]));
-      const untracked = normalizedPaths(await runGit(rootDirectory, ["ls-files", "--others", "--exclude-standard", "--", ...expected]));
+      const changed = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "--no-renames", definition.baseRevision, "--", ...expected], signal));
+      const untracked = normalizedPaths(await runGit(rootDirectory, ["ls-files", "--others", "--exclude-standard", "--", ...expected], signal));
       const actual = [...new Set([...changed, ...untracked])].sort((left, right) => left.localeCompare(right));
       const diagnostics: Diagnostic[] = [
         ...(missing.length === 0 ? [] : [{ code: "git_protected_path_not_tracked", message: "A declared protected path is not tracked at the exact base revision.", location: "assertion.paths" }]),
@@ -154,7 +164,7 @@ export async function evaluateGitAssertion(
         { name: "git.baseRevision", type: "string", value: baseRevision },
       ], diagnostics);
     }
-    const actual = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "HEAD", "--"]));
+    const actual = normalizedPaths(await runGit(rootDirectory, ["diff", "--name-only", "HEAD", "--"], signal));
     const mode = definition.mode ?? "exact";
     const passed = mode === "exact"
       ? actual.length === expected.length && actual.every((path, index) => path === expected[index])
@@ -165,9 +175,10 @@ export async function evaluateGitAssertion(
       { name: "git.changedPathMode", type: "string", value: mode },
     ], passed ? [] : [{ code: "git_changed_paths_mismatch", message: "The changed path set does not satisfy the assertion.", location: "assertion.paths" }]);
   } catch (error) {
+    const cancelled = error instanceof Error && error.name === "AbortError";
     return result(definition, false, [], [{
-      code: "git_assertion_failed",
-      message: `The fixed Git assertion command failed: ${error instanceof Error ? error.message : String(error)}`,
+      code: cancelled ? "git_assertion_cancelled" : "git_assertion_failed",
+      message: cancelled ? "The Git assertion was cancelled." : `The fixed Git assertion command failed: ${error instanceof Error ? error.message : String(error)}`,
       location: "assertion",
     }]);
   }
