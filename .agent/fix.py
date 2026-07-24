@@ -46,8 +46,8 @@ replacement = (
     '      }\n'
 )
 text = text[:start] + replacement + text[end:]
-text = text.replace('      const canonical = state.goal.pendingContinuation;', '      const canonical = goal.pendingContinuation;', 1)
-usage_start = text.index('      const canonical = goal.pendingContinuation;', start)
+text = text.replace('      const canonical = state.goal.pendingContinuation;', '      const canonical = revisionRequest;', 1)
+usage_start = text.index('      const canonical = revisionRequest;', start)
 usage_end = text.index('      if (!recorded.ok)', usage_start)
 usage = text[usage_start:usage_end].replace('goalId: state.goal.goalId', 'goalId: goal.goalId')
 text = text[:usage_start] + usage + text[usage_end:]
