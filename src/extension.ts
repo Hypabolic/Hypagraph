@@ -359,11 +359,44 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     restoreContinuationTools();
     if (suppressContinuationAtNextAgentEnd) {
       suppressContinuationAtNextAgentEnd = false;
-      await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
-      pendingContinuation = undefined;
-      deliveredContinuation = undefined;
+      const interruptedRevision = deliveredContinuation?.action.kind === "request-revision"
+        ? deliveredContinuation
+        : undefined;
+      if (!interruptedRevision) {
+        await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
+        pendingContinuation = undefined;
+        deliveredContinuation = undefined;
+        updateUi(state, ctx, graphPane);
+        return;
+      }
+      const goal = state?.goal;
+      const revisionRequest = goal?.pendingContinuation;
+      if (state && goal && revisionRequest?.action.kind === "request-revision" && goal.automaticRevision.lastAttempt?.outcome === "pending") {
+        const interrupted = await applyCommandsAndCommit(eventStore.lease(), state, [{
+          type: "abandon-goal-revision",
+          goalId: goal.goalId,
+          workflowId: state.workflowId,
+          expectedRevision: state.revision,
+          expectedSequence: state.sequence,
+          expectedSnapshotHash: state.snapshotHash,
+          revisionOperationId: interruptedRevision.operationId,
+          continuationOperationId: revisionRequest.operationId,
+          continuationOrdinal: revisionRequest.ordinal,
+          requestSequence: revisionRequest.requestSequence,
+          sessionGeneration: revisionRequest.sessionGeneration,
+          branchGeneration: revisionRequest.branchGeneration,
+          outcomeCode: "revision_turn_interrupted",
+          reason: "Interactive input interrupted the delivered automatic revision turn.",
+          commandId: `abandon-goal-revision:interrupted:${randomUUID()}`,
+          correlationId: interruptedRevision.operationId,
+          at: new Date().toISOString(),
+        }]);
+        if (interrupted.ok) {
+          state = interrupted.value.state;
+          events.push(...interrupted.value.events);
+        }
+      }
       updateUi(state, ctx, graphPane);
-      return;
     }
     if (deliveredContinuation) {
       const delivered = deliveredContinuation;

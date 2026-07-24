@@ -186,4 +186,37 @@ describe("Hypagoal bounded revision Pi smoke", () => {
     expect(state.goal.pendingContinuation).toBeUndefined();
   });
 
+
+  it("charges one interrupted delivered revision turn and exhausts the allowance", async () => {
+    const value = harness();
+    await create(value);
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await transition(value, "inventory", "block", { reason: "A bounded repository step is missing.", blockerKind: "repository-work" });
+    await agentEnd(value);
+    const revisionPrompt = prompts(value).at(-1)!;
+    await before(value, revisionPrompt);
+
+    await invoke(value, "input", {
+      type: "input",
+      text: "Stop the revision turn.",
+      source: "interactive",
+      streamingBehavior: "steer",
+    });
+    const promptCount = prompts(value).length;
+    await agentEnd(value);
+
+    const state = latest(value);
+    expect(prompts(value)).toHaveLength(promptCount);
+    expect(state.goal).toMatchObject({
+      status: "blocked",
+      budget: { consumedTurns: 2, consumedTokens: { totalTokens: 24 } },
+      automaticRevision: {
+        consumedAttempts: 1,
+        lastAttempt: { outcome: "abandoned", outcomeCode: "revision_turn_interrupted" },
+      },
+    });
+    expect(state.goal.pendingContinuation).toBeUndefined();
+  });
+
 });

@@ -179,7 +179,9 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
   }).map((contract) => contract.name);
 };
 
-const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => ACTIVE_ATTEMPT_STATUSES.has(item.status));
+const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) =>
+  ACTIVE_ATTEMPT_STATUSES.has(item.status)
+  || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying"));
 
 const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
   if (result.attemptId !== attemptId) return reject("stale_check_result", "The check result does not match the current attempt.");

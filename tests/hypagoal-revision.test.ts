@@ -263,4 +263,20 @@ describe("bounded Hypagoal revision", () => {
     expect(validateAutomaticRevision(base(), proposal)).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
   });
 
+
+  it("rejects revision when active attempt history remains behind a blocked node status", () => {
+    const value = block(createGoal());
+    const unsafe = structuredClone(value.state);
+    unsafe.runtime.nodes.prepare!.attempts["retained-active-attempt"] = { status: "running" } as any;
+
+    const result = handleCommand(unsafe, {
+      type: "revise",
+      definition: acceptedProposal(),
+      commandId: "manual-revise-retained-attempt",
+      at,
+    });
+
+    expect(result).toMatchObject({ ok: false, diagnostics: [{ code: "active_revision_not_allowed" }] });
+  });
+
 });
