@@ -29,6 +29,7 @@ import {
   normalizeHypagoalStartInput,
   renderHypagoalCreated,
   renderReplacementRequired,
+  type HypagoalCreationRequest,
 } from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 
@@ -110,12 +111,18 @@ function updateUi(
   ctx.ui.setWidget("hypagraph", renderWidget(state));
 }
 
+interface PendingHypagoalAuthoring {
+  objective: string;
+  creationRequest: HypagoalCreationRequest;
+  replacementConfirmation?: ReturnType<typeof replacementConfirmationFor>;
+}
+
 export default function hypagraphExtension(pi: ExtensionAPI): void {
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
   let sessionGeneration = 0;
   let branchGeneration = 0;
-  let hypagoalAuthoring = false;
+  let hypagoalAuthoring: PendingHypagoalAuthoring | undefined;
   const graphPane = new GraphPaneController();
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
@@ -130,7 +137,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const restore = async (ctx: ExtensionContext, branchChanged: boolean): Promise<void> => {
     sessionGeneration += 1;
     if (branchChanged) branchGeneration += 1;
-    hypagoalAuthoring = false;
+    hypagoalAuthoring = undefined;
     activeExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     eventStore.synchronize(session);
@@ -191,11 +198,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     graphPane.dispose();
   });
   pi.on("agent_end", async () => {
-    hypagoalAuthoring = false;
+    hypagoalAuthoring = undefined;
   });
 
   pi.on("before_agent_start", async (event) => {
-    if (hypagoalAuthoring) {
+    if (hypagoalAuthoring !== undefined) {
       return {
         systemPrompt: `${event.systemPrompt}\n\nHYPAGOAL AUTHORING CONTROL:\nInspect repository context and author one complete canonical workflow. The user supplied an objective, not a graph. Do not modify repository files, run workflow nodes, start checks, invoke executors, or continue implementation. Call hypagoal_start once as the final action.`,
       };
@@ -218,7 +225,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (hypagoalAuthoring && (event.toolName === "write" || event.toolName === "edit")) {
+    if (hypagoalAuthoring !== undefined && (event.toolName === "write" || event.toolName === "edit")) {
       return { block: true, reason: "Hypagoal authoring is read-only. Create the workflow before semantic repository work starts." };
     }
     if (!state || state.definition.policy.mode !== "strict") return;
@@ -246,10 +253,48 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
       const input = normalizeHypagoalStartInput(params);
+      const pending = hypagoalAuthoring;
+      const suppliedCreation = input.creationRequest;
+      const rejectCreationRequest = (code: string, message: string) => ({
+        content: [{ type: "text" as const, text: `Hypagoal was not created. Canonical state is unchanged.\n${code}: ${message}` }],
+        details: { hypagoal: { kind: "rejected", diagnostics: [{ code, message }] } },
+        terminate: true,
+      });
+
+      if (pending) {
+        if (!suppliedCreation) {
+          hypagoalAuthoring = undefined;
+          return rejectCreationRequest(
+            "hypagoal_creation_request_required",
+            "The active /hypagoal authoring turn requires its exact creationRequest identity.",
+          );
+        }
+        const matches = suppliedCreation.operationId === pending.creationRequest.operationId
+          && suppliedCreation.sessionGeneration === pending.creationRequest.sessionGeneration
+          && suppliedCreation.branchGeneration === pending.creationRequest.branchGeneration
+          && sessionGeneration === pending.creationRequest.sessionGeneration
+          && branchGeneration === pending.creationRequest.branchGeneration;
+        if (!matches) {
+          hypagoalAuthoring = undefined;
+          return rejectCreationRequest(
+            "stale_hypagoal_creation_request",
+            "The creationRequest does not match the active Pi session and branch generation.",
+          );
+        }
+      } else if (suppliedCreation) {
+        return rejectCreationRequest(
+          "stale_hypagoal_creation_request",
+          "The creationRequest no longer belongs to an active /hypagoal authoring turn.",
+        );
+      }
+
+      const creationOperationId = pending?.creationRequest.operationId ?? `hypagoal-start:${randomUUID()}`;
+      const objective = pending?.objective ?? input.objective;
+      const replacementConfirmation = pending?.replacementConfirmation ?? input.replacementConfirmation;
       const workflowId = randomUUID();
       const goalId = `goal-${randomUUID()}`;
       const result = await startRootHypagoal(eventStore.lease(), state, {
-        objective: input.objective,
+        objective,
         definition: input.definition,
         workflowId,
         goalId,
@@ -258,11 +303,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         sessionGeneration,
         branchGeneration,
         advisories: input.advisories,
-        ...(input.replacementConfirmation === undefined
+        ...(replacementConfirmation === undefined
           ? {}
-          : { replacementConfirmation: input.replacementConfirmation }),
+          : { replacementConfirmation }),
       });
-      hypagoalAuthoring = false;
+      hypagoalAuthoring = undefined;
 
       if (result.kind === "created") {
         state = result.state;
@@ -282,6 +327,12 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
               goalControl: structuredClone(state.goal),
               ready: hypagoalReadyWork(state),
               advisories: structuredClone(result.advisories),
+              creation: {
+                operationId: creationOperationId,
+                correlationId: result.events[0]?.correlationId,
+                sessionGeneration,
+                branchGeneration,
+              },
               ...(result.replaced === undefined ? {} : { replaced: structuredClone(result.replaced) }),
               autonomousContinuationStarted: false,
             },
@@ -298,6 +349,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
               kind: result.kind,
               current: structuredClone(result.current),
               replacementConfirmation: structuredClone(result.confirmation),
+              creation: { operationId: creationOperationId, sessionGeneration, branchGeneration },
             },
           },
           terminate: true,
@@ -329,6 +381,9 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
+      if (state) {
+        throw new Error("An active Hypagraph already exists. Use hypagraph_revise for the current workflow or /hypagoal for explicit root replacement.");
+      }
       const result = await commitCreatedWorkflow(
         eventStore.lease(),
         createWorkflow(normalizeDefinition(params), new Date().toISOString(), randomUUID()),
@@ -573,8 +628,17 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         if (!confirmed) return;
       }
 
-      hypagoalAuthoring = true;
-      pi.sendUserMessage(buildHypagoalAuthoringPrompt(objective, replacementConfirmation));
+      const creationRequest: HypagoalCreationRequest = {
+        operationId: `hypagoal-create:${randomUUID()}`,
+        sessionGeneration,
+        branchGeneration,
+      };
+      hypagoalAuthoring = {
+        objective,
+        creationRequest,
+        ...(replacementConfirmation === undefined ? {} : { replacementConfirmation }),
+      };
+      pi.sendUserMessage(buildHypagoalAuthoringPrompt(objective, creationRequest, replacementConfirmation));
     },
   });
 

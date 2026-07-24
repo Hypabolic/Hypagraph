@@ -21,8 +21,8 @@ interface CommandDefinition {
 
 const proseObjective = "Add an inspect command that reports the current workflow without starting execution.";
 
-const authoredInput = (replacementConfirmation?: unknown) => ({
-  objective: proseObjective,
+const authoredInput = (replacementConfirmation?: unknown, creationRequest?: unknown, objective = proseObjective) => ({
+  objective,
   definition: {
     title: "Add workflow inspection",
     goal: "The model must not control the canonical objective field.",
@@ -58,6 +58,7 @@ const authoredInput = (replacementConfirmation?: unknown) => ({
     code: "repository-test-command",
     message: "The graph uses the test command declared by package.json.",
   }],
+  ...(creationRequest === undefined ? {} : { creationRequest }),
   ...(replacementConfirmation === undefined ? {} : { replacementConfirmation }),
 });
 
@@ -102,6 +103,12 @@ const text = (result: Record<string, unknown>): string => {
   return content.map((item) => item.text).join("\n");
 };
 
+const creationRequestFromPrompt = (prompt: string): unknown => {
+  const match = prompt.match(/Use this exact creation request identity without changing any field:\n(\{[\s\S]*?\})\n\nCall hypagoal_start/);
+  if (!match?.[1]) throw new Error("The authoring prompt did not contain a creation request identity.");
+  return JSON.parse(match[1]);
+};
+
 describe("Hypagoal Pi surfaces", () => {
   it("keeps terminal lifecycle fields outside the public creation schema", () => {
     const properties = (hypagoalStartSchema as unknown as { properties: Record<string, unknown> }).properties;
@@ -109,6 +116,7 @@ describe("Hypagoal Pi surfaces", () => {
       "objective",
       "definition",
       "advisories",
+      "creationRequest",
       "replacementConfirmation",
     ]);
     expect(properties).not.toHaveProperty("status");
@@ -132,6 +140,7 @@ describe("Hypagoal Pi surfaces", () => {
     expect(prompt).toContain("Inspect the relevant repository files");
     expect(prompt).toContain("smallest useful canonical Hypagraph workflow");
     expect(prompt).toContain("Repair is one possible loop pattern");
+    expect(prompt).toContain("Use this exact creation request identity");
     expect(prompt).toContain("Call hypagoal_start one time");
     expect(prompt).toContain("Do not perform semantic implementation work after creation");
   });
@@ -142,7 +151,15 @@ describe("Hypagoal Pi surfaces", () => {
     const tool = value.tools.get("hypagoal_start")!;
 
     await command.handler(proseObjective, value.ctx);
-    const result = await tool.execute("hypagoal-smoke", authoredInput(), undefined, undefined, value.ctx);
+    const prompt = String(value.sendUserMessage.mock.calls[0]?.[0]);
+    const creationRequest = creationRequestFromPrompt(prompt);
+    const result = await tool.execute(
+      "hypagoal-smoke",
+      authoredInput(undefined, creationRequest, "Model rewrote the user's objective."),
+      undefined,
+      undefined,
+      value.ctx,
+    );
 
     expect(result.terminate).toBe(true);
     expect(value.sendUserMessage).toHaveBeenCalledTimes(1);
@@ -155,7 +172,12 @@ describe("Hypagoal Pi surfaces", () => {
 
     const details = result.details as {
       hypagraph: { events: Array<{ type: string }>; snapshot: { definition: { goal: string }; goal: { status: string } } };
-      hypagoal: { objective: string; goalControl: { status: string }; autonomousContinuationStarted: boolean };
+      hypagoal: {
+        objective: string;
+        goalControl: { status: string };
+        creation: { operationId: string; correlationId: string; sessionGeneration: number; branchGeneration: number };
+        autonomousContinuationStarted: boolean;
+      };
     };
     expect(details.hypagraph.events.map((event) => event.type)).toEqual([
       "hypagraph.workflow.defined",
@@ -166,6 +188,10 @@ describe("Hypagoal Pi surfaces", () => {
     expect(details.hypagraph.snapshot.goal.status).toBe("active");
     expect(details.hypagoal.objective).toBe(proseObjective);
     expect(details.hypagoal.goalControl.status).toBe("active");
+    expect(details.hypagoal.creation.operationId).toMatch(/^hypagoal-create:/);
+    expect(details.hypagoal.creation.correlationId).toMatch(/^define:/);
+    expect(details.hypagoal.creation.sessionGeneration).toBe(0);
+    expect(details.hypagoal.creation.branchGeneration).toBe(0);
     expect(details.hypagoal.autonomousContinuationStarted).toBe(false);
   });
 
@@ -182,6 +208,41 @@ describe("Hypagoal Pi surfaces", () => {
     expect(value.sendUserMessage).not.toHaveBeenCalled();
     expect(text(result)).toContain("Hypagoal was not created");
     expect(text(result)).toContain("empty_graph");
+  });
+
+  it("rejects a slash-command creation request after the Pi branch generation changes", async () => {
+    const value = harness();
+    await value.commands.get("hypagoal")!.handler(proseObjective, value.ctx);
+    const prompt = String(value.sendUserMessage.mock.calls[0]?.[0]);
+    const creationRequest = creationRequestFromPrompt(prompt);
+
+    const sessionTree = value.handlers.get("session_tree")?.[0];
+    expect(sessionTree).toBeDefined();
+    await sessionTree!({}, value.ctx);
+
+    const result = await value.tools.get("hypagoal_start")!.execute(
+      "stale-authoring",
+      authoredInput(undefined, creationRequest),
+      undefined,
+      undefined,
+      value.ctx,
+    );
+    expect(result.terminate).toBe(true);
+    expect(text(result)).toContain("stale_hypagoal_creation_request");
+    expect(value.entries).toHaveLength(0);
+  });
+
+  it("does not let the legacy define surface silently replace an active root", async () => {
+    const value = harness();
+    await value.tools.get("hypagoal_start")!.execute("first", authoredInput(), undefined, undefined, value.ctx);
+    await expect(value.tools.get("hypagraph_define")!.execute(
+      "legacy-replace",
+      authoredInput().definition,
+      undefined,
+      undefined,
+      value.ctx,
+    )).rejects.toThrow("explicit root replacement");
+    expect(value.entries).toHaveLength(1);
   });
 
   it("identifies the current root and requires an exact typed replacement", async () => {
