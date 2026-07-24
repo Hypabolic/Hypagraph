@@ -19,26 +19,6 @@ const startGoal = (definition: HypagraphDefinition): HypagraphState => {
   return started.state;
 };
 
-const loopDefinition = (successWhen: HypagraphDefinition["loops"][number]["successWhen"]): HypagraphDefinition => ({
-  title: "Bounded loop classification",
-  goal: "Complete the bounded repository workflow.",
-  nodes: [
-    { id: "iterate", title: "Iterate", requires: ["evaluate"], acceptance: [] },
-    { id: "evaluate", title: "Evaluate", requires: ["iterate"], acceptance: [] },
-  ],
-  loops: [{
-    id: "bounded-loop",
-    nodes: ["iterate", "evaluate"],
-    entry: "iterate",
-    evaluateAfter: "evaluate",
-    feedbackEdges: [{ from: "evaluate", to: "iterate" }],
-    successWhen,
-    maxIterations: 3,
-    failurePolicy: "block-dependants",
-  }],
-  policy: { mode: "guided", requireEvidence: false },
-});
-
 const typedSuccess = {
   kind: "compare" as const,
   left: { kind: "literal" as const, value: true },
@@ -46,11 +26,46 @@ const typedSuccess = {
   right: { kind: "literal" as const, value: true },
 };
 
-describe("Hypagoal blocker classification", () => {
-  it("requests revision for a legacy loop instead of selecting its ready entry", () => {
-    const state = startGoal(loopDefinition("legacy prose success"));
+const loopDefinition = (): HypagraphDefinition => ({
+  title: "Bounded loop classification",
+  goal: "Complete the bounded repository workflow.",
+  nodes: [
+    { id: "iterate", title: "Iterate", requires: ["evaluate"], acceptance: [] },
+    { id: "evaluate", title: "Evaluate", requires: ["iterate"], acceptance: [] },
+    { id: "release", title: "Release dependent work", requires: ["evaluate"], acceptance: [] },
+  ],
+  loops: [{
+    id: "bounded-loop",
+    nodes: ["iterate", "evaluate"],
+    entry: "iterate",
+    evaluateAfter: "evaluate",
+    feedbackEdges: [{ from: "evaluate", to: "iterate" }],
+    successWhen: typedSuccess,
+    maxIterations: 3,
+    failurePolicy: "block-dependants",
+  }],
+  policy: { mode: "guided", requireEvidence: false },
+});
 
-    expect(state.runtime.loops["bounded-loop"]?.status).toBe("requires_revision");
+const failedLoopState = (exitReason: "evaluation_error" | "max_iterations" | "no_progress" | "invalid_evaluations" | "evaluation_budget"): HypagraphState => {
+  const state = structuredClone(startGoal(loopDefinition()));
+  const loop = state.runtime.loops["bounded-loop"]!;
+  loop.status = "failed";
+  loop.currentIteration = 3;
+  loop.iterations = [{ iteration: 3, startedAt: at, factsUsed: [] }];
+  loop.exitReason = exitReason;
+  loop.failurePolicy = "block-dependants";
+  state.runtime.nodes.release!.status = "blocked";
+  state.runtime.nodes.release!.blockedReason = `Loop 'bounded-loop' failed with '${exitReason}'.`;
+  return state;
+};
+
+describe("Hypagoal blocker classification", () => {
+  it("requests revision for a restored legacy loop instead of selecting its ready entry", () => {
+    const state = structuredClone(startGoal(loopDefinition()));
+    state.definition.loops[0]!.successWhen = { kind: "legacy-text", text: "legacy prose success" };
+    state.runtime.loops["bounded-loop"]!.status = "requires_revision";
+
     expect(classifyGoalBlockage(state)).toMatchObject({
       kind: "revision-eligible",
       blocker: { kind: "legacy-definition", id: "bounded-loop" },
@@ -62,7 +77,7 @@ describe("Hypagoal blocker classification", () => {
   });
 
   it("classifies an interrupted blocked loop as revisable when no root work remains", () => {
-    const state = structuredClone(startGoal(loopDefinition(typedSuccess)));
+    const state = structuredClone(startGoal(loopDefinition()));
     const loop = state.runtime.loops["bounded-loop"]!;
     loop.status = "blocked";
     loop.currentIteration = 1;
@@ -75,14 +90,8 @@ describe("Hypagoal blocker classification", () => {
     });
   });
 
-  it("permits a bounded alternative route after recoverable block-dependants evaluation failure", () => {
-    const state = structuredClone(startGoal(loopDefinition(typedSuccess)));
-    const loop = state.runtime.loops["bounded-loop"]!;
-    loop.status = "failed";
-    loop.currentIteration = 1;
-    loop.iterations = [{ iteration: 1, startedAt: at, factsUsed: [] }];
-    loop.exitReason = "evaluation_error";
-    loop.failurePolicy = "block-dependants";
+  it("uses the recoverable loop outcome instead of its derived blocked dependant", () => {
+    const state = failedLoopState("evaluation_error");
 
     expect(classifyGoalBlockage(state)).toMatchObject({
       kind: "revision-eligible",
@@ -93,13 +102,7 @@ describe("Hypagoal blocker classification", () => {
   it.each(["max_iterations", "no_progress", "invalid_evaluations", "evaluation_budget"] as const)(
     "does not revise terminal block-dependants outcome %s",
     (exitReason) => {
-      const state = structuredClone(startGoal(loopDefinition(typedSuccess)));
-      const loop = state.runtime.loops["bounded-loop"]!;
-      loop.status = "failed";
-      loop.currentIteration = 3;
-      loop.iterations = [{ iteration: 3, startedAt: at, factsUsed: [] }];
-      loop.exitReason = exitReason;
-      loop.failurePolicy = "block-dependants";
+      const state = failedLoopState(exitReason);
 
       expect(classifyGoalBlockage(state)).toMatchObject({
         kind: "revision-not-allowed",
