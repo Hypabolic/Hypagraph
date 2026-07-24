@@ -116,6 +116,11 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | Command | Action |
 | --- | --- |
 | `/hypagoal <objective>` | Inspect repository context and atomically create one root graph-backed goal. |
+| `/hypagoal status` | Show the exact objective, workflow phase, goal state, active or next work, budgets, loops, evaluations, blockage, revision state, and stop reason. |
+| `/hypagoal pause [reason]` | Pause the root goal through the canonical lifecycle. |
+| `/hypagoal resume` | Resume a paused or recoverable blocked goal after budget and runnable-path validation. |
+| `/hypagoal cancel [reason]` | Cancel the root goal without implying success. |
+| `/hypagoal graph` | Open or focus the graph pane with root-goal details. |
 | `/hypagraph` | Show the active workflow. |
 | `/hypagraph loop` | Show canonical loop, progress, evaluation, and outcome state. |
 | `/hypagraph graph` | Open or focus the live graph pane. |
@@ -317,13 +322,19 @@ Implemented:
 - evaluator purpose, trust, integrity, version, and fingerprint surfaces;
 - loop-aware Hypagoal continuation from canonical iteration and evaluation state;
 - protected evaluator redaction in model-visible prompts and check output;
-- realistic multi-iteration continuation with independent-component fairness.
+- realistic multi-iteration continuation with independent-component fairness;
+- deterministic blocker classification and one non-weakening automatic workflow revision;
+- complete `/hypagoal` status, pause, resume, cancel, and graph controls;
+- compact lifecycle messages and explicit typed stop reasons;
+- narrow and wide root-goal terminal rendering;
+- integrated v0.6 product-path dogfood across loops, evaluation, gates, reload recovery, revision, and canonical completion.
 
 Next:
 
-- blockage and bounded revision;
-- complete Hypagoal product surfaces and v0.6 dogfood;
-- delegated and ACP execution.
+- event-history, replay, and debugger UI;
+- goal families and bounded child Hypagoals;
+- isolated executors, worktree integration, and bounded concurrency;
+- ACP and named direct agent adapters.
 
 ## Develop locally
 
