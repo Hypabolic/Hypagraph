@@ -18,15 +18,39 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
       - name: Apply and validate final hardening
+        id: validate
+        continue-on-error: true
         shell: bash
         run: |
-          python .agent/final-slice6.py
-          npm ci
-          npm run check
-          rm -rf .agent
+          status=0
+          python .agent/final-slice6.py > final-hardening.log 2>&1 || status=$?
+          if [[ $status -eq 0 ]]; then npm ci >> final-hardening.log 2>&1 || status=$?; fi
+          if [[ $status -eq 0 ]]; then npm run check >> final-hardening.log 2>&1 || status=$?; fi
+          printf '%s\n' "$status" > final-hardening-status.txt
+          exit $status
+      - name: Upload final hardening diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice6-final-hardening-diagnostics
+          path: |
+            final-hardening.log
+            final-hardening-status.txt
+          if-no-files-found: error
+      - name: Commit validated final hardening
+        if: steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          rm -rf .agent final-hardening.log final-hardening-status.txt
           rm -f .github/workflows/apply-slice6-final-hardening.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Harden bounded revision interruption accounting"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
+      - name: Report final hardening failure
+        if: steps.validate.outcome == 'failure'
+        shell: bash
+        run: |
+          cat final-hardening.log
+          exit 1
