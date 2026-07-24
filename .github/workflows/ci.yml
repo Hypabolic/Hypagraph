@@ -30,6 +30,22 @@ jobs:
           ref: agent/m5b-slice-2-hypagoal-creation
           fetch-depth: 0
 
+      - name: Correct the normalized tool-block target
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/apply-m5b-slice2-hardening.py")
+          text = path.read_text()
+          marker = '"tool authoring binding"'
+          marker_index = text.index(marker)
+          target = "hypagoalAuthoring = false;"
+          target_index = text.rfind(target, 0, marker_index)
+          if target_index < 0:
+              raise RuntimeError("Unable to find the tool-block authoring reset target")
+          text = text[:target_index] + "hypagoalAuthoring = undefined;" + text[target_index + len(target):]
+          path.write_text(text)
+          PY
+
       - name: Apply the hardening patch
         run: python scripts/apply-m5b-slice2-hardening.py
 
