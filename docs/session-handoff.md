@@ -1,413 +1,328 @@
-# Session handoff: M5B Slice 1 complete to Slice 2
+# Session handoff: M5B Slice 2 complete to Slice 3
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Last merged baseline: `0bbe7f227fc28262958f29992cece9c663ecad2a`
-- Last merged pull request: #62
+- Last merged baseline: `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`
+- Last merged pull request: #65 — Add atomic Hypagoal creation
 - Active milestone: M5B Hypagoal
-- Completed slice: M5B Slice 1, canonical goal lifecycle
-- Next slice: M5B Slice 2, atomic `/hypagoal` creation
+- Completed slice: M5B Slice 2, atomic `/hypagoal` creation
+- Current slice: M5B Slice 3, graph-aware continuation
 - Hypagoal tracking issue: #25
-- Completed evaluation foundation: issue #30
 - Release marker: v0.6 after M5B dogfood and release evidence
 
 ## 1. Read first
 
-Read:
+Read these files in order:
 
-- `AGENTS.md`;
-- `docs/hypagoal-vertical-slice-plan.md`;
-- `docs/goal-family-and-concurrent-execution-plan.md`;
-- `docs/product-spec.md`;
-- `docs/delegation-and-visualisation.md`;
-- `docs/automatic-graph-authoring.md`;
-- `docs/loop-region-product-model.md`;
-- `docs/trusted-evaluation-contract-plan.md`;
-- `docs/m5a-dogfood.md`.
+1. `AGENTS.md`;
+2. `docs/session-handoff.md`;
+3. `docs/hypagoal-vertical-slice-plan.md`;
+4. `docs/goal-family-and-concurrent-execution-plan.md`;
+5. `docs/product-spec.md`;
+6. `docs/delegation-and-visualisation.md`;
+7. `docs/automatic-graph-authoring.md`;
+8. `docs/loop-region-product-model.md`;
+9. `docs/trusted-evaluation-contract-plan.md`;
+10. `docs/execution-roadmap.md`;
+11. `docs/m5b-slice-2-dogfood.md`.
 
-Use issue #25 as the authoritative M5B checklist.
+Use issue #25 as the active M5B checklist.
 
-The goal-family plan is authoritative for post-v0.6 nested goals, isolated execution, and concurrency. It must not expand Slice 2 beyond atomic root creation.
+The goal-family plan is authoritative for later family scheduling, child goals, isolated executors, worktrees, and physical concurrency. Slice 3 must preserve compatibility with that plan without implementing it.
 
 ## 2. Product decisions that must not change
 
-### 2.1 One canonical workflow for each goal
+### 2.1 One workflow-local lifecycle per goal
 
-The v0.6 release has one root Hypagoal and one executable workflow.
+Each Hypagoal owns one canonical Hypagraph workflow.
 
-`HypagraphDefinition.goal` remains the human-readable objective for that workflow.
+The existing `GoalRuntime` remains the workflow-local lifecycle for the root and every future child goal. Do not replace or duplicate its commands, events, reducer policy, replay, restore validation, snapshot hashing, or workflow-derived terminal state.
 
-Hypagoal must not add:
+`HypagraphDefinition.goal` remains the human-readable objective. Lifecycle state remains separate under `goalControl`.
 
-- a goal node;
-- a second task model;
-- a duplicate workflow definition;
-- a parallel completion state machine;
-- a model tool that marks a goal complete.
+There is no goal node, second task model, second workflow definition, parallel completion state machine, `complete-goal` command, or model-owned terminal state.
 
-The phrase "one canonical workflow" means one canonical workflow for each goal. It is not a permanent rule that one Pi session can never contain another workflow aggregate.
+### 2.2 Root-only is a v0.6 product boundary
 
-A later goal family composes separate root and child workflows. It does not embed a complete child workflow inside a parent node definition.
+The current Pi product surface has one root goal and one root workflow.
 
-### 2.2 Workflow state is authoritative
+This is not a domain invariant that a session can never persist more than one workflow aggregate. Later family persistence composes separate workflow-local goals under one family controller.
 
-The reducer derives goal completion and failure from canonical workflow state.
+Slice 3 must use identities and action contracts that can later be lifted into that family scheduler without replacement.
 
-There is no `complete-goal` command.
+### 2.3 Workflow state remains authoritative
 
-A model narrative, tool result, Pi message, executor result, or child goal cannot mark a goal complete directly.
+Goal completion, failure, blockage, cancellation, and pause remain derived from canonical workflow state.
 
-Goal cancellation is explicit control cancellation. It does not rewrite the canonical workflow as successfully completed.
+Continuation decides whether another action may be requested or dispatched. It does not decide that semantic work is complete.
 
-### 2.3 Preserve the Slice 1 lifecycle
+### 2.4 Independent components remain independent
 
-M5B Slice 1 added one workflow-local `GoalRuntime` to `HypagraphState`.
+A disconnected branch or loop region remains a normal runnable root component.
 
-That runtime is the leaf lifecycle for every future root or child goal.
+The continuation selector must inspect all runnable root components. It must not assume that:
 
-Future family persistence must coordinate these runtimes. It must not replace their:
+- the most recently active component owns the next turn;
+- the component which produced the last event has priority;
+- a connected main path outranks a disconnected loop automatically;
+- an active or completed component can pause, reset, release, fail, or complete an unrelated component.
 
-- commands;
-- events;
-- reducer policy;
-- workflow-derived terminal state;
-- replay;
-- restore validation;
-- snapshot hashing.
+The v0.6 controller interleaves components through sequential Pi turns. Later family scheduling can apply the same selection contract across multiple workflow aggregates and isolated executors.
 
-A v0.6 root must migrate into a one-member family without rewriting its workflow event history.
+### 2.5 Restore remains side-effect free
 
-### 2.4 Goal control is continuation control
+Restore and replay rebuild canonical state only.
 
-Hypagoal decides whether the controller can request or dispatch more work.
-
-It does not decide that semantic task work is complete.
-
-The continuation decision and automatic follow-up side effect belong to Slice 3. Slice 2 must not queue continuation.
-
-Continuation identity should include goal ID, workflow ID, revision, and node or loop identity. This keeps the root-only action contract compatible with the future family scheduler.
-
-### 2.5 Restore must not run autonomous work
-
-Session restore rebuilds canonical state only.
+They must not queue a continuation, send a user message, dispatch model work, run a check, invoke an executor, resume a component, or start a subagent.
 
 Reload and branch-change pause behavior belongs to Slice 4.
 
-No Slice 2 creation or restore path may silently queue work.
+### 2.6 Existing loop and evaluation semantics remain canonical
 
-### 2.6 Generic loops and trusted evaluation remain canonical
+Slice 3 consumes existing node readiness, loop state, check policy, gate readiness, evaluation validity, integrity, budget, and failure-policy state.
 
-Hypagoal consumes the existing loop and evaluation state.
+It must not add a second loop, evaluator, loss, progress, or outcome model.
 
-It must not create a second loss, loop, evaluator, or outcome model.
+Trusted holdout acceptance still requires isolated execution. Slice 3 must not claim that isolated execution exists.
 
-A loop is a generic bounded iteration region. Repair is one pattern, not the default purpose.
+## 3. M5B Slice 2 delivered
 
-An independent loop remains independent. Later child-goal creation must not pause, reset, release, fail, or complete that loop.
-
-Only isolated execution can support trusted holdout acceptance.
-
-### 2.7 Future nested goals use one family controller
-
-The accepted future architecture permits an active parent task to create a bounded child Hypagoal.
-
-That future operation:
-
-- waits only the invoking parent task;
-- leaves unrelated branches and independent loops runnable;
-- creates a separate child workflow and workflow-local goal runtime;
-- adds the child to one family scheduler;
-- does not transfer controller ownership to the child;
-- returns declared facts, evidence, and artifacts to the parent binding;
-- does not complete the parent task automatically.
-
-A child Hypagoal is not a subagent. Subagents execute selected node attempts.
-
-This functionality is deferred from v0.6. Slice 2 must keep the architecture compatible with it but must not implement it.
-
-## 3. M5B Slice 1 delivered
-
-PR #62 adds the canonical event-backed goal lifecycle.
+PR #65 adds atomic root Hypagoal creation.
 
 The merged implementation provides:
 
-- `GoalStatus` and `GoalRuntime`;
-- optional top-level goal-control state in `HypagraphState`;
-- goal state in snapshot hashing;
-- `start-goal`;
-- `pause-goal`;
-- `resume-goal`;
-- `cancel-goal`;
-- `hypagraph.goal.started`;
-- `hypagraph.goal.paused`;
-- `hypagraph.goal.resumed`;
-- `hypagraph.goal.blocked`;
-- `hypagraph.goal.completed`;
-- `hypagraph.goal.failed`;
-- `hypagraph.goal.cancelled`;
-- workflow-derived completion, failure, blockage, and workflow-pause projection;
-- explicit recovery from paused or blocked goal state;
-- replay and restore validation;
-- text, structured, and compact UI summaries;
-- source and session compatibility for workflows without goal control.
+- `/hypagoal <objective>`;
+- model-facing `hypagoal_start`;
+- repository-aware graph-authoring guidance;
+- exact preservation of the user objective;
+- one pure workflow-plus-goal creation operation;
+- deterministic event ordering;
+- workflow definition, initial readiness, and goal start in one event batch;
+- one append against expected empty sequence;
+- candidate validation before persistence;
+- no active-state exposure before persistence succeeds;
+- explicit workflow, goal, revision, event, session, branch, operation, and correlation identity;
+- typed replacement-required results;
+- replacement confirmation bound to workflow ID, goal ID, revision, sequence, snapshot hash, session generation, and branch generation;
+- stale authoring-operation rejection after session or branch change;
+- rejection of silent replacement through `hypagraph_define`;
+- replay and restore without work dispatch;
+- structured and text output which separates objective and `goalControl`;
+- explicit confirmation that autonomous continuation has not started.
 
-Structured summaries preserve the workflow objective under `goal`. Goal lifecycle state is exposed under `goalControl`.
+### Slice 2 implementation map
 
-### Slice 1 invariants proved
+- `src/domain/hypagoal-creation.ts`: pure atomic creation operation.
+- `src/hypagoal/root-creation.ts`: root product boundary, replacement, validation, and one-append persistence.
+- `src/pi/hypagoal.ts`: model schema, authoring prompt, ready-work projection, and output formatting.
+- `src/extension.ts`: `/hypagoal`, `hypagoal_start`, authoring lease, and Pi exposure.
+- `tests/hypagoal-creation.test.ts`: domain, persistence, replay, restore, conflict, and replacement coverage.
+- `tests/hypagoal-pi.test.ts`: command/tool equivalence, authoring identity, smoke, and no-continuation coverage.
+- `docs/m5b-slice-2-dogfood.md`: executable evidence.
 
-- Goal state belongs to exactly one workflow.
-- A second goal cannot start against the same workflow.
-- Invalid goal IDs are rejected.
-- Completion occurs only after canonical workflow completion.
-- Failure occurs only after canonical workflow failure.
-- A fabricated `complete-goal` command is rejected without state mutation.
-- Blockage includes a durable reason.
-- Terminal state includes a completion time and reason.
-- Replay reproduces the same goal state and snapshot hash.
-- Restore validates identity, timestamps, terminal state, and workflow alignment.
-- Workflows without goal state remain unchanged.
-
-These are workflow-local invariants. They do not prohibit a later family from containing more than one workflow-local goal runtime.
-
-## 4. Slice 1 evidence
+### Slice 2 evidence
 
 Implementation baseline:
 
 ```text
-0bbe7f227fc28262958f29992cece9c663ecad2a
+3656caf3e62d26d3dc406e93b5b5e71e96cbfae8
 ```
 
-PR #62 added:
-
-- `src/domain/goal-policy.ts`;
-- goal types, commands, and events in `src/domain/model.ts`;
-- reducer synchronization in `src/domain/reducer.ts`;
-- goal projection in `src/domain/projection.ts`;
-- restore validation in `src/persistence/session-rebuild.ts`;
-- lifecycle summaries in `src/ui/format.ts`;
-- `tests/goal-lifecycle.test.ts`;
-- `tests/goal-failure.test.ts`.
-
-CI #661 passes:
+Final CI #722 passed:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The suite contains 81 test files and 307 tests.
+The complete suite contains 83 test files and 333 tests.
 
-## 5. Current architecture map
+## 4. Current architecture map
 
-### Domain and reducer
+### Domain and projection
 
-- `src/domain/model.ts`: workflow, loop, evaluation, goal, command, and event contracts.
-- `src/domain/reducer.ts`: canonical command decisions and workflow-to-goal synchronization.
-- `src/domain/projection.ts`: deterministic event projection and hashing.
+- `src/domain/model.ts`: workflow, goal, loop, evaluation, command, and event contracts.
+- `src/domain/reducer.ts`: canonical transitions and workflow-to-goal synchronization.
+- `src/domain/projection.ts`: deterministic replay and snapshot hashing.
+- `src/domain/readiness.ts`: canonical runnable-node derivation.
 - `src/domain/goal-policy.ts`: pure workflow-to-goal outcome policy.
-- `src/domain/workflow-outcome.ts`: canonical workflow completion and loop policy.
+- `src/domain/hypagoal-creation.ts`: atomic creation candidate.
 
-### Authoring and Pi
+### Root creation and Pi
 
-- `src/extension.ts`: Pi commands and tools.
-- `src/pi/definition.ts`: definition schemas and normalization.
-- `skills/hypagraph/SKILL.md`: bundled model guidance.
-- `docs/automatic-graph-authoring.md`: graph compilation model.
+- `src/hypagoal/root-creation.ts`: current root product boundary.
+- `src/pi/hypagoal.ts`: creation schema and presentation.
+- `src/extension.ts`: Pi events, commands, tools, authoring state, and UI.
+- `skills/hypagraph/SKILL.md`: bundled authoring and execution guidance.
 
-### Persistence
+### Persistence and recovery
 
-- `src/persistence/event-store.ts`: optimistic event persistence.
-- `src/persistence/session-rebuild.ts`: restore, replay verification, and goal/loop validation.
-- `src/pi/session-branch.ts`: session generation and stale-result protection.
+- `src/persistence/event-store.ts`: optimistic event append and branch leases.
+- `src/persistence/pi-session-store.ts`: Pi session event batches.
+- `src/persistence/session-rebuild.ts`: replay, snapshot verification, loop validation, and goal validation.
 
 ### Future seams
 
-The current Pi adapter and session restore hold one latest workflow. Do not treat this adapter shape as a permanent domain invariant.
+The current Pi adapter exposes one active root. Do not convert that adapter limitation into a workflow-domain invariant.
 
-Later goal-family work will add:
+Later work adds family membership, multiple workflow aggregates, one family scheduler, executor dispatch, workspace leases, and concurrent execution above the current workflow-local lifecycle.
 
-- family membership and parent-child bindings;
-- family event sequence or transaction ordinal;
-- more than one persisted workflow aggregate;
-- one family scheduler;
-- executor dispatch and workspace state.
+## 5. Current task: M5B Slice 3 — graph-aware continuation
 
-Do not put those fields into the Slice 1 workflow-local lifecycle unless a stable identity seam is required.
+### 5.1 User result
 
-## 6. Next task: M5B Slice 2
+After `/hypagoal` creates the root, Hypagraph can request the next Pi turn automatically until canonical state says to stop.
 
-### User result
+Slice 3 must complete a multi-node root workflow, including disconnected or independent runnable components, without a manual continuation prompt after every turn.
 
-A user enters one prose `/hypagoal` objective. Hypagraph inspects the repository, creates one valid workflow, starts goal control, and persists the complete state atomically.
+### 5.2 Pure continuation decision
 
-This slice creates the root controller. It does not continue work automatically and it does not create child goals.
+Add one pure decision function over canonical state.
 
-### Add
+The function must return a typed decision such as:
 
-- `/hypagoal <objective>` command parsing;
-- model-facing `hypagoal_start` tool;
-- repository inspection guidance before graph creation;
-- reuse of the existing automatic graph-authoring contract;
-- one atomic workflow-plus-goal creation operation;
-- replacement confirmation when a canonical workflow or goal already exists;
-- strict validation before any state becomes canonical;
-- one durable event batch containing workflow definition, readiness, and goal start;
-- clear diagnostics for invalid definitions, invalid goal identity, conflicts, and stale session state;
-- structured and text confirmation of the created objective, workflow, ready work, and goal-control status;
-- Pi and persistence tests;
-- one real Pi smoke test from ordinary prose.
+```ts
+export type GoalContinuationDecision =
+  | { kind: "stop-completed"; goalId: string; workflowId: string; revision: number }
+  | { kind: "stop-paused"; goalId: string; workflowId: string; revision: number }
+  | { kind: "stop-blocked"; goalId: string; workflowId: string; revision: number; reason: string }
+  | { kind: "stop-failed"; goalId: string; workflowId: string; revision: number; reason: string }
+  | { kind: "continue-active-task"; goalId: string; workflowId: string; revision: number; nodeId: string }
+  | { kind: "start-ready-task"; goalId: string; workflowId: string; revision: number; nodeId: string }
+  | { kind: "run-ready-check"; goalId: string; workflowId: string; revision: number; nodeId: string }
+  | { kind: "evaluate-ready-gate"; goalId: string; workflowId: string; revision: number; nodeId: string }
+  | { kind: "invariant-error"; goalId?: string; workflowId?: string; revision?: number; reason: string };
+```
 
-### Atomicity rule
+Include loop identity when the selected action is materially associated with a loop region. Do not create a root-only action shape which must later be replaced for family scheduling.
 
-An invalid creation attempt must create no canonical workflow and no goal state.
+The pure function must not call Pi, read the clock, generate IDs, inspect files, run commands, invoke a model, or mutate state.
 
-Do not persist the workflow first and start the goal in a second fallible operation.
+### 5.3 Deterministic selection across all runnable root components
 
-Build and validate the complete creation result in memory, then persist one event batch against expected sequence zero.
+The selector must enumerate all runnable actions from canonical state before it chooses one.
 
-If persistence reports a branch or sequence conflict, do not present the candidate state as active.
+Selection must be deterministic and tested against stable definition order or another explicit stable key. It must not depend on object-map iteration, wall-clock time, event-recency heuristics, UI focus, or the most recently active component.
 
-This root creation batch is the precursor to a future family-level atomic child-creation batch. Keep event identities and correlation data explicit.
+At minimum, candidate enumeration must include:
 
-### Replacement rule
+- the current active task when it can continue;
+- every ready task;
+- every runnable check;
+- every ready gate;
+- ready work in disconnected branches;
+- ready entries or nodes in independent loop components.
 
-The v0.6 release supports one canonical root workflow and one root goal per Pi session.
+No component may starve solely because another component emitted the latest event.
 
-If either already exists:
+### 5.4 Continuation action identity and stale rejection
 
-- do not silently replace it;
-- show the existing state;
-- require explicit replacement confirmation;
-- reject stale confirmation after the session generation or canonical sequence changes.
+Every queued continuation must bind to the exact canonical state which selected it.
 
-This is a v0.6 product rule. Do not encode it as a domain claim that a future session cannot persist a goal family.
+At minimum include:
 
-### Authoring rule
+- goal ID;
+- workflow ID;
+- workflow revision;
+- node ID or gate/check identity;
+- loop ID when applicable;
+- session generation;
+- branch generation;
+- canonical sequence or snapshot hash where the current adapter supports it;
+- continuation ordinal or operation identity.
 
-The user describes an objective, not a graph.
+Before delivery, re-read active state and reject the continuation if any bound identity is stale.
 
-The skill must:
+### 5.5 Pi delivery
 
-1. inspect relevant repository context;
-2. compile the smallest valid graph-backed work contract;
-3. use typed gates and checks where the objective requires them;
-4. use generic bounded regions where repetition is required;
-5. add metric progress only when a defensible deterministic metric exists;
-6. preserve the exact user objective in `HypagraphDefinition.goal`;
-7. return useful advisories without inventing unjustified evaluation contracts.
+Use one scheduling authority in the extension.
 
-### Public surface for this slice
+The adapter may queue at most one continuation. It must not queue when:
 
-- Pi command: `/hypagoal <objective>`;
-- model tool: `hypagoal_start`.
+- goal control is not active;
+- workflow state is terminal;
+- a user or tool message has priority;
+- another continuation is already queued;
+- the session or branch generation changed;
+- the selected action is stale;
+- no runnable action exists.
 
-Administrative status, pause, resume, cancel, and graph subcommands remain scheduled for Slice 7 unless the command parser needs a minimal non-public seam now.
+`agent_end` can request delivery only after the prior turn's state changes are durable.
 
-### Deferred
+The continuation prompt must identify the selected goal, workflow, revision, and node or loop action. It must guide the model to use existing Hypagraph tools and must not bypass node lifecycle rules.
+
+### 5.6 Required tests
+
+Add focused domain and Pi tests proving:
+
+- pure decisions for terminal, paused, blocked, active-task, ready-task, check, and gate states;
+- deterministic candidate ordering;
+- selection across disconnected branches and independent loops;
+- no assumption that the last active component owns the next turn;
+- no starvation in a representative interleaving sequence;
+- explicit goal and workflow identity on every runnable action;
+- revision, sequence/hash, session-generation, and branch-generation stale rejection;
+- at most one queued continuation;
+- no continuation during creation;
+- no continuation during restore or replay;
+- no continuation after user interruption;
+- command and check lifecycle rules remain canonical;
+- one realistic Pi smoke completes a multi-node graph with an independent component without manual follow-up prompts.
+
+### 5.7 Deferred from Slice 3
 
 Do not add:
 
-- automatic continuation;
-- queued follow-ups;
 - token or turn budgets;
-- reload-time pause;
-- bounded automatic revision;
-- child Hypagoals;
-- goal-family persistence;
-- executor abstraction;
-- delegated subagents;
+- reload-time pause or resume policy;
+- automatic graph revision;
+- child Hypagoals or family persistence;
+- executor or subagent abstraction;
 - worktree leases;
-- concurrent scheduling;
+- physical concurrency;
+- a new loop or evaluation model;
 - production isolated evaluation;
-- a second workflow model inside the root definition.
+- the full administrative `/hypagoal` command surface.
 
-### Done when
+### 5.8 Done when
 
-Slice 2 is complete when:
+Slice 3 is complete when:
 
-- one prose objective produces one valid workflow and one active goal;
-- workflow and goal creation are one atomic persisted operation;
-- an invalid graph leaves no canonical state;
-- duplicate state requires explicit replacement confirmation;
-- stale replacement confirmation is rejected;
-- the objective remains the canonical definition goal;
-- no continuation is queued;
-- restore reproduces the created workflow and goal without running work;
-- a real Pi smoke test proves the ordinary user path;
-- all six CI jobs pass;
-- the persisted root can later be referenced as one member of a family without rewriting its event stream.
+- continuation decisions are pure, deterministic, replay-compatible, and identity-rich;
+- one queued Pi continuation drives the root graph without manual prompts;
+- all runnable root components participate in deterministic selection;
+- disconnected and independent loop components can progress without recency-based ownership or starvation;
+- stale continuation delivery is rejected;
+- creation and restore remain side-effect free;
+- the action contract can later be lifted into the family scheduler;
+- the realistic Pi smoke and full six-target CI matrix pass.
 
 Suggested branch:
 
 ```text
-agent/m5b-slice-2-hypagoal-creation
+agent/m5b-slice-3-graph-aware-continuation
 ```
 
 Suggested pull request title:
 
 ```text
-Add atomic Hypagoal creation
+Add graph-aware Hypagoal continuation
 ```
 
-## 7. Work after Slice 2
+## 6. Work after Slice 3
 
 Continue M5B in this order:
 
-1. Slice 3: graph-aware continuation with explicit goal and workflow action identity.
-2. Slice 4: token and turn budgets plus reload safety.
-3. Slice 5: loop and trusted-evaluation continuation with independent-component fairness.
-4. Slice 6: blockage and bounded revision.
-5. Slice 7: complete Pi product surface.
-6. Slice 8: dogfood and v0.6 release.
+1. Slice 4: token and turn budgets plus reload safety.
+2. Slice 5: loop and trusted-evaluation continuation details and fairness.
+3. Slice 6: blockage and bounded revision.
+4. Slice 7: complete Pi product surface.
+5. Slice 8: dogfood and v0.6 release.
 
 After v0.6:
 
 1. M6: event history, replay, and debugger UI.
 2. M7: family persistence, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 3. M8: worktree integration and bounded concurrent scheduling.
-4. M9: ACP and named direct CLI adapters.
 
-## 8. Release warning
-
-The package version remains `0.5.0` during M5B development.
-
-Do not tag current `main` as `v0.5.0`.
-
-The intended historical v0.5 tag target remains:
-
-```text
-88ec3950bcbc07ce7148d940d0c65f6b176f3bc9
-```
-
-The v0.6 version and tag must wait until M5B dogfood and release evidence pass on a tested main commit.
-
-## 9. Known hazards
-
-- Do not create a second goal definition that duplicates the graph.
-- Do not make model text authoritative for completion.
-- Do not expose `start-goal` as an independent public path that can create mismatched state.
-- Do not persist a workflow before the complete atomic creation result is valid.
-- Do not queue autonomous work during creation or restore.
-- Do not infer repair semantics for generic loops.
-- Do not weaken M5A validity, trust, budget, or protected-output rules.
-- Do not redesign the completed Slice 1 lifecycle to implement future family concerns.
-- Do not encode one Pi session equals one workflow as a permanent domain invariant.
-- Do not interpret future child goals as worker subagents.
-- Preserve event ordering, optimistic sequence checks, branch generation, and stale-result identity.
-- Connector-authored commits can suppress push-triggered Actions. Use the PR `ready_for_review` trigger when required.
-- Temporary patch workflows must remove themselves and must not remain in final diffs.
-
-## 10. Successful next handoff
-
-The next handoff is ready when:
-
-- M5B Slice 2 is merged;
-- issue #25 marks Slice 2 complete;
-- `/hypagoal` creates workflow and goal atomically;
-- invalid creation leaves no canonical state;
-- replacement is explicit and stale-safe;
-- no continuation runs during creation or restore;
-- the real Pi smoke test passes;
-- all six CI jobs pass;
-- the root creation contract remains compatible with future family identity and persistence;
-- this document points to graph-aware continuation.
+Do not tag or release v0.6 during Slice 3.

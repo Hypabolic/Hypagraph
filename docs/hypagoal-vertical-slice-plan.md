@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slice 1 complete
+- Status: active implementation; Slices 1 and 2 complete; Slice 3 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -234,30 +234,28 @@ CI #661 passes 81 test files and 307 tests on Ubuntu, macOS, and Windows with No
 
 This implementation remains the workflow-local lifecycle for every future root or child goal.
 
-### Slice 2 - Atomic `/hypagoal` creation — next
+### Slice 2 - Atomic `/hypagoal` creation — complete
 
-Add:
+PR #65 delivered:
 
-- `/hypagoal <objective>` command parsing;
-- model-facing `hypagoal_start`;
-- repository inspection and authoring guidance;
-- one atomic workflow-plus-goal creation path;
-- replacement confirmation when canonical state already exists;
-- strict definition and goal validation;
-- durable persistence of the complete creation event batch;
-- useful failure diagnostics without partial state.
+- `/hypagoal <objective>` and model-facing `hypagoal_start`;
+- repository-aware compilation of the smallest useful graph;
+- exact preservation of `HypagraphDefinition.goal`;
+- one pure workflow-plus-goal creation operation;
+- deterministic definition, readiness, and goal-start event ordering;
+- one durable append against expected empty sequence;
+- candidate replay and restore validation before exposure;
+- explicit goal, workflow, revision, sequence, snapshot, session, branch, operation, and correlation identity;
+- typed replacement-required results and stale confirmation rejection;
+- stale authoring-operation rejection after session or branch change;
+- no continuation, executor, subagent, or restore-time side effect;
+- realistic Pi command-to-tool smoke evidence.
 
-Mandatory rules:
+The merge baseline is `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`.
 
-- an invalid graph creates neither workflow nor goal state;
-- a goal cannot start against an unpersisted or mismatched workflow;
-- creation does not queue autonomous continuation yet;
-- the prose objective remains `HypagraphDefinition.goal`;
-- the model does not supply terminal goal state;
-- only one active root goal is permitted in v0.6;
-- the creation path must not encode one Pi session as a permanent one-workflow storage invariant.
+CI #722 passes 83 test files and 333 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
-Done when one prose objective creates a valid graph-backed goal in a real Pi turn and every invalid creation path leaves canonical state unchanged.
+The one-root rule remains a v0.6 Pi product boundary. The workflow domain remains compatible with later family persistence.
 
 ### Slice 3 - Graph-aware continuation
 

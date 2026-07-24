@@ -1,8 +1,8 @@
 # Hypagraph product and technical specification
 
 - Status: active
-- Version: implementation baseline through M5B Slice 1
-- Current baseline: `0bbe7f227fc28262958f29992cece9c663ecad2a`
+- Version: implementation baseline through M5B Slice 2
+- Current baseline: `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`
 - Delivery: independent Pi package, designed to support additional agent runtimes
 - Future execution plan: `docs/goal-family-and-concurrent-execution-plan.md`
 
@@ -159,6 +159,8 @@ The workflow remains the executable goal contract. Workflow state determines com
 
 M5B Slice 1 implements the workflow-local `GoalRuntime`, commands, events, replay, restore validation, and workflow-derived terminal projection.
 
+M5B Slice 2 implements atomic root creation through `/hypagoal` and `hypagoal_start`. It preserves the exact prose objective, persists definition, initial readiness, and goal start in one event batch, requires state-bound replacement confirmation, and does not queue continuation.
+
 The v0.6 product supports one root Hypagoal in one Pi session.
 
 ### Goal family
@@ -269,18 +271,22 @@ The implementation provides:
 - workflow-local Hypagoal lifecycle;
 - goal commands and events;
 - workflow-derived goal completion, failure, blockage, cancellation, and pause;
-- goal replay, restore validation, hashing, and UI summaries.
+- goal replay, restore validation, hashing, and UI summaries;
+- atomic root Hypagoal creation from ordinary prose;
+- typed stale-safe root replacement;
+- explicit creation and correlation identity;
+- creation and restore without autonomous continuation.
 
 M5A is complete. Its evidence is in `docs/m5a-dogfood.md`.
 
-M5B Slice 1 is complete in PR #62. Slice 2, atomic root `/hypagoal` creation, is the current implementation target.
+M5B Slices 1 and 2 are complete in PRs #62 and #65. Slice 3, graph-aware continuation across all runnable root components, is the current implementation target.
 
 ## Delivery sequence
 
 1. M4 bounded iteration regions — complete.
 2. M3.1 deterministic parser and assertion adapters — complete.
 3. M5A trusted evaluation contracts — complete.
-4. M5B root Hypagoal autonomous controller — active; Slice 1 complete.
+4. M5B root Hypagoal autonomous controller — active; Slices 1 and 2 complete.
 5. M6 event history, replay, and debugger UI.
 6. M7 goal families, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 7. M8 worktree integration and bounded concurrent scheduling.
@@ -291,10 +297,10 @@ The detailed M7 and M8 architecture is in `docs/goal-family-and-concurrent-execu
 
 ## Validation baseline
 
-CI #661 passes:
+CI #722 passes:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The complete suite contains 81 test files and 307 tests.
+The complete suite contains 83 test files and 333 tests.
