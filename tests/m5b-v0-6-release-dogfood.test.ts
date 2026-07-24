@@ -264,7 +264,8 @@ const latestState = (value: ReturnType<typeof harness>): any => value.entries
 
 const continuationPrompts = (value: ReturnType<typeof harness>): string[] => value.sendUserMessage.mock.calls
   .map((call) => String(call[0]))
-  .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation."));
+  .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation.")
+    || prompt.startsWith("Hypagraph automatic bounded revision."));
 
 const creationRequestFromPrompt = (prompt: string): unknown => {
   const match = prompt.match(/Use this exact creation request identity without changing any field:\n(\{[\s\S]*?\})\n\nCall hypagoal_start/);
@@ -429,7 +430,6 @@ describe("M5B v0.6 release dogfood", () => {
       } else if (action.nodeId === "route") {
         await transition(value, "route", "evaluate");
       } else if (action.nodeId === "finalize" && before.goal.automaticRevision.consumedAttempts === 0) {
-        await transition(value, "finalize", "start");
         await transition(value, "finalize", "block", {
           reason: "A bounded release-note step is missing.",
           blockerKind: "repository-work",
