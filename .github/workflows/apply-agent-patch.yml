@@ -2,13 +2,8 @@ name: Apply agent patch
 
 on:
   pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: write
@@ -31,88 +26,9 @@ jobs:
           set +e
           {
             cat .agent/apply.py.gz.b64.* | base64 --decode | gzip --decompress > .agent/apply.py
-            python - <<'PY'
-          from pathlib import Path
-          path = Path('.agent/apply.py')
-          text = path.read_text()
-          text = text.replace('""", count=2)', '""", count=3)')
-          text = text.replace('"""       action: { kind: decision.kind', '"""      action: { kind: decision.kind')
-          text = text.replace('"""       if (!state?.goal?.pendingContinuation)', '"""      if (!state?.goal?.pendingContinuation)')
-          text = text.replace('\n       const semanticSequenceBeforeAccounting = state.sequence;', '\n      const semanticSequenceBeforeAccounting = state.sequence;')
-          text = text.replace('\n       const normalized = normalizePiGoalUsage(_event.messages);', '\n      const normalized = normalizePiGoalUsage(_event.messages);')
-          text = text.replace('"""       "hypagraph_revise",', '"""      "hypagraph_revise",')
-          text = text.replace(
-              '''      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),
-              }),
-          """, count=1)''',
-              '''      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),
-              }),
-          """, count=2)''',
-          )
-          path.write_text(text)
-          PY
+            python .agent/prepare.py
             python .agent/apply.py
-            python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/pi/hypagoal-loop-guidance.ts')
-          text = path.read_text()
-          text = text.replace('  GoalContinuationAction,\n', '  GoalWorkContinuationAction,\n')
-          text = text.replace('Pick<GoalContinuationAction, "nodeId" | "loopId">', 'Pick<GoalWorkContinuationAction, "nodeId" | "loopId">')
-          path.write_text(text)
-
-          path = Path('src/extension.ts')
-          text = path.read_text()
-          blocker_field = '      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),\n'
-          text = text.replace(blocker_field, '', 1)
-          anchor = 'if (!state?.goal?.pendingContinuation) return;'
-          anchor_index = text.index(anchor)
-          start = text.rfind('\n', 0, anchor_index) + 1
-          end_marker = '      const semanticSequenceBeforeAccounting = state.sequence;'
-          end = text.index(end_marker, anchor_index)
-          replacement = '''      const goal = state?.goal;
-          const canonical = goal?.pendingContinuation;
-          if (!state || !goal || !canonical) return;
-          if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {
-            const abandoned = await applyCommandsAndCommit(eventStore.lease(), state, [{
-              type: "abandon-goal-revision",
-              goalId: goal.goalId,
-              workflowId: state.workflowId,
-              expectedRevision: state.revision,
-              expectedSequence: state.sequence,
-              expectedSnapshotHash: state.snapshotHash,
-              revisionOperationId: delivered.operationId,
-              continuationOperationId: canonical.operationId,
-              continuationOrdinal: canonical.ordinal,
-              requestSequence: canonical.requestSequence,
-              sessionGeneration: canonical.sessionGeneration,
-              branchGeneration: canonical.branchGeneration,
-              outcomeCode: "revision_turn_no_proposal",
-              reason: "The automatic revision turn ended without one valid replacement definition.",
-              commandId: `abandon-goal-revision:${randomUUID()}`,
-              correlationId: delivered.operationId,
-              at: new Date().toISOString(),
-            }]);
-            if (abandoned.ok) {
-              state = abandoned.value.state;
-              events.push(...abandoned.value.events);
-            }
-          }
-          '''
-          text = text[:start] + replacement + text[end:]
-          path.write_text(text)
-
-          path = Path('tests/hypagoal-revision.test.ts')
-          text = path.read_text()
-          old = '    expect(selectGoalContinuation({ ...structuredClone(value.state), goal: { ...structuredClone(value.state.goal!), pendingContinuation: undefined } })).toMatchObject({ kind: "stop-blocked" });'
-          new = '    const exhausted = structuredClone(value.state);\n    delete exhausted.goal!.pendingContinuation;\n    expect(selectGoalContinuation(exhausted)).toMatchObject({ kind: "stop-blocked" });'
-          text = text.replace(old, new)
-          text = text.replace('runtime.nodes.migration.status', 'runtime.nodes.migration!.status')
-          text = text.replace('runtime.nodes.independent.status', 'runtime.nodes.independent!.status')
-          text = text.replace('runtime.nodes.independent.attemptCount', 'runtime.nodes.independent!.attemptCount')
-          text = text.replace('runtime.nodes.prepare.status', 'runtime.nodes.prepare!.status')
-          path.write_text(text)
-          PY
+            python .agent/fix.py
             npm ci
             npm run check
           } > agent-run.log 2>&1
