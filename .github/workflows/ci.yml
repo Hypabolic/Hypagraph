@@ -21,29 +21,24 @@ jobs:
   apply-closeout:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Check out closeout branch
         uses: actions/checkout@v4
         with:
           ref: agent/m5b-slice-3-closeout
-          fetch-depth: 0
 
       - name: Apply closeout documentation
         run: python scripts/apply-m5b-slice3-closeout.py
 
-      - name: Commit and push closeout
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            docs/session-handoff.md \
-            docs/hypagoal-vertical-slice-plan.md \
-            docs/execution-roadmap.md \
+      - name: Upload rendered closeout documents
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5b-slice3-closeout-docs
+          path: |
+            docs/session-handoff.md
+            docs/hypagoal-vertical-slice-plan.md
+            docs/execution-roadmap.md
             docs/product-spec.md
-          git commit -m "Close M5B Slice 3 planning"
-          git push origin HEAD:agent/m5b-slice-3-closeout
 
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
