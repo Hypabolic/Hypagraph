@@ -65,6 +65,14 @@ replace(
     if (deliveredContinuation) {''',
 )
 
+replace(
+    "src/domain/reducer.ts",
+    '''const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => ACTIVE_ATTEMPT_STATUSES.has(item.status));''',
+    '''const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) =>
+  ACTIVE_ATTEMPT_STATUSES.has(item.status)
+  || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying"));''',
+)
+
 path = Path("tests/hypagoal-revision-pi.test.ts")
 text = path.read_text()
 insert = '''
@@ -92,7 +100,7 @@ insert = '''
     expect(prompts(value)).toHaveLength(promptCount);
     expect(state.goal).toMatchObject({
       status: "blocked",
-      budget: { consumedTurns: 3, consumedTokens: { totalTokens: 36 } },
+      budget: { consumedTurns: 2, consumedTokens: { totalTokens: 24 } },
       automaticRevision: {
         consumedAttempts: 1,
         lastAttempt: { outcome: "abandoned", outcomeCode: "revision_turn_interrupted" },
@@ -106,5 +114,27 @@ if not text.endswith(closing):
     raise RuntimeError("Pi revision test closing marker was not found")
 path.write_text(text[:-len(closing)] + insert + closing)
 
+path = Path("tests/hypagoal-revision.test.ts")
+text = path.read_text()
+insert = '''
+
+  it("rejects revision when active attempt history remains behind a blocked node status", () => {
+    const value = block(createGoal());
+    const unsafe = structuredClone(value.state);
+    unsafe.runtime.nodes.prepare!.attempts["retained-active-attempt"] = { status: "running" } as any;
+
+    const result = handleCommand(unsafe, {
+      type: "revise",
+      definition: acceptedProposal(),
+      commandId: "manual-revise-retained-attempt",
+      at,
+    });
+
+    expect(result).toMatchObject({ ok: false, diagnostics: [{ code: "active_revision_not_allowed" }] });
+  });
+'''
+if not text.endswith(closing):
+    raise RuntimeError("Domain revision test closing marker was not found")
+path.write_text(text[:-len(closing)] + insert + closing)
+
 # Temporary branch-local patch; the validation workflow removes it after success.
-# Diagnostic rerun trigger.
