@@ -18,6 +18,41 @@ permissions:
   contents: read
 
 jobs:
+  apply-slice3:
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out Slice 3 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-slice-3-graph-aware-continuation
+          fetch-depth: 0
+
+      - name: Apply Slice 3 source
+        run: python scripts/apply-m5b-slice3.py
+
+      - name: Commit and push implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            README.md \
+            skills/hypagraph/SKILL.md \
+            src/domain/check-policy.ts \
+            src/domain/model.ts \
+            src/domain/projection.ts \
+            src/domain/reducer.ts \
+            src/domain/goal-continuation.ts \
+            src/persistence/session-rebuild.ts \
+            src/pi/hypagoal-continuation.ts \
+            src/extension.ts \
+            tests/hypagoal-continuation.test.ts \
+            tests/hypagoal-continuation-pi.test.ts
+          git commit -m "Add graph-aware Hypagoal continuation"
+          git push origin HEAD:agent/m5b-slice-3-graph-aware-continuation
+
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
