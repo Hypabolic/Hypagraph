@@ -18,28 +18,6 @@ permissions:
   contents: read
 
 jobs:
-  apply-closeout:
-    if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out closeout branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/m5b-slice-3-closeout
-
-      - name: Apply closeout documentation
-        run: python scripts/apply-m5b-slice3-closeout.py
-
-      - name: Upload rendered closeout documents
-        uses: actions/upload-artifact@v4
-        with:
-          name: m5b-slice3-closeout-docs
-          path: |
-            docs/session-handoff.md
-            docs/hypagoal-vertical-slice-plan.md
-            docs/execution-roadmap.md
-            docs/product-spec.md
-
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
