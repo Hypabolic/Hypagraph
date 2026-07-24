@@ -6,48 +6,65 @@
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
 - Tracking issue: #25
 - Research source: https://github.com/Michaelliv/pi-goal
+- Future architecture: `docs/goal-family-and-concurrent-execution-plan.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
 
-`/hypagoal` gives Pi one durable objective and lets Hypagraph continue work until the canonical workflow reaches a terminal state or a deterministic stop condition applies.
+`/hypagoal` gives Pi one durable root objective and lets Hypagraph continue work until the canonical workflow reaches a terminal state or a deterministic stop condition applies.
 
-Hypagoal is an autonomous controller over one normal Hypagraph workflow. It is not:
+The v0.6 controller operates one root Hypagoal over one normal Hypagraph workflow.
+
+This is the first member of the accepted future goal-family model. A later release can let an active task create a bounded child Hypagoal with its own canonical workflow. That later composition must preserve the workflow-local lifecycle delivered in Slice 1.
+
+Hypagoal is not:
 
 - a second workflow type;
 - a goal node;
-- an independent state machine for task completion;
+- an independent completion state machine;
 - a prose continuation loop;
 - a model-selected completion mechanism.
 
-The workflow graph remains the executable contract. Goal control decides only whether Pi may request another agent turn.
+The workflow graph remains the executable contract. Goal control decides whether the controller can request or dispatch more work.
 
-## 2. Product result
+## 2. Release result
 
-A user can:
+For v0.6, a user can:
 
-1. Start from one prose `/hypagoal` objective.
-2. Let the bundled skill inspect the repository and compile the smallest valid Hypagraph workflow.
-3. Continue through tasks, checks, gates, and bounded iteration regions without a manual prompt after every turn.
-4. Use deterministic evaluation contracts when a defensible metric exists.
-5. Omit metric progress when no defensible metric exists.
-6. Stop after workflow completion, failure, blockage, cancellation, token budget, turn budget, hard loop limit, patience, invalid-evaluation limit, or evaluation budget.
-7. Pause and resume explicitly.
-8. Restore a session without silent autonomous work.
-9. Inspect goal, workflow, loop, and evaluation state in Pi.
-10. Replay the same goal status and stop decision from events.
+1. start from one prose `/hypagoal` objective;
+2. let the bundled skill inspect the repository and compile the smallest valid Hypagraph workflow;
+3. continue through tasks, checks, gates, and bounded iteration regions without a manual prompt after every turn;
+4. use deterministic evaluation contracts when a defensible metric exists;
+5. omit metric progress when no defensible metric exists;
+6. stop after workflow completion, failure, blockage, cancellation, token budget, turn budget, hard loop limit, patience, invalid-evaluation limit, or evaluation budget;
+7. pause and resume explicitly;
+8. restore a session without silent autonomous work;
+9. inspect goal, workflow, loop, and evaluation state in Pi;
+10. replay the same goal status and stop decision from events.
+
+The v0.6 release is root-only and uses one Pi continuation at a time. This is a release boundary, not a permanent product boundary.
 
 ## 3. Product invariants
 
-### 3.1 One canonical workflow
+### 3.1 One canonical workflow for each goal
 
-Use `HypagraphDefinition.goal` as the human-readable objective.
+Use `HypagraphDefinition.goal` as the human-readable objective for the goal which owns that workflow.
 
 Use normal nodes, facts, gates, checks, scopes, loops, evidence, and outcome policies as the executable work model.
 
 Do not duplicate those fields in a second goal definition.
 
-### 3.2 Workflow-derived completion
+The future goal-family model composes separate workflow aggregates. It does not embed a complete child workflow inside a parent node definition.
+
+### 3.2 Preserve the Slice 1 lifecycle as the leaf aggregate
+
+M5B Slice 1 added one optional `GoalRuntime` to `HypagraphState`.
+
+That runtime remains the canonical lifecycle for one goal and one workflow. Future family persistence and scheduling must reference it. They must not replace its events, reducer rules, replay, hashes, or workflow-derived terminal state.
+
+A v0.6 root goal must therefore be valid as a one-member future goal family without rewriting its workflow event history.
+
+### 3.3 Workflow-derived completion
 
 The runtime derives goal status from canonical workflow state:
 
@@ -60,7 +77,9 @@ The runtime derives goal status from canonical workflow state:
 
 There is no `complete-goal` command and no model tool that completes a goal.
 
-### 3.3 Pure continuation decision
+A future child goal follows the same rule for its own workflow. Child completion cannot directly mark its parent task complete.
+
+### 3.4 Pure continuation decision
 
 A later slice adds a pure continuation decision:
 
@@ -71,17 +90,19 @@ export type GoalContinuationDecision =
   | { kind: "stop-blocked"; reason: string }
   | { kind: "stop-failed"; reason: string }
   | { kind: "stop-budget-limited"; reason: string }
-  | { kind: "continue-active-task"; nodeId: string }
-  | { kind: "start-ready-task"; nodeId: string }
-  | { kind: "run-ready-check"; nodeId: string }
-  | { kind: "evaluate-ready-gate"; nodeId: string }
-  | { kind: "request-revision"; reason: string }
+  | { kind: "continue-active-task"; goalId: string; workflowId: string; nodeId: string }
+  | { kind: "start-ready-task"; goalId: string; workflowId: string; nodeId: string }
+  | { kind: "run-ready-check"; goalId: string; workflowId: string; nodeId: string }
+  | { kind: "evaluate-ready-gate"; goalId: string; workflowId: string; nodeId: string }
+  | { kind: "request-revision"; goalId: string; workflowId: string; reason: string }
   | { kind: "invariant-error"; reason: string };
 ```
 
+The v0.6 implementation has one goal and one workflow, but action identity must still include goal and workflow IDs. This lets the decision lift into the future family scheduler without changing the action contract.
+
 The function must not call Pi, read the clock, generate IDs, inspect files, run commands, invoke a model, or select semantic implementation work.
 
-### 3.4 One queued continuation
+### 3.5 One queued continuation in v0.6
 
 The Pi adapter can queue no more than one continuation.
 
@@ -96,7 +117,9 @@ A continuation is permitted only when:
 
 A reload or branch change invalidates queued continuation and pauses the goal.
 
-### 3.5 Generic bounded iteration
+The future goal-family controller keeps one scheduling authority but can dispatch more than one isolated executor attempt when concurrency policy permits it.
+
+### 3.6 Independent components remain independent
 
 Hypagoal uses the existing generic loop-region model.
 
@@ -104,17 +127,33 @@ A region can perform refinement, optimization, search, batch processing, repeate
 
 A region can connect to the main graph or be an independent top-level component.
 
-Each region has explicit entry and evaluation boundaries, typed success, hard iteration limits, optional numeric progress and patience, optional evaluation validity and budgets, and explicit failure policy.
+Creating or running work in another branch must not pause, reset, release, fail, or complete an independent region.
 
-Hypagoal must not infer repair semantics from a loop name or node title.
+The v0.6 controller can interleave runnable components through sequential Pi turns. Future isolated executors can run compatible components concurrently.
 
-### 3.6 Trusted evaluation integration
+### 3.7 Trusted evaluation integration
 
 When a defensible metric exists, authoring should define a metric-producing evaluator, evaluation purpose, trust boundary, typed validity, typed success, progress direction, hard limit, optional patience, evaluation budget, feedback policy, deterministic constraints, and useful probe or anti-gaming instruments.
 
 When no defensible metric exists, authoring must omit progress and use deterministic checks, typed success, evidence, hard bounds, outcome policy, and user review.
 
 A non-isolated evaluation must not be presented as trusted holdout acceptance.
+
+### 3.8 Future goal-family control
+
+The accepted future model has one family controller above many workflow-local goal runtimes.
+
+A child goal:
+
+- can be created only from an active parent task;
+- puts only that task into a child-wait state;
+- leaves unrelated branches and independent loops runnable;
+- receives bounded input facts, artifacts, evidence, scope, and budget;
+- returns declared outputs through a validated binding;
+- cannot own an independent scheduler;
+- cannot mutate parent or family state directly.
+
+The complete design is in `docs/goal-family-and-concurrent-execution-plan.md`.
 
 ## 4. Goal-control state
 
@@ -143,6 +182,8 @@ export interface GoalRuntime {
 
 Slice 4 extends the runtime with token and turn usage and deterministic budget-limited state. Commands supply timestamps and usage values. The reducer remains pure.
 
+Do not add parent, child, or scheduler fields to this workflow-local runtime during v0.6 unless they are required for stable identity. Future family membership belongs in an additive family aggregate.
+
 ## 5. Commands and events
 
 Slice 1 delivered these commands:
@@ -162,7 +203,9 @@ Slice 1 delivered these events:
 - `hypagraph.goal.failed`;
 - `hypagraph.goal.cancelled`.
 
-Later slices add turn accounting and budget events.
+Later M5B slices add turn accounting and budget events.
+
+Future family events will record child bindings, family membership, scheduler selection, child return, executor dispatch, and workspace integration. Those events are outside v0.6 and must not overload the workflow-local lifecycle events.
 
 Every status change and stop reason must be event-backed and replayable.
 
@@ -189,6 +232,8 @@ The merge baseline is `0bbe7f227fc28262958f29992cece9c663ecad2a`.
 
 CI #661 passes 81 test files and 307 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
+This implementation remains the workflow-local lifecycle for every future root or child goal.
+
 ### Slice 2 - Atomic `/hypagoal` creation — next
 
 Add:
@@ -205,19 +250,32 @@ Add:
 Mandatory rules:
 
 - an invalid graph creates neither workflow nor goal state;
-- a goal cannot be started against an unpersisted or mismatched workflow;
+- a goal cannot start against an unpersisted or mismatched workflow;
 - creation does not queue autonomous continuation yet;
 - the prose objective remains `HypagraphDefinition.goal`;
 - the model does not supply terminal goal state;
-- only one active goal is permitted in the first release.
+- only one active root goal is permitted in v0.6;
+- the creation path must not encode one Pi session as a permanent one-workflow storage invariant.
 
 Done when one prose objective creates a valid graph-backed goal in a real Pi turn and every invalid creation path leaves canonical state unchanged.
 
 ### Slice 3 - Graph-aware continuation
 
-Add pure continuation decisions, one queued follow-up, `agent_end` delivery, active-task guidance, ready-task/check/gate guidance, dynamic tool exposure, and stale-continuation rejection.
+Add:
 
-Done when a multi-node workflow completes without manual continuation prompts.
+- pure continuation decisions;
+- goal, workflow, revision, and node identity on each runnable action;
+- one queued Pi follow-up;
+- `agent_end` delivery;
+- active-task guidance;
+- ready-task, check, and gate guidance;
+- dynamic tool exposure;
+- stale-continuation rejection;
+- deterministic selection between independent runnable components.
+
+The selector must not assume that the last active component owns the next turn. It must consider all runnable work in the root workflow, including disconnected loop components.
+
+Done when a multi-node workflow with an independent component completes without manual continuation prompts or starvation.
 
 ### Slice 4 - Budgets and reload safety
 
@@ -225,11 +283,15 @@ Add token accounting, turn accounting, final-turn accounting, budget events, wra
 
 A budget stop is not success. Restore must not run work.
 
+Use field and event names which can later aggregate descendant usage into a family budget. Do not create a budget model which assumes all future usage occurs in the root Pi process.
+
 Done when token limits, turn limits, reload, and branch changes produce deterministic stop behavior.
 
 ### Slice 5 - Loop and trusted-evaluation continuation
 
 Add continuation guidance for generic loop state, current and best metric, patience, invalid-evaluation count, evaluation purpose and trust, feedback mode, evaluation budgets, all bounded stop reasons, independent loop components, and explicit loop failure policy.
+
+The continuation policy must keep independent components runnable while another component progresses. A child goal added in a later release must not change this isolation rule.
 
 Done when Hypagoal runs both an optimization or refinement region and an independent auxiliary region, preserves their state independence, rejects an invalid score, and completes through typed success.
 
@@ -239,57 +301,121 @@ Add blocked-goal projection, revision guidance, original-objective preservation,
 
 A revision cannot silently change the user objective. The first release must not replan without bound.
 
+The v0.6 response to newly discovered bounded work is workflow revision. A later release can choose a bounded child goal when independent ownership, scope, budget, and return contracts are justified.
+
 Done when a blocked graph either returns to a valid path through one revision or stops with a clear blocker.
 
 ### Slice 7 - Complete Pi product surface
 
 Add compact lifecycle messages, `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, `/hypagoal graph`, graph-pane goal details, budget/loop/evaluation/stop summaries, and narrow and wide terminal coverage.
 
+Keep view-model identities explicit so later UI can show goal ancestry, child workflows, executor attempts, and workspaces without replacing root workflow views.
+
 Done when a user can understand the active action, remaining budget, loop and evaluation state, and stop reason without event inspection.
 
 ### Slice 8 - Dogfood and release
 
-The final dogfood path must:
+The v0.6 dogfood path must:
 
-1. Start from one prose `/hypagoal` command.
-2. Define a graph with at least one gate.
-3. Run one refinement or optimization region for at least three iterations.
-4. Run one independent bounded auxiliary region.
-5. Include check-and-repair as one pattern, not the default loop model.
-6. Improve one numeric progress metric.
-7. Reject one invalid evaluation without updating the best metric.
-8. Run a probe or generalization check.
-9. Complete through typed success.
-10. Prove independent-region state isolation.
-11. Restore between iterations.
-12. Prove reload-time pause.
-13. Prove token-budget and turn-budget termination.
-14. Prove evaluation-budget termination.
-15. Prove hard-limit and no-progress termination.
-16. Prove each loop failure policy.
-17. Prove stale-continuation rejection.
-18. Prove that the model cannot mark the goal complete.
+1. start from one prose `/hypagoal` command;
+2. define a graph with at least one gate;
+3. run one refinement or optimization region for at least three iterations;
+4. run one independent bounded auxiliary region;
+5. include check-and-repair as one pattern, not the default loop model;
+6. improve one numeric progress metric;
+7. reject one invalid evaluation without updating the best metric;
+8. run a probe or generalization check;
+9. complete through typed success;
+10. prove independent-region state isolation;
+11. prove that the continuation selector does not starve the independent region;
+12. restore between iterations;
+13. prove reload-time pause;
+14. prove token-budget and turn-budget termination;
+15. prove evaluation-budget termination;
+16. prove hard-limit and no-progress termination;
+17. prove each loop failure policy;
+18. prove stale-continuation rejection;
+19. prove that the model cannot mark the goal complete;
+20. record compatibility evidence that the persisted root identities and event history can be referenced by the documented future family model without rewriting workflow state.
 
 The release requires the full six-target CI matrix, a dogfood record in `docs`, package and lock-file version alignment, and a tag on the tested main commit.
 
 ## 7. Test strategy
 
-Tests must prove deterministic goal events and hashes, workflow-derived completion only, atomic creation, one queued continuation, user/tool priority, paused and terminal behavior, token and turn budgets, reload and branch-change pause, stale usage and continuation rejection, generic loop continuation, independent loop isolation, evaluation stops, bounded revision, Pi surfaces, and no model-selected completion.
+M5B tests must prove:
 
-## 8. Out of scope for v0.6
+- deterministic goal events and hashes;
+- workflow-derived completion only;
+- atomic root creation;
+- one queued continuation;
+- explicit runnable-action identity;
+- deterministic selection between root components;
+- user and tool priority;
+- paused and terminal behavior;
+- token and turn budgets;
+- reload and branch-change pause;
+- stale usage and continuation rejection;
+- generic loop continuation;
+- independent loop isolation and fairness;
+- evaluation stops;
+- bounded revision;
+- Pi surfaces;
+- no model-selected completion;
+- compatibility with workflows which have no goal state;
+- preservation of the root identities required by the documented future family migration.
 
-The first Hypagoal release does not include parallel autonomous node execution, delegated subagents, ACP execution, named direct CLI agent adapters, model-scored success or loss, loss extraction from unstructured text, unlimited automatic revision, automatic restoration of the best workspace state, time-based hard budgets, more than one active goal in one Pi session, automatic resume after reload, or deletion of canonical goal history.
+## 8. Deferred from v0.6
 
-## 9. Roadmap position
+The root-only v0.6 release does not include:
+
+- child or recursive Hypagoals;
+- goal-family persistence;
+- parallel autonomous node execution;
+- delegated subagents;
+- worktree leases and integration;
+- ACP execution;
+- named direct CLI agent adapters;
+- model-scored success or loss;
+- loss extraction from unstructured text;
+- unlimited automatic revision;
+- automatic restoration of the best workspace state;
+- time-based hard budgets;
+- more than one active goal in one Pi session;
+- automatic resume after reload;
+- deletion of canonical goal history.
+
+Child goals, isolated subagents, worktree isolation, and bounded concurrency are accepted future product direction. Their deferral must not be interpreted as rejection.
+
+## 9. Post-v0.6 evolution
+
+The detailed design is in `docs/goal-family-and-concurrent-execution-plan.md`.
+
+The required evolution is:
+
+1. add a family aggregate above existing workflow-local goal runtimes;
+2. migrate a v0.6 root into a one-member family without rewriting its workflow events;
+3. add one family scheduler with sequential dispatch;
+4. add bounded child-goal creation and validated return;
+5. add an executor abstraction and explicit context/result envelopes;
+6. add an isolated Pi RPC executor;
+7. add worktree leases and integration lifecycle;
+8. add bounded concurrent scheduling across independent loops and goal workflows;
+9. add ACP and named CLI executors behind the same contract.
+
+A child goal suspends only its invoking parent task. It does not pause unrelated graph components.
+
+A child Hypagoal is not a subagent. The family scheduler owns orchestration. Subagents execute selected node attempts.
+
+## 10. Roadmap position
 
 | Phase | Release marker | Result |
 | --- | --- | --- |
 | M4 | v0.5 | Executable bounded iteration regions |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary |
-| M5B | v0.6 | Hypagoal autonomous controller |
+| M5B | v0.6 | Root Hypagoal autonomous controller |
 | M6 | v0.7 | Event history, replay, and debugger UI |
-| M7 | v0.8 | Executor abstraction and production isolated execution |
-| M8 | v0.9 | Workspace integration and bounded concurrency |
+| M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution |
+| M8 | v0.9 | Worktree integration and bounded concurrent scheduling |
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
