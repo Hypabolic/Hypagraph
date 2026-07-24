@@ -34,10 +34,10 @@ jobs:
             python .agent/apply.py
             npm ci
             npm run check
-          } > .agent-run.log 2>&1
+          } > agent-run.log 2>&1
           status=$?
-          printf '%s\n' "$status" > .agent-status
-          git diff --binary > .agent-output.patch
+          printf '%s\n' "$status" > agent-status.txt
+          git diff --binary > agent-output.patch
           exit $status
 
       - name: Upload patch diagnostics
@@ -46,16 +46,16 @@ jobs:
         with:
           name: agent-patch-diagnostics
           path: |
-            .agent-run.log
-            .agent-status
-            .agent-output.patch
+            agent-run.log
+            agent-status.txt
+            agent-output.patch
           if-no-files-found: error
 
       - name: Commit validated implementation
         if: steps.validate.outcome == 'success'
         shell: bash
         run: |
-          rm -rf .agent .agent-run.log .agent-status .agent-output.patch
+          rm -rf .agent agent-run.log agent-status.txt agent-output.patch
           rm -f .github/workflows/apply-agent-patch.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -67,5 +67,5 @@ jobs:
         if: steps.validate.outcome == 'failure'
         shell: bash
         run: |
-          cat .agent-run.log
+          cat agent-run.log
           exit 1
