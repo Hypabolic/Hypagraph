@@ -65,23 +65,41 @@ jobs:
           text = path.read_text()
           blocker_field = '      blockerKind: Type.Optional(StringEnum(["repository-work", "external-dependency", "safeguard", "unknown"] as const)),\n'
           text = text.replace(blocker_field, '', 1)
-          old = '''      if (!state?.goal?.pendingContinuation) return;
-           if (delivered.action.kind === "request-revision" && !revisionProposalHandled && state.goal.automaticRevision.lastAttempt?.outcome === "pending") {
-             const canonical = state.goal.pendingContinuation;'''
-          new = '''      const goal = state?.goal;
+          anchor = 'if (!state?.goal?.pendingContinuation) return;'
+          anchor_index = text.index(anchor)
+          start = text.rfind('\n', 0, anchor_index) + 1
+          end_marker = '      const semanticSequenceBeforeAccounting = state.sequence;'
+          end = text.index(end_marker, anchor_index)
+          replacement = '''      const goal = state?.goal;
           const canonical = goal?.pendingContinuation;
           if (!state || !goal || !canonical) return;
-          if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {'''
-          if old not in text:
-              raise RuntimeError('agent-end revision narrowing target was not found')
-          text = text.replace(old, new, 1)
-          marker = '      const goal = state?.goal;'
-          start = text.find(marker)
-          end = text.find('const semanticSequenceBeforeAccounting', start)
-          if start < 0 or end <= start:
-              raise RuntimeError('agent-end revision narrowing range was not found')
-          segment = text[start:end].replace('goalId: state.goal.goalId', 'goalId: goal.goalId')
-          text = text[:start] + segment + text[end:]
+          if (delivered.action.kind === "request-revision" && !revisionProposalHandled && goal.automaticRevision.lastAttempt?.outcome === "pending") {
+            const abandoned = await applyCommandsAndCommit(eventStore.lease(), state, [{
+              type: "abandon-goal-revision",
+              goalId: goal.goalId,
+              workflowId: state.workflowId,
+              expectedRevision: state.revision,
+              expectedSequence: state.sequence,
+              expectedSnapshotHash: state.snapshotHash,
+              revisionOperationId: delivered.operationId,
+              continuationOperationId: canonical.operationId,
+              continuationOrdinal: canonical.ordinal,
+              requestSequence: canonical.requestSequence,
+              sessionGeneration: canonical.sessionGeneration,
+              branchGeneration: canonical.branchGeneration,
+              outcomeCode: "revision_turn_no_proposal",
+              reason: "The automatic revision turn ended without one valid replacement definition.",
+              commandId: `abandon-goal-revision:${randomUUID()}`,
+              correlationId: delivered.operationId,
+              at: new Date().toISOString(),
+            }]);
+            if (abandoned.ok) {
+              state = abandoned.value.state;
+              events.push(...abandoned.value.events);
+            }
+          }
+          '''
+          text = text[:start] + replacement + text[end:]
           path.write_text(text)
 
           path = Path('tests/hypagoal-revision.test.ts')
