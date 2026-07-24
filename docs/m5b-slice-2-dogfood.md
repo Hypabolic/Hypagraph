@@ -5,7 +5,7 @@
 - Executable evidence: `tests/hypagoal-pi.test.ts` and `tests/hypagoal-creation.test.ts`
 - Implementation pull request: #65
 - Tracking issue: #25
-- CI run: #720
+- CI run: #722
 - Test result: 83 test files and 333 tests
 - Matrix: Ubuntu, macOS, and Windows with Node.js 22 and 24
 
@@ -104,7 +104,7 @@ Successful Pi output separates:
 
 ## 7. CI evidence
 
-CI #720 passed:
+CI #722 passed:
 
 - Ubuntu with Node.js 22;
 - Ubuntu with Node.js 24;

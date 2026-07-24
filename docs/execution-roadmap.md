@@ -3,7 +3,7 @@
 - Status: active
 - Updated: 2026-07-24
 - Current milestone: M5B Hypagoal
-- Current implementation baseline: `0bbe7f227fc28262958f29992cece9c663ecad2a`
+- Current implementation baseline: `3656caf3e62d26d3dc406e93b5b5e71e96cbfae8`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -165,7 +165,7 @@ All repository text must follow `AGENTS.md`.
 | M4 | v0.5 | Executable bounded iteration regions | Complete |
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
-| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slice 1 complete |
+| M5B | v0.6 | Root Hypagoal autonomous controller | Active; Slices 1 and 2 complete |
 | M6 | v0.7 | Event history, replay, and debugger UI | Planned |
 | M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -269,8 +269,8 @@ This root is the first member of the accepted future goal-family model.
 ### Slice status
 
 1. Canonical goal lifecycle — complete in PR #62.
-2. Atomic `/hypagoal` creation — next.
-3. Graph-aware continuation.
+2. Atomic `/hypagoal` creation — complete in PR #65.
+3. Graph-aware continuation — current.
 4. Token and turn budgets plus reload safety.
 5. Loop and trusted-evaluation continuation.
 6. Blockage and bounded revision.
@@ -292,6 +292,22 @@ M5B Slice 1 provides:
 - compatibility for workflows without goal control.
 
 This lifecycle remains the leaf lifecycle for future root and child goals.
+
+### Slice 2 result
+
+M5B Slice 2 provides:
+
+- `/hypagoal <objective>` and `hypagoal_start`;
+- repository-aware root graph authoring;
+- exact objective preservation;
+- one deterministic workflow-definition, readiness, and goal-start event batch;
+- one-append persistence with no partial active state;
+- typed, state-bound replacement confirmation;
+- explicit creation, workflow, goal, revision, sequence, session, branch, and correlation identity;
+- replay and restore without autonomous work;
+- complete dogfood evidence in `docs/m5b-slice-2-dogfood.md`.
+
+Slice 3 must select deterministically across every runnable root component. It must include goal and workflow identity on continuation actions, support disconnected and independent loop components, avoid recency-based component ownership, and preserve a direct lift into the later family scheduler.
 
 ### M5B architecture constraints
 

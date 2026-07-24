@@ -38,6 +38,28 @@ It must:
 
 The skill must not wait for graph-specific words.
 
+## Atomic root Hypagoal authoring
+
+`/hypagoal <objective>` starts a read-only repository-authoring turn.
+
+The authoring path must:
+
+1. preserve the exact objective in `HypagraphDefinition.goal`;
+2. inspect relevant repository state;
+3. compile the smallest valid canonical workflow;
+4. keep independent top-level components independent;
+5. add tasks, checks, gates, loops, and metrics only when repository evidence justifies them;
+6. return advisories separately from canonical definition fields;
+7. submit the complete definition through `hypagoal_start` once.
+
+The command binds the authoring turn to an explicit operation identity and the current session and branch generations. The tool rejects a missing or stale authoring identity.
+
+The creation service validates the complete projected workflow and workflow-local goal lifecycle, then persists definition, initial readiness, and goal start in one event batch. It exposes no candidate state before persistence succeeds.
+
+Creation does not start a task, run a check, queue a continuation, invoke an executor, or resume an independent component. Restore remains side-effect free.
+
+If a root already exists, replacement requires confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The one-root restriction is a v0.6 product rule, not a permanent workflow-domain invariant.
+
 ## 3. Smallest useful graph
 
 Automatic authoring must not create complexity for its own sake.
