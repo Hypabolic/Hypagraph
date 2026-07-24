@@ -1,0 +1,51 @@
+name: Run v0.6 closeout
+
+on:
+  push:
+    branches:
+      - agent/m5b-v0-6-closeout
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/m5b-v0-6-closeout
+          fetch-depth: 0
+
+      - name: Execute stored closeout update
+        shell: python
+        run: |
+          from pathlib import Path
+          from textwrap import dedent
+
+          workflow = Path('.github/workflows/ci.yml').read_text()
+          start = '      - name: Update canonical plans\n        shell: python\n        run: |\n'
+          end = '\n      - name: Install locked dependencies\n'
+          if workflow.count(start) != 1 or workflow.count(end) != 1:
+              raise SystemExit('Stored closeout script markers were not unique.')
+          script = workflow.split(start, 1)[1].split(end, 1)[0]
+          exec(compile(dedent(script), 'stored-closeout.py', 'exec'))
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate closeout
+        run: npm run check
+
+      - name: Commit clean documentation closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/run-v0-6-closeout.yml .agent/v0-6-closeout-trigger
+          git add docs/execution-roadmap.md docs/hypagoal-vertical-slice-plan.md docs/product-spec.md docs/session-handoff.md docs/v0.6-dogfood.md .github/workflows/ci.yml
+          git commit -m "Close M5B and make M6 current"
+          git push origin HEAD:agent/m5b-v0-6-closeout
