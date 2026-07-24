@@ -128,6 +128,11 @@ text = text.replace('runtime.nodes.prepare.status', 'runtime.nodes.prepare!.stat
 text = text.replace('expect(result.state.runtime.nodes.prepare!.status).toBe("pending")', 'expect(result.state.runtime.nodes.prepare!.status).toBe("stale")')
 path.write_text(text)
 
+path = Path('tests/hypagoal-revision-pi.test.ts')
+text = path.read_text()
+text = text.replace('{ ...revised.nodes[1]!, requires: ["normalize-schema"] }', '{ ...revised.nodes[1]!, requires: ["inventory", "normalize-schema"] }')
+path.write_text(text)
+
 path = Path('tests/extension.test.ts')
 text = path.read_text()
 text = text.replace('      "hypagraph_transition",\n      "hypagraph_revise",', '      "hypagraph_transition",\n      "hypagoal_submit_revision",\n      "hypagraph_revise",')
