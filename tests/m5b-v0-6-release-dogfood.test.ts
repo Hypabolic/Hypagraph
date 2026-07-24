@@ -365,7 +365,7 @@ describe("M5B v0.6 release dogfood", () => {
       if (action.kind === "request-revision") {
         selected.push("revision");
         const system = await deliver(value, prompt);
-        expect(system).toContain("automatic bounded revision");
+        expect(system).toContain("HYPAGOAL BOUNDED REVISION CONTROL");
         expect(system).toContain(`Exact objective: ${objective}`);
 
         const revised = baseDefinition();
