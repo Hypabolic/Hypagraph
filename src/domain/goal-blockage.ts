@@ -73,22 +73,8 @@ export function classifyGoalBlockage(state: HypagraphState): GoalBlockageDecisio
     return { kind: "revision-not-allowed", blocker, reason: blocker.reason };
   }
 
-  for (const node of state.definition.nodes) {
-    const runtime = state.runtime.nodes[node.id];
-    if (runtime?.status !== "blocked") continue;
-    const reason = runtime.blockedReason?.trim() || `Node '${node.id}' is blocked.`;
-    if (runtime.blockerKind === "repository-work") {
-      return finalize(state, identity(state, "blocked-node", node.id, reason), true);
-    }
-    if (runtime.blockerKind === "external-dependency") {
-      return finalize(state, identity(state, "external-dependency", node.id, reason), false, "The blocker is an external dependency and cannot be represented as bounded repository work.");
-    }
-    if (runtime.blockerKind === "safeguard") {
-      return finalize(state, identity(state, "terminal-policy", node.id, reason), false, "Automatic revision cannot bypass a safeguard.");
-    }
-    return finalize(state, identity(state, "blocked-node", node.id, reason), false, "The blocked node has no typed recoverable repository-work classification.");
-  }
-
+  // A failed block-dependants loop creates blocked dependent nodes. Classify the
+  // canonical loop outcome first so those derived node blocks do not hide it.
   for (const loop of state.definition.loops) {
     const runtime = state.runtime.loops[loop.id];
     if (!runtime) continue;
@@ -108,6 +94,22 @@ export function classifyGoalBlockage(state: HypagraphState): GoalBlockageDecisio
         recoverable ? undefined : "The loop reached a terminal bounded stop. Automatic revision cannot extend or bypass that policy.",
       );
     }
+  }
+
+  for (const node of state.definition.nodes) {
+    const runtime = state.runtime.nodes[node.id];
+    if (runtime?.status !== "blocked") continue;
+    const reason = runtime.blockedReason?.trim() || `Node '${node.id}' is blocked.`;
+    if (runtime.blockerKind === "repository-work") {
+      return finalize(state, identity(state, "blocked-node", node.id, reason), true);
+    }
+    if (runtime.blockerKind === "external-dependency") {
+      return finalize(state, identity(state, "external-dependency", node.id, reason), false, "The blocker is an external dependency and cannot be represented as bounded repository work.");
+    }
+    if (runtime.blockerKind === "safeguard") {
+      return finalize(state, identity(state, "terminal-policy", node.id, reason), false, "Automatic revision cannot bypass a safeguard.");
+    }
+    return finalize(state, identity(state, "blocked-node", node.id, reason), false, "The blocked node has no typed recoverable repository-work classification.");
   }
 
   if (goal.status === "blocked" || state.phase === "blocked" || (goal.status === "active" && state.phase === "running")) {
