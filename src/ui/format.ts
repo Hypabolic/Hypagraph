@@ -30,7 +30,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
     loops: loopSurfaceSummaries(state),
-    ...(state.goal === undefined ? {} : { goal: structuredClone(state.goal) }),
+    ...(state.goal === undefined ? {} : { goalControl: structuredClone(state.goal) }),
     evaluationAuthoringAdvisories: assessEvaluationAuthoring(state.definition),
     snapshotHash: state.snapshotHash,
   };
