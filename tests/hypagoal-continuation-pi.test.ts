@@ -223,6 +223,7 @@ describe("Hypagoal Pi continuation", () => {
     expect(lastSnapshot.runtime.nodes.document.status).toBe("succeeded");
     expect(lastSnapshot.runtime.nodes["finish-alternate"].status).toBe("skipped");
     expect(lastSnapshot.goal.continuationOrdinal).toBe(4);
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("Hypagoal completed; workflow completed"), "info");
   });
 
   it("queues at most one state-bound continuation", async () => {
@@ -247,6 +248,7 @@ describe("Hypagoal Pi continuation", () => {
     const system = await beforeAgentStart(value, prompt);
     expect(system).toContain("STALE HYPAGOAL CONTINUATION");
     expect(system).toContain("stale_continuation_sequence");
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("stale_continuation_sequence"), "warning");
     const [blocked] = await invoke(value.handlers, "tool_call", {
       type: "tool_call",
       toolName: "hypagraph_transition",
@@ -334,6 +336,7 @@ describe("Hypagoal Pi continuation", () => {
     const latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
     expect(latest.goal).toMatchObject({ status: "budget_limited", budget: { consumedTurns: 1, stop: { reason: "turn_limit" } } });
     expect(latest.phase).toBe("running");
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("Stop: turn_limit"), "warning");
   });
 
   it("pauses when Pi usage metadata is missing", async () => {
@@ -355,6 +358,7 @@ describe("Hypagoal Pi continuation", () => {
     expect(value.sendUserMessage).not.toHaveBeenCalled();
     let latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
     expect(latest.goal).toMatchObject({ status: "paused", pauseCause: "session_reload" });
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("Stop: pause_session_reload"), "warning");
     await value.commands.get("hypagoal")!.handler("resume", value.ctx);
     expect(continuationPrompts(value)).toHaveLength(1);
     latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
@@ -370,6 +374,7 @@ describe("Hypagoal Pi continuation", () => {
     expect(value.sendUserMessage).not.toHaveBeenCalled();
     const latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
     expect(latest.goal).toMatchObject({ status: "paused", pauseCause: "branch_change" });
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("Stop: pause_branch_change"), "warning");
   });
 
   it("stops when a delivered continuation makes no canonical progress", async () => {

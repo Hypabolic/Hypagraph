@@ -10,6 +10,7 @@ import type {
   WorkflowPhase,
 } from "../domain/model.js";
 import { evaluationBudgetStatus } from "../domain/evaluation-policy.js";
+import { classifyGoalBlockage } from "../domain/goal-blockage.js";
 
 export type GraphEdgeKind = "dependency" | "route" | "feedback";
 export type GraphRouteOutcome = "true" | "false";
@@ -112,6 +113,32 @@ export interface GraphViewEvaluationBudget {
   remaining: { total?: number; development?: number; probe?: number; holdout?: number };
 }
 
+export interface GraphViewGoalSummary {
+  objective: string;
+  goalId: string;
+  status: NonNullable<HypagraphState["goal"]>["status"];
+  pauseCause?: NonNullable<HypagraphState["goal"]>["pauseCause"];
+  stopReason?: string;
+  budget: {
+    turns: { consumed: number; limit?: number; remaining?: number };
+    tokens: { consumed: number; limit?: number; remaining?: number };
+  };
+  automaticRevision: {
+    consumed: number;
+    maximum: number;
+    remaining: number;
+    pending: boolean;
+    lastOutcome?: string;
+    lastOutcomeCode?: string;
+  };
+  blockage: {
+    kind: ReturnType<typeof classifyGoalBlockage>["kind"];
+    blockerKind?: string;
+    blockerId?: string;
+    reason?: string;
+  };
+}
+
 export interface GraphViewModel {
   workflowId: string;
   revision: number;
@@ -125,6 +152,7 @@ export interface GraphViewModel {
   readyNodeIds: string[];
   activeNodeId?: string;
   evaluationBudget?: GraphViewEvaluationBudget;
+  goal?: GraphViewGoalSummary;
 }
 
 const ACTIVE_STATUSES = new Set<NodeStatus>(["starting", "running", "awaiting_evidence", "verifying"]);
@@ -347,6 +375,57 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
   const readyNodeIds = nodes.filter((node) => node.ready).map((node) => node.id);
   const activeNodeId = nodes.find((node) => node.active)?.id;
   const evaluationBudget = evaluationBudgetStatus(state);
+  const blockage = state.goal ? classifyGoalBlockage(state) : undefined;
+  const goal = state.goal === undefined
+    ? undefined
+    : {
+        objective: state.definition.goal,
+        goalId: state.goal.goalId,
+        status: state.goal.status,
+        ...(state.goal.pauseCause === undefined ? {} : { pauseCause: state.goal.pauseCause }),
+        ...(state.goal.stopReason === undefined ? {} : { stopReason: state.goal.stopReason }),
+        budget: {
+          turns: {
+            consumed: state.goal.budget.consumedTurns,
+            ...(state.goal.budget.limits.maximumTurns === undefined
+              ? {}
+              : {
+                  limit: state.goal.budget.limits.maximumTurns,
+                  remaining: Math.max(0, state.goal.budget.limits.maximumTurns - state.goal.budget.consumedTurns),
+                }),
+          },
+          tokens: {
+            consumed: state.goal.budget.consumedTokens.totalTokens,
+            ...(state.goal.budget.limits.maximumTokens === undefined
+              ? {}
+              : {
+                  limit: state.goal.budget.limits.maximumTokens,
+                  remaining: Math.max(0, state.goal.budget.limits.maximumTokens - state.goal.budget.consumedTokens.totalTokens),
+                }),
+          },
+        },
+        automaticRevision: {
+          consumed: state.goal.automaticRevision.consumedAttempts,
+          maximum: state.goal.automaticRevision.maximumAttempts,
+          remaining: Math.max(0, state.goal.automaticRevision.maximumAttempts - state.goal.automaticRevision.consumedAttempts),
+          pending: state.goal.pendingContinuation?.action.kind === "request-revision"
+            || state.goal.automaticRevision.lastAttempt?.outcome === "pending",
+          ...(state.goal.automaticRevision.lastAttempt?.outcome === undefined
+            ? {}
+            : { lastOutcome: state.goal.automaticRevision.lastAttempt.outcome }),
+          ...(state.goal.automaticRevision.lastAttempt?.outcomeCode === undefined
+            ? {}
+            : { lastOutcomeCode: state.goal.automaticRevision.lastAttempt.outcomeCode }),
+        },
+        blockage: blockage === undefined || blockage.kind === "not-blocked"
+          ? { kind: "not-blocked" as const }
+          : {
+              kind: blockage.kind,
+              blockerKind: blockage.blocker.kind,
+              blockerId: blockage.blocker.id,
+              reason: "reason" in blockage ? blockage.reason : blockage.blocker.reason,
+            },
+      };
 
   return {
     workflowId: state.workflowId,
@@ -361,6 +440,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
     readyNodeIds,
     ...(activeNodeId === undefined ? {} : { activeNodeId }),
     ...(evaluationBudget === undefined ? {} : { evaluationBudget }),
+    ...(goal === undefined ? {} : { goal }),
   };
 }
 

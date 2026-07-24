@@ -2,7 +2,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { HypagraphDefinition } from "../src/domain/model.js";
-import { createWorkflow } from "../src/domain/reducer.js";
+import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
 import { layoutGraph } from "../src/graph/layout.js";
 import { projectGraphView } from "../src/graph/projection.js";
 import { GraphPaneController, PiGraphPaneComponent } from "../src/pi/graph-pane.js";
@@ -22,6 +22,19 @@ const state = () => {
   const created = createWorkflow(definition(), "2026-07-22T00:00:00.000Z", "workflow-pane");
   if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
   return created.state;
+};
+
+const goalState = () => {
+  const initial = state();
+  const result = handleCommand(initial, {
+    type: "start-goal",
+    goalId: "pane-goal",
+    budget: { maximumTurns: 6, maximumTokens: 2000 },
+    commandId: "start-pane-goal",
+    at: "2026-07-24T00:00:01.000Z",
+  });
+  if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+  return result.state;
 };
 
 const theme = {
@@ -79,6 +92,30 @@ describe("Pi graph pane component", () => {
     component.handleInput("\u001b");
     expect(done).toHaveBeenCalledOnce();
   });
+  it("renders root goal details at narrow and wide pane widths", () => {
+    const view = projectGraphView(goalState());
+    const component = new PiGraphPaneComponent(
+      tui(120),
+      theme,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      view,
+      layoutGraph(view),
+      "normal",
+    );
+
+    const wide = component.render(72);
+    expect(wide.join("\n")).toContain("Goal pane-goal · active");
+    expect(wide.join("\n")).toContain("turns 0/6");
+    expect(wide.join("\n")).toContain("Objective Show graph state");
+    expect(wide.every((line) => visibleWidth(line) === 72)).toBe(true);
+
+    const narrow = component.render(40);
+    expect(narrow.join("\n")).toContain("Goal pane-goal");
+    expect(narrow.every((line) => visibleWidth(line) === 40)).toBe(true);
+  });
+
 });
 
 describe("graph pane controller", () => {
