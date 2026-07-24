@@ -429,6 +429,7 @@ describe("M5B v0.6 release dogfood", () => {
       } else if (action.nodeId === "route") {
         await transition(value, "route", "evaluate");
       } else if (action.nodeId === "finalize" && before.goal.automaticRevision.consumedAttempts === 0) {
+        await transition(value, "finalize", "start");
         await transition(value, "finalize", "block", {
           reason: "A bounded release-note step is missing.",
           blockerKind: "repository-work",
