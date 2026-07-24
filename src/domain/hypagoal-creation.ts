@@ -59,7 +59,7 @@ export function createHypagoalWorkflow(
       location: "goal",
     });
   }
-  if (replayed.goal?.goalId !== identity.goalId || replayed.goal.workflowId !== identity.workflowId) {
+  if (!replayed.goal || replayed.goal.goalId !== identity.goalId || replayed.goal.workflowId !== identity.workflowId) {
     diagnostics.push({
       code: "hypagoal_identity_mismatch",
       message: "The atomic Hypagoal creation projection does not contain the requested goal and workflow identity.",
