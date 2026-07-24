@@ -68,11 +68,23 @@ export function validateAutomaticRevision(previous: HypagraphDefinition, next: H
   if (previous.policy.requireEvidence && !next.policy.requireEvidence) diagnostics.push(diagnostic("automatic_revision_evidence_weakened", "An automatic revision cannot remove required evidence.", "policy.requireEvidence"));
   if (previous.policy.mode === "strict" && next.policy.mode !== "strict") diagnostics.push(diagnostic("automatic_revision_enforcement_weakened", "An automatic revision cannot weaken strict enforcement.", "policy.mode"));
 
+  const previousNodeIds = new Set(previous.nodes.map((node) => node.id));
   const nextNodes = new Map(next.nodes.map((node) => [node.id, node]));
   for (const node of previous.nodes) {
     const replacement = nextNodes.get(node.id);
     if (!replacement) diagnostics.push(diagnostic("automatic_revision_node_removed", `Automatic revision cannot delete existing node '${node.id}'.`, `nodes.${node.id}`));
     else diagnostics.push(...validateNode(node, replacement));
+  }
+  for (const node of next.nodes) {
+    if (previousNodeIds.has(node.id) || (node.kind ?? "task") !== "gate" || !node.gate) continue;
+    const existingTargets = [...node.gate.onTrue, ...node.gate.onFalse].filter((target) => previousNodeIds.has(target));
+    if (existingTargets.length > 0) {
+      diagnostics.push(diagnostic(
+        "automatic_revision_existing_work_rerouted",
+        `New gate '${node.id}' cannot make existing work conditional automatically: ${[...new Set(existingTargets)].join(", ")}.`,
+        `nodes.${node.id}.gate`,
+      ));
+    }
   }
 
   const nextLoops = new Map(next.loops.map((loop) => [loop.id, loop]));
