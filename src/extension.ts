@@ -195,18 +195,44 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
       }
     }
-    if (state?.goal?.status === "active") {
+    const pendingRevision = state?.goal?.pendingContinuation?.action.kind === "request-revision"
+      ? state.goal.pendingContinuation
+      : undefined;
+    if (state?.goal && (state.goal.status === "active" || (state.goal.status === "blocked" && pendingRevision))) {
       const cause = branchChanged ? "branch_change" : "session_reload";
       const reason = branchChanged
         ? "The Pi branch changed. Resume the Hypagoal explicitly after reviewing canonical state."
         : "The Pi session reloaded. Resume the Hypagoal explicitly after reviewing canonical state.";
-      const paused = await applyCommandsAndCommit(eventStore.lease(), state, [{
+      const at = new Date().toISOString();
+      const commands: HypagraphCommand[] = [];
+      if (pendingRevision) {
+        commands.push({
+          type: "abandon-goal-continuation",
+          goalId: state.goal.goalId,
+          workflowId: state.workflowId,
+          expectedRevision: state.revision,
+          expectedSequence: state.sequence,
+          expectedSnapshotHash: state.snapshotHash,
+          continuationOperationId: pendingRevision.operationId,
+          continuationOrdinal: pendingRevision.ordinal,
+          requestSequence: pendingRevision.requestSequence,
+          sessionGeneration: pendingRevision.sessionGeneration,
+          branchGeneration: pendingRevision.branchGeneration,
+          reason: branchChanged
+            ? "The Pi branch changed before the automatic revision turn completed."
+            : "The Pi session reloaded before the automatic revision turn completed.",
+          commandId: `abandon-goal-continuation:${cause}:${randomUUID()}`,
+          at,
+        });
+      }
+      commands.push({
         type: "pause-goal",
         cause,
         reason,
         commandId: `pause-goal:${cause}:${randomUUID()}`,
-        at: new Date().toISOString(),
-      }]);
+        at,
+      });
+      const paused = await applyCommandsAndCommit(eventStore.lease(), state, commands);
       if (paused.ok) {
         state = paused.value.state;
         events.push(...paused.value.events);

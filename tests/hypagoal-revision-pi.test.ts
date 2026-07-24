@@ -160,4 +160,30 @@ describe("Hypagoal bounded revision Pi smoke", () => {
     expect(state.goal.automaticRevision.lastAttempt).toMatchObject({ outcome: "rejected", outcomeCode: "automatic_revision_objective_changed" });
   });
 
+
+  it.each([
+    ["session_start", "session_reload"],
+    ["session_tree", "branch_change"],
+  ] as const)("abandons and pauses a pending automatic revision on %s", async (eventName, cause) => {
+    const value = harness();
+    await create(value);
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await transition(value, "inventory", "block", { reason: "A bounded repository step is missing.", blockerKind: "repository-work" });
+    await agentEnd(value);
+    expect(latest(value).goal.pendingContinuation.action.kind).toBe("request-revision");
+    value.sendUserMessage.mockClear();
+
+    await invoke(value, eventName, { type: eventName });
+
+    const state = latest(value);
+    expect(value.sendUserMessage).not.toHaveBeenCalled();
+    expect(state.goal).toMatchObject({
+      status: "paused",
+      pauseCause: cause,
+      automaticRevision: { consumedAttempts: 1, lastAttempt: { outcome: "abandoned", outcomeCode: "continuation_abandoned" } },
+    });
+    expect(state.goal.pendingContinuation).toBeUndefined();
+  });
+
 });

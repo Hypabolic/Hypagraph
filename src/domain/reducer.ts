@@ -355,7 +355,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
     }
     if (goalIsTerminal(state.goal) && command.cause !== "usage_invalid") return reject("terminal_goal", `The goal is ${state.goal.status}.`);
     if (state.goal.status === "paused") return reject("goal_already_paused", "The goal is already paused.");
-    if (state.goal.status === "blocked") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
+    if (state.goal.status === "blocked" && command.cause !== "session_reload" && command.cause !== "branch_change") return reject("goal_blocked", "Revise the blocked workflow before you resume or pause the goal.");
     next = append(next, events, command, { type: "hypagraph.goal.paused", data: { goalId: state.goal.goalId, reason: command.reason?.trim() || "The goal was paused explicitly.", cause: command.cause ?? "explicit" } });
     return { ok: true, state: next, events };
   }
