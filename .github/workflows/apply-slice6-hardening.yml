@@ -1,0 +1,66 @@
+name: Apply Slice 6 hardening
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply and validate hardening
+        id: validate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          {
+            base64 --decode .agent/harden.py.gz.b64 | gzip --decompress > .agent/harden.py
+            python .agent/harden.py
+            npm ci
+            npm run check
+          } > hardening-run.log 2>&1
+          status=$?
+          printf '%s\n' "$status" > hardening-status.txt
+          git diff --binary > hardening-output.patch
+          exit $status
+
+      - name: Upload hardening diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice6-hardening-diagnostics
+          path: |
+            hardening-run.log
+            hardening-status.txt
+            hardening-output.patch
+          if-no-files-found: error
+
+      - name: Commit validated hardening
+        if: steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          rm -rf .agent hardening-run.log hardening-status.txt hardening-output.patch
+          rm -f .github/workflows/apply-slice6-hardening.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Harden bounded Hypagoal revision"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report validation failure
+        if: steps.validate.outcome == 'failure'
+        shell: bash
+        run: |
+          cat hardening-run.log
+          exit 1
