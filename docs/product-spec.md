@@ -1,8 +1,8 @@
 # Hypagraph product and technical specification
 
 - Status: active
-- Version: implementation baseline through M5B Slice 6
-- Current baseline: `a6c5b9ee2b9025308e91241570154b0524158258`
+- Version: implementation baseline through M5B Slice 7
+- Current baseline: `90c54214c5337be01e455145a36232a392172fae`
 - Delivery: independent Pi package, designed to support additional agent runtimes
 - Future execution plan: `docs/goal-family-and-concurrent-execution-plan.md`
 
@@ -307,18 +307,25 @@ The implementation provides:
 - stale, rejected, malformed, interrupted, no-op, weakening, and still-blocked revision exhaustion;
 - exact revision-turn and token accounting;
 - reload and branch-change pause without revision dispatch;
-- realistic positive and negative bounded-revision smoke evidence.
+- realistic positive and negative bounded-revision smoke evidence;
+- a pure root-Hypagoal product projection over canonical workflow state;
+- `/hypagoal` status, pause, resume, cancel, and graph controls;
+- exact current action, next action, ready work, remaining budget, loop, evaluation, blocker, revision, and stop-code presentation;
+- compact automatic lifecycle notifications;
+- root-goal details in model-visible state and the graph pane;
+- exact bounded-loop exit presentation;
+- narrow and wide terminal rendering.
 
 M5A is complete. Its evidence is in `docs/m5a-dogfood.md`.
 
-M5B Slices 1, 2, 3, 4, 5, and 6 are complete in PRs #62, #65, #67, #69, #71, and #73. Slice 7, complete Pi product surface, is the current implementation target.
+M5B Slices 1 through 7 are complete in PRs #62, #65, #67, #69, #71, #73, and #75. Slice 8, final integrated dogfood and v0.6 release, is the current target.
 
 ## Delivery sequence
 
 1. M4 bounded iteration regions — complete.
 2. M3.1 deterministic parser and assertion adapters — complete.
 3. M5A trusted evaluation contracts — complete.
-4. M5B root Hypagoal autonomous controller — active; Slices 1, 2, 3, 4, 5, and 6 complete.
+4. M5B root Hypagoal autonomous controller — active; Slices 1 through 7 complete; Slice 8 current.
 5. M6 event history, replay, and debugger UI.
 6. M7 goal families, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
 7. M8 worktree integration and bounded concurrent scheduling.
@@ -329,10 +336,10 @@ The detailed M7 and M8 architecture is in `docs/goal-family-and-concurrent-execu
 
 ## Validation baseline
 
-CI #1012 and final PR CI #1014 pass:
+CI #1075 and final PR CI #1077 pass:
 
 - Ubuntu with Node.js 22 and 24;
 - macOS with Node.js 22 and 24;
 - Windows with Node.js 22 and 24.
 
-The complete suite contains 93 test files and 441 tests.
+The complete suite contains 94 test files and 460 tests.

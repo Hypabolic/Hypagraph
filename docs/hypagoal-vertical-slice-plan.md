@@ -1,6 +1,6 @@
 # Hypagoal vertical-slice plan
 
-- Status: active implementation; Slices 1, 2, 3, 4, 5, and 6 complete; Slice 7 current
+- Status: active implementation; Slices 1 through 7 complete; Slice 8 current
 - Roadmap phase: M5B
 - Release marker: v0.6 with M5A trusted evaluation contracts
 - Prerequisites: M4 bounded iteration regions and the completed M5A evaluation foundation
@@ -346,15 +346,25 @@ CI #1014 passes 93 test files and 441 tests on Ubuntu, macOS, and Windows with N
 
 The v0.6 response to newly discovered bounded work remains workflow revision. A later release can create a child goal when work needs separate ownership, budget, workspace, or return semantics.
 
-### Slice 7 - Complete Pi product surface — current
+### Slice 7 - Complete Pi product surface — complete
 
-Add compact lifecycle messages, `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, `/hypagoal graph`, graph-pane goal details, budget/loop/evaluation/stop summaries, and narrow and wide terminal coverage.
+PR #75 delivered:
 
-Keep view-model identities explicit so later UI can show goal ancestry, child workflows, executor attempts, and workspaces without replacing root workflow views.
+- one pure projection for exact objective, workflow phase, goal status, active and next action, ready work, goal budgets, loop and evaluation state, canonical blockage, revision allowance, and explicit stop codes;
+- `/hypagoal status`, `/hypagoal pause`, `/hypagoal resume`, `/hypagoal cancel`, and `/hypagoal graph`;
+- pause, resume, cancel, and continuation changes through existing canonical commands and reducers;
+- compact lifecycle notifications for automatic completion, failure, cancellation, blockage, budget limits, reload and branch pauses, invalid usage, stale continuation, and interrupted revision work;
+- explicit separation of workflow phase, goal status, pause cause, blocker class, revision eligibility, revision exhaustion, evaluation validity, numeric progress, typed success, and bounded stop reason;
+- exact loop exit presentation for `max_iterations`, `no_progress`, `invalid_evaluations`, and `evaluation_budget`;
+- goal details in model-visible projections and the graph pane without protected evaluator internals;
+- narrow 52-column and wide 110-column terminal coverage;
+- complete evidence in `docs/m5b-slice-7-dogfood.md`.
 
-Done when a user can understand the active action, remaining budget, loop and evaluation state, and stop reason without event inspection.
+The merge baseline is `90c54214c5337be01e455145a36232a392172fae`.
 
-### Slice 8 - Dogfood and release
+CI #1075 and final PR CI #1077 pass 94 test files and 460 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
+
+### Slice 8 - Dogfood and release — current
 
 The v0.6 dogfood path must:
 
@@ -460,4 +470,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is active. Slices 1, 2, 3, 4, 5, and 6 are complete. Slice 7 is the current implementation target.
+M5B is active. Slices 1 through 7 are complete. Slice 8 is the current implementation and release target.
