@@ -52,6 +52,13 @@ import {
 } from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
+import {
+  isTimelineLane,
+  projectModelVisibleHistory,
+  renderEventTimeline,
+  renderExplanation,
+  renderReplayAtSequence,
+} from "./ui/history-surface.js";
 
 export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
 
@@ -862,16 +869,26 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
   pi.registerTool({
     name: "hypagraph_read",
     label: "Read Hypagraph",
-    description: "Read the workflow, graph projection, active node, ready nodes, attempts, facts, routes, checks, and node states.",
+    description: "Read the workflow, graph projection, event history, decision explanations, active node, ready nodes, attempts, facts, routes, checks, and node states.",
     promptSnippet: "Read the current Hypagraph state",
-    parameters: Type.Object({ view: Type.Optional(StringEnum(["summary", "full", "graph"] as const)) }),
+    promptGuidelines: [
+      "Use the history view to read the recent event timeline. Use the explain view to read why a node or the goal is not runnable.",
+    ],
+    parameters: Type.Object({
+      view: Type.Optional(StringEnum(["summary", "full", "graph", "history", "explain"] as const)),
+      nodeId: Type.Optional(Type.String()),
+    }),
     async execute(_toolCallId, params) {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
       const text = params.view === "full"
         ? renderWorkflow(state)
         : params.view === "graph"
           ? JSON.stringify(projectModelVisibleGraphView(state), null, 2)
-          : JSON.stringify(projectModelVisibleWorkflowSummary(state), null, 2);
+          : params.view === "history"
+            ? JSON.stringify(projectModelVisibleHistory(events), null, 2)
+            : params.view === "explain"
+              ? renderExplanation(state, params.nodeId)
+              : JSON.stringify(projectModelVisibleWorkflowSummary(state), null, 2);
       return textResult(text);
     },
   });
@@ -1230,8 +1247,24 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
     },
   });
 
+  const renderHistoryCommand = (words: readonly string[]): string => {
+    if (!state) return "There is no active Hypagraph.";
+    const first = words[0]?.toLowerCase();
+    if (first !== undefined && /^\d+$/.test(first)) {
+      try {
+        return renderReplayAtSequence(events, state, Number(first));
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (first !== undefined && !isTimelineLane(first)) {
+      return `Usage: /hypagraph history [<sequence> | <lane>] where a lane is workflow, goal, dispatch, node, check, evaluation, fact, route, loop, or unknown.`;
+    }
+    return renderEventTimeline(events, first === undefined ? {} : { lane: first });
+  };
+
   pi.registerCommand("hypagraph", {
-    description: "Show Hypagraph status, loop status, cancel a check, or control the graph pane",
+    description: "Show Hypagraph status, event history, replay, explanations, loop status, cancel a check, or control the graph pane",
     handler: async (args, ctx) => {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words.map((word) => word.toLowerCase()).join(" ");
@@ -1240,6 +1273,11 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       else if (action === "graph toggle") graphPane.toggle(ctx);
       else if (action === "graph focus") graphPane.focus();
       else if (action === "loop") ctx.ui.notify(state ? renderLoopCommand(state) : "There is no active Hypagraph.", "info");
+      else if (words[0]?.toLowerCase() === "history") ctx.ui.notify(renderHistoryCommand(words.slice(1)), "info");
+      else if (words[0]?.toLowerCase() === "explain") {
+        if (!state) ctx.ui.notify("There is no active Hypagraph.", "info");
+        else ctx.ui.notify(renderExplanation(state, words[1]), "info");
+      }
       else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "cancel") {
         const cancelled = cancelActiveChecks(words[2], "The user cancelled the check from Pi.");
         ctx.ui.notify(cancelled.length > 0 ? `Cancellation requested for: ${cancelled.join(", ")}.` : "There is no matching active check.", cancelled.length > 0 ? "warning" : "info");
