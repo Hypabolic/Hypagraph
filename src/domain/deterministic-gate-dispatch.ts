@@ -8,6 +8,7 @@ import {
   continuationActionMatches,
   isDispatchableGoalContinuation,
   selectGoalContinuation,
+  type GoalContinuationDecision,
   type GoalContinuationStateIdentity,
 } from "./goal-continuation.js";
 import { sha256 } from "./hash.js";
@@ -15,6 +16,10 @@ import { applyEvent } from "./projection.js";
 import { handleCommand } from "./reducer.js";
 
 export type ReadyGateDecision = GoalContinuationStateIdentity & { kind: "evaluate-ready-gate"; nodeId: string; loopId?: string };
+
+export function isReadyGateDecision(decision: GoalContinuationDecision): decision is ReadyGateDecision {
+  return decision.kind === "evaluate-ready-gate";
+}
 
 export interface DeterministicGateDispatchRequest {
   dispatchId: string;

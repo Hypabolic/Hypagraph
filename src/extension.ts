@@ -10,6 +10,7 @@ import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/
 import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow } from "./domain/reducer.js";
+import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { projectGraphView } from "./graph/projection.js";
 import {
@@ -296,7 +297,7 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
         return;
       }
 
-      if (decision.kind === "evaluate-ready-gate") {
+      if (isReadyGateDecision(decision)) {
         if (deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
           ctx.ui.notify(
             `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,

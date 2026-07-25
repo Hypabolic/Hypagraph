@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
-import { dispatchReadyGate } from "../src/domain/deterministic-gate-dispatch.js";
+import { dispatchReadyGate, isReadyGateDecision } from "../src/domain/deterministic-gate-dispatch.js";
 import { isRunnableGoalContinuation, selectGoalContinuation } from "../src/domain/goal-continuation.js";
 import type { HypagraphDefinition } from "../src/domain/model.js";
 import { replayEvents } from "../src/domain/projection.js";
@@ -52,7 +52,7 @@ const create = () => {
 
 const readyGate = (state: ReturnType<typeof create>["state"]) => {
   const decision = selectGoalContinuation(state);
-  if (!isRunnableGoalContinuation(decision) || decision.kind !== "evaluate-ready-gate") {
+  if (!isRunnableGoalContinuation(decision) || !isReadyGateDecision(decision)) {
     throw new Error(`Expected a ready gate, received '${decision.kind}'.`);
   }
   return decision;
