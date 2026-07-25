@@ -50,7 +50,9 @@ export function renderWorkflow(state: HypagraphState): string {
     ...(state.goal === undefined || hypagoal === undefined ? [] : [
       `Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.pauseCause ? ` [${state.goal.pauseCause}]` : ""}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`,
       `Goal next: ${hypagoal.action.next}`,
-      `Goal budget: turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "unlimited"}; tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "unlimited"}`,
+      `Goal budget: model turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "unlimited"}; tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "unlimited"}`,
+      `Scheduled actions: ${hypagoal.dispatch.scheduledActions}`,
+      `Turn accounting: ${hypagoal.dispatch.turnAccounting}`,
       `Automatic revision: ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}${state.goal.automaticRevision.lastAttempt ? ` - ${state.goal.automaticRevision.lastAttempt.outcome}${state.goal.automaticRevision.lastAttempt.outcomeCode ? ` (${state.goal.automaticRevision.lastAttempt.outcomeCode})` : ""}` : ""}`,
       ...(hypagoal.stopCode ? [`Goal stop: ${hypagoal.stopCode}${state.goal.stopReason ? ` - ${state.goal.stopReason}` : ""}`] : []),
     ]),
