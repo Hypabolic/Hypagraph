@@ -7,6 +7,12 @@ import type {
 } from "../domain/model.js";
 import { handleCommand } from "../domain/reducer.js";
 import {
+  beginReadyCheckDispatch,
+  finishReadyCheckDispatch,
+  type DeterministicCheckDispatchRequest,
+  type DeterministicCheckDispatchResult,
+} from "../domain/deterministic-check-dispatch.js";
+import {
   dispatchReadyGate,
   type DeterministicGateDispatchRequest,
   type DeterministicGateDispatchResult,
@@ -28,6 +34,25 @@ const storeDiagnostic = (error: unknown): Diagnostic => error instanceof Workflo
   : error instanceof WorkflowBranchChangedError
     ? { code: "event_store_branch_changed", message: error.message }
     : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
+
+const appendDispatch = async (
+  store: WorkflowEventStore,
+  previous: HypagraphState,
+  reduced: DeterministicCheckDispatchResult,
+): Promise<DeterministicCheckDispatchResult> => {
+  if (!reduced.ok) return reduced;
+  try {
+    await store.append({
+      workflowId: previous.workflowId,
+      expectedSequence: previous.sequence,
+      events: reduced.events,
+      snapshot: reduced.state,
+    });
+  } catch (error) {
+    return { ok: false, diagnostics: [storeDiagnostic(error)] };
+  }
+  return reduced;
+};
 
 export async function commitCreatedWorkflow(
   store: WorkflowEventStore,
@@ -84,6 +109,24 @@ export async function applyCommandAndCommit(
   command: HypagraphCommand,
 ): Promise<DurableCommandResult> {
   return applyCommandsAndCommit(store, state, [command]);
+}
+
+export async function beginReadyCheckDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicCheckDispatchRequest,
+): Promise<DeterministicCheckDispatchResult> {
+  return appendDispatch(store, state, beginReadyCheckDispatch(state, request));
+}
+
+export async function finishReadyCheckDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicCheckDispatchRequest,
+  outcome: "completed" | "failed" | "interrupted",
+  reason?: string,
+): Promise<DeterministicCheckDispatchResult> {
+  return appendDispatch(store, state, finishReadyCheckDispatch(state, request, outcome, reason));
 }
 
 export async function dispatchReadyGateAndCommit(
