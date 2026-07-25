@@ -102,17 +102,53 @@ A `command` check publishes only `passed`, `status`, `exitCode`, `durationMs`, `
 2. A command has no input contract. Arguments are static in the definition. A command cannot read facts which earlier nodes published.
 3. Generic fact output is tied to the metric and evaluation vocabulary.
 
-### Proposal: a `code` node kind
+### Reference implementation: pi-fabric
 
-Add a task-lane node with a deterministic executor:
+`pi-fabric` (https://github.com/monotykamary/pi-fabric) is a programmable tool and agent runtime for Pi. It is MIT licensed. At version 0.25.10 it depends on the same Pi 0.80.x peer line which Hypagraph uses.
 
-- execution: reuse `CommandExecutionDefinition`. It already blocks the shell, uses an argument array, uses an environment allowlist, and applies timeout and retry.
-- input: write a bounded JSON projection of declared facts to a path inside the workspace before the command starts. This is the missing half of code mode.
-- output: generalise the `metric-json` mapping path into a `facts-json` parser and add declared evidence.
-- scope: verify that the command changed only the declared paths. The existing `git-assertion` instrument with `changed-paths` already does this.
-- lane: keep task semantics of attempt, evidence, and verification, but use a deterministic executor and no model turn.
+Its execution model is one type-checked TypeScript program in a QuickJS sandbox. The sandbox denies `process`, `require`, the file system, the network, and subprocess globals. Every side effect crosses a JSON-only host bridge into an action registry, which applies schemas, approvals, audit records, timeouts, and cancellation. The program reaches Pi tools through `pi.*`, MCP servers through `mcp.<server>.<method>()`, and runtime-discovered tools through `tools.call({ ref, args })`. Only the returned value enters the model context. Each execution receives a fresh context.
 
-This change makes a mutating command verifiable, and it makes later effect nodes a special case of the same contract.
+This is a better mechanism for a Hypagraph code node than a bounded command with a JSON report file.
+
+### Two possible placements
+
+The placement decides whether pi-fabric complements Hypagraph or replaces it.
+
+Placement A is the node body. The program performs the work of one node. The graph keeps sequencing, readiness, routing, iteration, evidence, and replay. Hypagraph must adopt this placement.
+
+Placement B is the orchestrator. The model writes one program which contains the branching, the loops, and the fan-out for the whole workflow. This is what the bundled workflow, council, and swarm skills do. Hypagraph must reject this placement. Control flow inside an opaque program is not a gate, a loop region, a typed fact, or a replayable decision. Placement B would remove the property which the rest of this document identifies as the strongest part of the product.
+
+### Proposal: a `code` node kind on a sandbox executor
+
+Add a task-lane node whose body is a program, and run it behind the existing executor seam:
+
+- execution: run the program in the QuickJS sandbox. This replaces the earlier proposal to reuse `CommandExecutionDefinition` with `spawn`. It removes the unbounded mutation risk of a raw command, because the sandbox denies file, network, and subprocess access, and every effect crosses the bridge.
+- input: inject the declared fact inputs as typed bindings. The sandbox already throws on an undeclared key instead of returning `undefined`. This satisfies the bounded-context rule in the roadmap section 3.7 and removes the need to materialise a JSON input file.
+- output: validate the returned object against the node `produces` contract in the controller. Do not trust the bridge validation. The pi-fabric documentation states that directive output is schema validated and still untrusted.
+- scope: verify a mutating program with the existing `git-assertion` instrument and `changed-paths`.
+- lane: keep task semantics of attempt, evidence, and verification, and use no model turn.
+
+### Constraints which Hypagraph must add
+
+pi-fabric lets the model write the program at call time. Hypagraph cannot allow this inside a node, because every definition must pass validation before execution.
+
+1. Author the program during the authoring turn or the bounded revision turn. Store it in `HypagraphDefinition`. Include it in the snapshot hash.
+2. Run the TypeScript check at definition time, not only at execution time.
+3. Keep the sandbox on the executor side. The reducer must stay pure, as required by `AGENTS.md`.
+4. Record the program result as an event and use the existing durable order of store start, run effect, store raw result, publish facts. Replay must replay the recorded result. Replay must never run the program again.
+5. Route a program which the runtime discovers later through `hypagraph_revise` or the bounded-revision path.
+
+### What this mechanism does not solve
+
+A code node cannot perform semantic work. The reviewers in reference workflow B need model judgement, so they need the M7 executor, not a sandbox program.
+
+`Promise.all` inside one program is not graph fan-out. It hides the branches from the graph. It removes per-branch attempts, evidence, retry, graph-pane visibility, and replay granularity. Use it only for deterministic input and output inside one node. Do not use it for the reviewer fan-out in reference workflow B, and do not use it in place of N6.
+
+### Effect on other gaps
+
+- N5 effect nodes become much cheaper. An effect node becomes a code node with an idempotency key. The MCP surface removes the need for one adapter for each external service.
+- N1 presentation actions become cheaper. A node can run a skill or render a report through the bridge without a model turn. The typed response contract and the non-fault wait state remain Hypagraph work.
+- M7 keeps its scope. A sandbox executor is a second executor kind behind the same seam, next to the planned isolated Pi executor. It confirms the shape of the seam. It does not replace it.
 
 ## 6. Question 2: presentation and approval nodes
 
@@ -188,7 +224,7 @@ Not yet planned:
 
 - N1: interaction and approval nodes, with skill and report presentation effects, typed responses, and a non-fault wait state;
 - N2: a deterministic dispatch lane for checks and gates;
-- N3: a `code` node kind with fact input, generalised fact output, and scope verification;
+- N3: a `code` node kind on a sandbox executor, with injected fact input, validated fact output, and scope verification. See section 5 for the pi-fabric reference implementation;
 - N4: external work sources, triggers, schedules, and a continuous service mode with one bounded goal for each item;
 - N5: effect nodes with external authority, for example open a pull request, merge, deploy, or notify, with idempotency keys and durable effect ordering;
 - N6: dynamic fan-out over a runtime collection. Reviewer 1 to N needs this. "Merged items queued for release" needs the same mechanism.
@@ -205,7 +241,7 @@ Workflow A needs everything above, and also N4 and N5. It is the further target 
 
 1. N2 deterministic dispatch. It is small, it adds no domain concept, and it removes the largest avoidable model cost.
 2. N1 interaction nodes. They unblock the human gate in both reference workflows, and they reuse the executor and durable-lifecycle seams which already exist.
-3. N3 code mode. It completes the deterministic lane and it makes N5 a special case.
+3. N3 code mode on a sandbox executor. It completes the deterministic lane and it makes N5 a special case. Evaluate whether to depend on pi-fabric or to adopt only its execution pattern behind a Hypagraph-owned adapter. The license permits both. A Hypagraph-owned adapter is consistent with the rule in the roadmap section 3.3 that reusable external code must sit behind a Hypagraph executor boundary.
 4. M7 and M8 as planned. They provide the executor abstraction, the worktree isolation, and the concurrency which fan-out needs.
 5. N6 dynamic fan-out.
 6. N4 and N5 for the complete engineering loop.
