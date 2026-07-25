@@ -38,18 +38,20 @@ jobs:
           from pathlib import Path
 
           path = Path("tests/m5b-v0-6-release-dogfood.test.ts")
-          text = path.read_text()
-          route = '''    expect(selected.slice(10)).toEqual([\n      "probe:root:0",\n      "route:root:0",\n      "finalize:root:0",'''
-          no_route = '''    expect(selected.slice(10)).toEqual([\n      "probe:root:0",\n      "finalize:root:0",'''
-          if text.count(route) != 1:
-              raise SystemExit("The model-lane route expectation did not match exactly once.")
-          text = text.replace(route, no_route)
+          lines = path.read_text().splitlines(keepends=True)
 
-          budget = '''    expect(state.goal.budget).toMatchObject({\n      consumedTurns: selected.length,\n      consumedTokens: { totalTokens: selected.length * 13 },\n    });\n    const eventTypes ='''
-          dispatch = '''    expect(state.goal.budget).toMatchObject({\n      consumedTurns: selected.length,\n      consumedTokens: { totalTokens: selected.length * 13 },\n    });\n    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);\n    expect(state.goal.continuationOrdinal).toBe(selected.length + 1);\n\n    const actionSelections = value.entries.flatMap((entry) =>\n      entry.data?.events\n        ?.filter((event: any) => event.type === "hypagraph.action.selected")\n        .map((event: any) => event.data.dispatch) ?? []);\n    expect(actionSelections).toContainEqual(expect.objectContaining({\n      lane: "deterministic",\n      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),\n    }));\n\n    const eventTypes ='''
-          if text.count(budget) != 1:
-              raise SystemExit("The budget assertion insertion point did not match exactly once.")
-          path.write_text(text.replace(budget, dispatch))
+          route_line = '      "route:root:0",\n'
+          if lines.count(route_line) != 1:
+              raise SystemExit(f"Expected one model-lane route line, found {lines.count(route_line)}.")
+          lines.remove(route_line)
+
+          event_line = '    const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);\n'
+          if lines.count(event_line) != 1:
+              raise SystemExit(f"Expected one eventTypes insertion point, found {lines.count(event_line)}.")
+          index = lines.index(event_line)
+          insertion = '''    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);\n    expect(state.goal.continuationOrdinal).toBe(selected.length + 1);\n\n    const actionSelections = value.entries.flatMap((entry) =>\n      entry.data?.events\n        ?.filter((event: any) => event.type === "hypagraph.action.selected")\n        .map((event: any) => event.data.dispatch) ?? []);\n    expect(actionSelections).toContainEqual(expect.objectContaining({\n      lane: "deterministic",\n      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),\n    }));\n\n'''.splitlines(keepends=True)
+          lines[index:index] = insertion
+          path.write_text(''.join(lines))
           PY
           rm .agent/m6a-dogfood-delta.patch
           rmdir .agent 2>/dev/null || true
