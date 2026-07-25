@@ -159,7 +159,7 @@ Use new event types which mirror the check events. Do not reuse the check event 
 ## 10. Relation to other gaps
 
 - N2 deterministic dispatch must land first. A code node needs no model turn, so it belongs in the same deterministic lane as a check and a gate.
-- N5 effect nodes become a code node with an idempotency key and a capability grant for one external surface.
+- N5 effect nodes use a code node with a capability grant for one external surface. The sandbox and an idempotency key give the execution mechanism only. An external effect still needs durable `requested`, `observed`, and `indeterminate` states and a reconciliation step after a restart. Do not treat a code node as sufficient for a merge, a deployment, or a pull-request creation.
 - N1 presentation effects can use the same adapter with a capability grant for a skill or a report renderer. The typed response contract and the non-fault wait state remain separate work.
 - M7 keeps its scope. The sandbox executor is a second executor kind behind the same seam, next to the planned isolated Pi executor.
 - A code node cannot perform semantic work. Parallel calls inside one program are not graph fan-out. See `docs/graph-capability-review.md` section 5.

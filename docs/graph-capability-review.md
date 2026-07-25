@@ -52,7 +52,8 @@ The model cannot select a route, complete a loop, or complete a goal. This rule 
 
 | Diagram element | Status | Evidence or gap |
 | --- | --- | --- |
-| Linear backlog tagged `ready-for-agent` | Absent | The runtime has no external work source, no trigger adapter, and no schedule. A goal starts from one prose objective which a user types. |
+| Linear backlog tagged `ready-for-agent`, as a trigger which starts work | Absent | The runtime has no external work source, no trigger adapter, and no schedule. A goal starts from one prose objective which a user types. |
+| Waiting for an external condition inside a running graph | Partial | A command check can run a script which waits for Linear, for CI, or for a merge. A retry policy with `backoffMs` and `maxAttempts` gives bounded polling. The loop model names polling with a hard stop as a supported pattern. What is absent is direct dispatch, so each poll costs one model turn; fact-bound arguments, so a command cannot receive a runtime issue or run identifier; and restart reconciliation, because restore closes an interrupted attempt instead of reconciling the external state. |
 | Spawn one agent session for each issue in a new worktree | Absent | There is no executor adapter and no worktree lease. This is planned as M7 and M8. |
 | Implement code in a worktree | Partial | Task nodes execute. Execution uses the current Pi session and the current checkout. `scope.paths` with strict mode limits file writes. |
 | Tests and checks: lint, build, test suite | Available | Seven check kinds run without a shell, with timeout, retry, cancellation, bounded artifacts, and typed facts. |
@@ -76,7 +77,7 @@ Result: the middle of workflow A is the strongest part of the current product. T
 | Plan Reviewer and plan feedback | Partial | A review node is representable. A plan-feedback cycle is not. The only automatic re-plan path is the one bounded revision. It permits one attempt, it needs a classified blocker, and it rejects weakening changes. |
 | Worker as a resident agent | Absent | A node cannot declare an executor, an agent identity, or a session lifetime. |
 | Fan-out to Reviewer 1 to N at the same time | Absent today, planned as M8 | `enumerateRootWorkActions` returns an empty list when more than one node is active. The controller queues one continuation. Execution is strictly sequential. This is a deliberate M5B constraint, not an architectural limit. M8 plans bounded concurrent scheduling with an initial default of two isolated attempts. M8 depends on the M7 executor abstraction. |
-| A runtime-sized number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6. |
+| A runtime-derived number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6. A fixed set of reviewers does not need N6. Only a count which the runtime derives needs it. |
 | Resident agent against ephemeral worker | Absent | The model has no node lifetime concept. |
 | Synthesise | Available | `requires` gives structural fan-in. |
 | Pass decision | Available | A gate evaluates a typed condition over published facts. |
@@ -86,7 +87,9 @@ Result: the middle of workflow A is the strongest part of the current product. T
 
 Result: every structural element of workflow B except fan-out is available or close.
 
-Separate the two fan-out gaps. Concurrent execution of independent nodes which the definition already declares is planned as M8. It blocks workflow B today, but the roadmap answers it. A runtime-sized number of branches is not planned. It is gap N6, and workflow B needs it, because the reviewer count is a runtime value.
+Separate the two fan-out gaps. Concurrent execution of independent nodes which the definition already declares is planned as M8. It blocks workflow B today, but the roadmap answers it.
+
+A runtime-derived number of branches is not planned. It is gap N6. Workflow B needs N6 only when the reviewer count is a runtime value. When the author declares a fixed set of reviewers, M7 and M8 are sufficient. The diagram uses `N`, which does not state which case applies. Confirm the intended case before you plan N6.
 
 The final user-facing output node is the third gap.
 
@@ -164,15 +167,26 @@ Nothing is first class. `EvidenceReference` accepts `kind: "approval"`, but that
 
 An interaction node has three parts.
 
-1. Presentation effect. The node performs one bounded presentation action before it asks the question. Effect kinds can include:
-   - `skill`: run a named Pi skill, for example a plan annotation skill;
-   - `command`: produce an artifact;
-   - `report`: render an HTML or Markdown artifact from a canonical projection.
-   Reuse the `CheckExecutor` seam. It is already transport neutral. Reuse the durable lifecycle order: store the request, perform the effect, store the observation, then publish facts.
+1. Presentation effect. The node performs one bounded presentation action before it asks the question. Reuse the `CheckExecutor` seam. It is already transport neutral. Reuse the durable lifecycle order: store the request, perform the effect, store the observation, then publish facts.
+
+   Separate two classes of effect. Do not assume that a skill is deterministic.
+
+   | Class | Examples | Executor | Model turn |
+   | --- | --- | --- | --- |
+   | Deterministic presentation | Render an HTML or Markdown artifact from a canonical projection. Open a fixed user-interface surface, for example a plan annotation view. Run a bounded command which produces an artifact. | Sandbox or command executor | None |
+   | Semantic presentation | Run a skill which is a set of model instructions, for example summarise the change before the question. | M7 model executor | One |
+
+   A named Pi skill can belong to either class. A skill which opens a fixed surface or renders an artifact is deterministic. A skill which instructs a model is not. The definition must declare the class, and validation must reject a deterministic declaration for a skill which needs model work.
 
 2. Typed response contract. The node declares the permitted responses. Each response maps to typed facts. Free text is captured as evidence only. Free text must never select a route. Routing then uses an ordinary gate over the published facts, so the change adds no new routing semantics.
 
-3. A non-fault wait state. Add node status `awaiting_response` and goal status `awaiting_user`. Add events `hypagraph.interaction.requested` and `hypagraph.interaction.answered`. The controller must not treat the wait as blockage, must not consume budget during the wait, and must resume from a typed user event.
+3. A non-fault wait state which stays node-local. Add node status `awaiting_response`. Add events `hypagraph.interaction.requested` and `hypagraph.interaction.answered`. The controller must not treat the wait as blockage, must not consume budget during the wait, and must resume from a typed user event.
+
+   Do not add a goal status which stops the goal. An earlier version of this document proposed `awaiting_user` as a stored goal status. That proposal is wrong. It breaks the rule in roadmap section 3.5 that independent components stay independent, and it would starve an independent branch or loop which remains runnable.
+
+   Model the wait as node-local only. An `awaiting_response` node is not runnable, exactly as a pending node is not runnable. The continuation selector then keeps every other component eligible, and the existing round-robin fairness continues to work.
+
+   Report "waiting for a user response" as a derived presentation state. Derive it when the runnable action list is empty and one interaction is outstanding. Do not store it. This follows the existing rule that terminal and blocked state stay derived from the workflow.
 
 Restore policy needs one decision. The current policy pauses an active goal after a reload. An unanswered interaction must survive a reload and must be presented again. It must not force the whole goal into a manual pause.
 
@@ -201,17 +215,30 @@ When the selector returns `run-ready-check` or `evaluate-ready-gate`, execute th
 
 Effects:
 
-- the reducer, the events, and the state-bound identity rules do not change;
 - a deterministic action consumes no turn and no tokens;
 - the largest avoidable model cost is removed;
 - one class of stale-continuation failure is removed, because no state can change during a wait for a model turn;
 - task work becomes the only model surface, which is what the later executor abstraction needs.
 
-Constraints to respect:
+### N2 changes the event model
+
+An earlier version of this document stated that the reducer, the events, and the identity rules do not change. That statement is wrong.
+
+The current continuation lifecycle closes only through a delivered model turn. `src/domain/projection.ts` rejects a turn-recorded event when no pending continuation exists, with the message "A turn-recorded event requires a pending continuation." The turn-recorded event also increments the consumed turn count, records the accounted turn, and advances the continuation ordinal. A directly dispatched action produces no Pi usage, so it cannot use this path.
+
+N2 must therefore choose one of two designs, and the choice is an event-model decision:
+
+1. Add a completion event for a deterministic action, for example `hypagraph.goal.continuation-completed`. It closes the pending continuation and advances the ordinal without usage accounting. The turn count then counts model turns only, and the document must say so.
+2. Do not create a continuation request for a deterministic action. Dispatch it outside the continuation mechanism and select again. The continuation request then means "a model turn is required", which is a narrower and clearer meaning.
+
+Design 2 is probably simpler, because it removes the accounting question instead of answering it. Design 1 keeps one uniform audit trail for every dispatched action. Decide this before implementation, and record the decision.
+
+Other constraints to respect:
 
 - keep `hypagraph_run_check` for manual use;
 - keep cancellation working through the existing active-execution registry;
-- re-check the no-canonical-progress guard, because it compares sequences across a delivered turn.
+- re-check the no-canonical-progress guard, because it compares sequences across a delivered turn;
+- confirm that budget exhaustion still stops the loop. A deterministic action which consumes no turn must not let a graph run without a bound. Loop iteration limits and evaluation budgets remain the bound in that case.
 
 This change is small, it adds no new domain concept, and it should be done first.
 
@@ -230,7 +257,7 @@ Not yet planned:
 - N2: a deterministic dispatch lane for checks and gates;
 - N3: a `code` node kind on a sandbox executor, with injected fact input, validated fact output, and scope verification. See section 5 for the pi-fabric reference implementation;
 - N4: external work sources, triggers, schedules, and a continuous service mode with one bounded goal for each item;
-- N5: effect nodes with external authority, for example open a pull request, merge, deploy, or notify, with idempotency keys and durable effect ordering;
+- N5: effect nodes with external authority, for example open a pull request, merge, deploy, or notify. An idempotency key and durable effect ordering give the execution mechanism. They do not give the state model. An external effect also needs explicit `requested`, `observed`, and `indeterminate` states, and a reconciliation step which resolves an indeterminate effect against the external system after a restart. The existing `interrupted` check status is the nearest concept, but it only records that the host could not store a result. It does not reconcile;
 - N6: dynamic fan-out over a runtime collection. Reviewer 1 to N needs this. "Merged items queued for release" needs the same mechanism.
 
 ## 9. Distance to each reference workflow
