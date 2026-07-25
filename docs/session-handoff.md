@@ -74,7 +74,7 @@ The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
 
 ### Vertical slices
 
-1. Add the generic action-dispatch event model with the deterministic, model, and executor lanes. Move the scheduler ordinal off the turn event. Migrate the v0.6 event stream. This slice changes no behaviour.
+1. Add the generic action-dispatch event model with the deterministic, model, and executor lanes. Replace the continuation lifecycle with the model lane. Reject unsupported stored schema versions. This slice changes no execution behaviour.
 2. Dispatch a ready gate in the deterministic lane. Add the consecutive-dispatch maximum.
 3. Dispatch a ready check in the deterministic lane through the existing durable lifecycle.
 4. Update accounting, budgets, and the product surface, so that consumed turns describe model turns only.
@@ -83,7 +83,7 @@ The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
 
 ### Slice 1 recommendation
 
-Start with the event model, not with dispatch. Behaviour must not change in Slice 1, and every existing test must still pass.
+Start with the event model, not with dispatch. Behaviour must not change in Slice 1, and every existing current-schema test must still pass.
 
 Suggested branch:
 
@@ -96,7 +96,8 @@ Suggested pull request title:
 ### Slice 1 constraints
 
 - The reducer stays pure.
-- A v0.6 event stream migrates and produces the same canonical state.
+- Do not add migration code for unused pre-adoption schemas.
+- Reject unsupported stored schema versions with a clear error.
 - Exactly-once turn accounting holds for the model lane.
 - Round-robin fairness across independent components does not change.
 - Replay produces the same state and the same stop decision.
