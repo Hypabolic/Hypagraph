@@ -1,4 +1,10 @@
 import { evaluateCheckStart } from "../domain/check-policy.js";
+import {
+  isProtectedEvaluatorNode,
+  redactGoalBlockage,
+  redactProtectedReason,
+  redactStopReason,
+} from "../domain/evaluation-presentation.js";
 import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-blockage.js";
 import { selectGoalContinuation } from "../domain/goal-continuation.js";
 import { ACTIVE_ROOT_STATUSES, rootWorkActionIsRunnable } from "../domain/goal-runnable.js";
@@ -25,13 +31,17 @@ export interface NodeExplanation {
   kind: string;
   reason: NotRunnableReason;
   summary: string;
+  /** The explanation replaced protected evaluator detail with a stable reason. */
+  redacted: boolean;
 }
 
 export interface GoalExplanation {
   goalStatus?: string;
   decision: string;
   summary: string;
+  /** The blockage is a presentation copy. A protected blocker reason is replaced. */
   blockage: GoalBlockageDecision;
+  blockageRedacted: boolean;
   runnableNodeIds: string[];
 }
 
@@ -119,6 +129,7 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
       kind: "unknown",
       reason: { kind: "unknown-node" },
       summary: summarize(nodeId, { kind: "unknown-node" }),
+      redacted: false,
     };
   }
 
@@ -129,9 +140,15 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
     if (status === "stale") return { kind: "stale", revision: state.revision };
     if (status === "cancelled") return { kind: "terminal", status };
     if (status === "blocked") {
+      // A stored blocker reason is free text. It can repeat protected evaluator detail.
+      const blocked = redactProtectedReason(
+        state.definition,
+        nodeId,
+        runtime.blockedReason ?? "No reason was stored.",
+      );
       return {
         kind: "blocked",
-        reason: runtime.blockedReason ?? "No reason was stored.",
+        reason: blocked.reason,
         blockerKind: runtime.blockerKind ?? "unknown",
       };
     }
@@ -187,11 +204,16 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
     return { kind: "terminal", status };
   })();
 
-  return { nodeId, status, kind, reason, summary: summarize(nodeId, reason) };
+  const redacted = isProtectedEvaluatorNode(state.definition, nodeId)
+    && (reason.kind === "blocked" || reason.kind === "check-policy");
+  return { nodeId, status, kind, reason, summary: summarize(nodeId, reason), redacted };
 }
 
-const decisionSummary = (state: HypagraphState): { decision: string; summary: string } => {
-  const decision = selectGoalContinuation(state);
+const decisionSummary = (
+  state: HypagraphState,
+  blockageRedacted: boolean,
+): { decision: string; summary: string } => {
+  const decision = redactStopReason(selectGoalContinuation(state), blockageRedacted);
   switch (decision.kind) {
     case "continue-active-task":
     case "start-ready-task":
@@ -217,7 +239,8 @@ const decisionSummary = (state: HypagraphState): { decision: string; summary: st
 
 /** Explain the canonical goal decision and the runnable work which supports it. */
 export function explainGoal(state: HypagraphState): GoalExplanation {
-  const { decision, summary } = decisionSummary(state);
+  const blockage = redactGoalBlockage(state, classifyGoalBlockage(state));
+  const { decision, summary } = decisionSummary(state, blockage.redacted);
   const runnableNodeIds = state.definition.nodes
     .filter((node) => explainNode(state, node.id).reason.kind === "runnable")
     .map((node) => node.id);
@@ -225,7 +248,8 @@ export function explainGoal(state: HypagraphState): GoalExplanation {
     ...(state.goal?.status === undefined ? {} : { goalStatus: state.goal.status }),
     decision,
     summary,
-    blockage: classifyGoalBlockage(state),
+    blockage: blockage.decision,
+    blockageRedacted: blockage.redacted,
     runnableNodeIds,
   };
 }

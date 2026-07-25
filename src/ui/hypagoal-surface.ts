@@ -1,5 +1,7 @@
 import type { DispatchLane } from "../domain/action-dispatch.js";
+import { PROTECTED_REASON, redactGoalBlockage, redactStopReason } from "../domain/evaluation-presentation.js";
 import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-blockage.js";
+
 import { selectGoalContinuation, type GoalContinuationDecision } from "../domain/goal-continuation.js";
 import type { GoalContinuationAction, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
@@ -169,9 +171,20 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
   if (!goal) return undefined;
   const activeNodeId = state.definition.nodes.find((node) => ACTIVE_NODE_STATUSES.has(state.runtime.nodes[node.id]?.status ?? ""))?.id;
   const ready = readyNodeIds(state);
-  const blockage = classifyGoalBlockage(state);
+  // The canonical blocker reason can repeat protected evaluator detail. The canonical
+  // identity keeps the exact text, because the automatic revision binds to it.
+  const canonicalBlockage = classifyGoalBlockage(state);
+  const redactedBlockage = redactGoalBlockage(state, canonicalBlockage);
+  const blockage = redactedBlockage.decision;
+  // The goal stop reason and the last revision reason repeat the canonical blocker reason.
+  // Replace them only when they are that exact text, so a pause or budget reason stays readable.
+  const canonicalReason = canonicalBlockage.kind === "not-blocked" ? undefined : canonicalBlockage.blocker.reason;
+  const redactReason = (value: string): string =>
+    redactedBlockage.redacted && value === canonicalReason ? PROTECTED_REASON : value;
   const pendingAction = goal.pendingContinuation?.action;
-  const next = pendingAction ? actionLabel(pendingAction) : decisionLabel(selectGoalContinuation(state));
+  const next = pendingAction
+    ? actionLabel(pendingAction)
+    : decisionLabel(redactStopReason(selectGoalContinuation(state), redactedBlockage.redacted));
   const lastAttempt = goal.automaticRevision.lastAttempt;
   const loops = loopSurfaceSummaries(state);
   const code = stopCode(state, blockage, loops);
@@ -187,7 +200,7 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       id: goal.goalId,
       status: goal.status,
       ...(goal.pauseCause === undefined ? {} : { pauseCause: goal.pauseCause }),
-      ...(goal.stopReason === undefined ? {} : { stopReason: goal.stopReason }),
+      ...(goal.stopReason === undefined ? {} : { stopReason: redactReason(goal.stopReason) }),
     },
     action: {
       ...(activeNodeId === undefined ? {} : { activeNodeId }),
@@ -207,7 +220,7 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       pending: goal.pendingContinuation?.action.kind === "request-revision" || lastAttempt?.outcome === "pending",
       ...(lastAttempt?.outcome === undefined ? {} : { lastOutcome: lastAttempt.outcome }),
       ...(lastAttempt?.outcomeCode === undefined ? {} : { lastOutcomeCode: lastAttempt.outcomeCode }),
-      ...(lastAttempt?.reason === undefined ? {} : { lastReason: lastAttempt.reason }),
+      ...(lastAttempt?.reason === undefined ? {} : { lastReason: redactReason(lastAttempt.reason) }),
     },
     loops,
     ...(code === undefined ? {} : { stopCode: code }),

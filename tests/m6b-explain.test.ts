@@ -3,6 +3,15 @@ import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
 import type { CheckResult, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { handleCommand } from "../src/domain/reducer.js";
 import { explainGoal, explainNode } from "../src/history/explain.js";
+import { PROTECTED_REASON } from "../src/domain/evaluation-presentation.js";
+import { classifyGoalBlockage } from "../src/domain/goal-blockage.js";
+import { renderExplanation } from "../src/ui/history-surface.js";
+import {
+  projectHypagoalSurface,
+  renderHypagoalLifecycleMessage,
+  renderHypagoalStatus,
+} from "../src/ui/hypagoal-surface.js";
+import { projectModelVisibleWorkflowSummary } from "../src/pi/model-visible-state.js";
 
 const at = "2026-07-25T19:00:00.000Z";
 
@@ -321,5 +330,189 @@ describe("M6B Slice 3 decision explanation", () => {
     expect(explanation.summary).not.toContain("--secret-suite");
     expect(explanation.summary).not.toContain("protected/evaluate.json");
     expect(explanation.reason).toMatchObject({ kind: "runnable", action: "run-ready-check" });
+  });
+});
+
+describe("M6B protected evaluator redaction in explanations", () => {
+  const SENTINEL = "holdout case 'internal-case-7' failed in protected/evaluate.json via --secret-suite";
+
+  const protectedSource = (): HypagraphDefinition => ({
+    title: "Protected evaluator blockage",
+    goal: "Never repeat protected evaluator detail",
+    nodes: [
+      {
+        id: "evaluate",
+        title: "Evaluate quality",
+        kind: "check",
+        requires: [],
+        acceptance: [],
+        produces: [{ name: "evaluate.score", type: "number", required: false }],
+        check: {
+          kind: "metric-report",
+          command: "protected-evaluator",
+          arguments: ["--secret-suite"],
+          timeoutMs: 30_000,
+          reportPath: "protected/evaluate.json",
+          parser: { name: "metric-json", version: 1 },
+          mappings: [{ source: "score", fact: "evaluate.score", type: "number", required: false }],
+          evaluation: { kind: "holdout", feedback: { mode: "aggregate" } },
+        },
+      },
+      { id: "publish", title: "Publish the result", requires: ["evaluate"], acceptance: [] },
+    ],
+    loops: [],
+    policy: { mode: "guided", requireEvidence: false },
+  });
+
+  /** Block the protected evaluator with a reason which repeats evaluator detail. */
+  const blockedFixture = (blockerKind: "repository-work" | "safeguard" = "repository-work") => {
+    const created = create(protectedSource(), "protected-blocked-workflow");
+    const state = apply(created.state, {
+      type: "block-node",
+      nodeId: "evaluate",
+      reason: SENTINEL,
+      blockerKind,
+      commandId: "block-evaluate",
+      at,
+    });
+    return { created, state };
+  };
+
+  it("replaces a protected blocker reason in explainNode", () => {
+    const value = blockedFixture();
+    // Canonical state keeps the exact text, because the revision identity binds to it.
+    expect(value.state.runtime.nodes.evaluate?.blockedReason).toBe(SENTINEL);
+
+    const explanation = explainNode(value.state, "evaluate");
+    expect(explanation.redacted).toBe(true);
+    expect(explanation.reason).toEqual({
+      kind: "blocked",
+      reason: PROTECTED_REASON,
+      blockerKind: "repository-work",
+    });
+    expect(JSON.stringify(explanation)).not.toContain("internal-case-7");
+    expect(JSON.stringify(explanation)).not.toContain("--secret-suite");
+    expect(JSON.stringify(explanation)).not.toContain("protected/evaluate.json");
+  });
+
+  it("keeps an unprotected blocker reason readable", () => {
+    const created = create(definition(), "unprotected-blocked-workflow");
+    const state = apply(created.state, {
+      type: "block-node",
+      nodeId: "plan",
+      reason: "A bounded release note is missing.",
+      blockerKind: "repository-work",
+      commandId: "block-plan",
+      at,
+    });
+
+    const explanation = explainNode(state, "plan");
+    expect(explanation.redacted).toBe(false);
+    expect(explanation.reason).toMatchObject({ reason: "A bounded release note is missing." });
+  });
+
+  it("replaces the protected blocker reason in the goal blockage and the stop decision", () => {
+    const value = blockedFixture("safeguard");
+    const goal = explainGoal(value.state);
+
+    expect(goal.blockageRedacted).toBe(true);
+    expect(JSON.stringify(goal)).not.toContain("internal-case-7");
+    expect(JSON.stringify(goal)).not.toContain("--secret-suite");
+    expect(JSON.stringify(goal)).not.toContain("protected/evaluate.json");
+    if (goal.blockage.kind === "not-blocked") throw new Error("Expected a blocked goal.");
+    expect(goal.blockage.blocker.reason).toBe(PROTECTED_REASON);
+    // The blocker identity fields stay canonical, so the revision decision is unchanged.
+    expect(goal.blockage.blocker.id).toBe("evaluate");
+    expect(goal.blockage.blocker.kind).toBe("terminal-policy");
+  });
+
+  it("keeps the canonical blocker reason for the reducer", () => {
+    const value = blockedFixture();
+    // The presentation copy must not change what the reducer classifies.
+    const canonical = classifyGoalBlockage(value.state);
+    if (canonical.kind === "not-blocked") throw new Error("Expected a blocked goal.");
+    expect(canonical.blocker.reason).toBe(SENTINEL);
+  });
+
+  it("does not expose protected detail through the rendered explain surfaces", () => {
+    const value = blockedFixture();
+
+    const node = renderExplanation(value.state, "evaluate");
+    const all = renderExplanation(value.state);
+    for (const rendered of [node, all]) {
+      expect(rendered).not.toContain("internal-case-7");
+      expect(rendered).not.toContain("--secret-suite");
+      expect(rendered).not.toContain("protected/evaluate.json");
+    }
+    expect(node).toContain(PROTECTED_REASON);
+  });
+
+  it("does not expose protected detail through the Hypagoal status surface", () => {
+    const value = blockedFixture();
+    const surface = projectHypagoalSurface(value.state)!;
+    const status = renderHypagoalStatus(value.state, 110);
+    const lifecycle = renderHypagoalLifecycleMessage(value.state);
+    const summary = JSON.stringify(projectModelVisibleWorkflowSummary(value.state));
+
+    for (const rendered of [JSON.stringify(surface), status, lifecycle, summary]) {
+      expect(rendered).not.toContain("internal-case-7");
+      expect(rendered).not.toContain("--secret-suite");
+      expect(rendered).not.toContain("protected/evaluate.json");
+    }
+  });
+
+  it("does not expose a protected check-result failure reason", () => {
+    const created = create(protectedSource(), "protected-failed-workflow");
+    let state = apply(created.state, {
+      type: "start-check",
+      nodeId: "evaluate",
+      attemptId: "evaluate-1",
+      commandId: "start-evaluate",
+      at,
+    });
+    state = apply(state, {
+      type: "record-check-result",
+      nodeId: "evaluate",
+      attemptId: "evaluate-1",
+      result: {
+        checkKind: "metric-report",
+        attemptId: "evaluate-1",
+        startedAt: at,
+        completedAt: at,
+        status: "failed",
+        exitCode: 1,
+        facts: [],
+        evidence: [],
+        error: SENTINEL,
+        stdoutRef: "artifact://protected-stdout",
+      },
+      commandId: "record-evaluate",
+      at,
+    });
+    state = apply(state, { type: "begin-verification", nodeId: "evaluate", attemptId: "evaluate-1", commandId: "begin-evaluate", at });
+    state = apply(state, {
+      type: "complete-verification",
+      nodeId: "evaluate",
+      attemptId: "evaluate-1",
+      passed: false,
+      reason: SENTINEL,
+      commandId: "verify-evaluate",
+      at,
+    });
+
+    const explanation = explainNode(state, "evaluate");
+    const rendered = [
+      JSON.stringify(explanation),
+      renderExplanation(state, "evaluate"),
+      renderExplanation(state),
+      renderHypagoalStatus(state, 110),
+      JSON.stringify(explainGoal(state)),
+    ];
+    for (const value of rendered) {
+      expect(value).not.toContain("internal-case-7");
+      expect(value).not.toContain("--secret-suite");
+      expect(value).not.toContain("protected/evaluate.json");
+      expect(value).not.toContain("protected-stdout");
+    }
   });
 });

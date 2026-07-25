@@ -1,4 +1,9 @@
-import { shortEvaluatorFingerprint } from "../domain/evaluation-presentation.js";
+import {
+  PROTECTED_REASON,
+  protectedBlockerReason,
+  shortEvaluatorFingerprint,
+} from "../domain/evaluation-presentation.js";
+import { classifyGoalBlockage } from "../domain/goal-blockage.js";
 import type { HypagraphState } from "../domain/model.js";
 import { projectGraphView, type GraphViewModel } from "../graph/projection.js";
 import { workflowSummary } from "../ui/format.js";
@@ -21,7 +26,26 @@ export function projectModelVisibleGraphView(state: HypagraphState): GraphViewMo
   return view;
 }
 
+/**
+ * Replace every copy of a protected blocker reason inside a cloned canonical value.
+ *
+ * `workflowSummary` copies canonical goal state, which holds the exact blocker reason,
+ * because the automatic revision binds to that text.
+ */
+const redactProtectedText = (value: unknown, secret: string): unknown => {
+  if (typeof value === "string") return value === secret ? PROTECTED_REASON : value;
+  if (Array.isArray(value)) return value.map((item) => redactProtectedText(item, secret));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [key, redactProtectedText(item, secret)]),
+    );
+  }
+  return value;
+};
+
 export function projectModelVisibleWorkflowSummary(state: HypagraphState): Record<string, unknown> {
+  const secret = protectedBlockerReason(state, classifyGoalBlockage(state));
   const summary = structuredClone(workflowSummary(state));
   const loops = summary.loops;
   if (Array.isArray(loops)) {
@@ -33,5 +57,5 @@ export function projectModelVisibleWorkflowSummary(state: HypagraphState): Recor
       }
     }
   }
-  return summary;
+  return secret === undefined ? summary : redactProtectedText(summary, secret) as Record<string, unknown>;
 }
