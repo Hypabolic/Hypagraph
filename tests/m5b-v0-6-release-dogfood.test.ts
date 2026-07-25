@@ -471,7 +471,6 @@ describe("M5B v0.6 release dogfood", () => {
     ]);
     expect(selected.slice(10)).toEqual([
       "probe:root:0",
-      "route:root:0",
       "finalize:root:0",
       "revision",
       "write-release-note:root:0",
@@ -514,6 +513,18 @@ describe("M5B v0.6 release dogfood", () => {
       consumedTurns: selected.length,
       consumedTokens: { totalTokens: selected.length * 13 },
     });
+
+    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);
+    expect(state.goal.continuationOrdinal).toBe(selected.length + 1);
+
+    const actionSelections = value.entries.flatMap((entry) =>
+      entry.data?.events
+        ?.filter((event: any) => event.type === "hypagraph.action.selected")
+        .map((event: any) => event.data.dispatch) ?? []);
+    expect(actionSelections).toContainEqual(expect.objectContaining({
+      lane: "deterministic",
+      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),
+    }));
 
     const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);
     expect(eventTypes).toContain("hypagraph.workflow.revised");
