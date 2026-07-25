@@ -60,7 +60,9 @@ The domain reducer must not read the clock, create random values, access files, 
 
 All persisted state must include a schema version.
 
-A schema change must include a migration or an explicit rejection path.
+Before the first external adoption, a schema change does not require migration code. The runtime must reject an unsupported stored schema with a clear error. Tests may replace old fixtures instead of preserving compatibility.
+
+After the first external adoption, each schema change must include a migration or an explicit documented compatibility decision.
 
 All graph definitions must pass validation before execution.
 
