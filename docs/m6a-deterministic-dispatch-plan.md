@@ -37,7 +37,7 @@ The current continuation lifecycle closes only through a delivered model turn.
 2. `before_agent_start` validates the pending continuation and delivers it.
 3. `agent_end` normalizes Pi usage and stores `record-goal-turn-usage`.
 4. The projection rejects a turn-recorded event when no pending continuation exists, with the message "A turn-recorded event requires a pending continuation."
-5. The turn-recorded event increments the consumed turn count, records the accounted turn, and advances the continuation ordinal.
+5. The turn-recorded event increments the consumed turn count and records the accounted turn.
 
 A directly dispatched action produces no Pi usage. It cannot use step 3, so it cannot close the continuation which step 1 created.
 
@@ -87,19 +87,21 @@ A model-backed action records model usage in addition. A deterministic action do
 - a direct extension into M7 isolated executors and M8 bounded concurrency, because the executor lane already exists in the model;
 - no need to redefine "continuation" as execution becomes broader.
 
-### 4.4 Migration from the current model
+### 4.4 Replacement of the current model
 
-The current `request-goal-continuation` and `record-goal-turn-usage` events become the model lane of this contract. Keep their data. Keep exactly-once turn accounting for the model lane.
+The current `request-goal-continuation` and `record-goal-turn-usage` events become the model lane of this contract. Keep exactly-once turn accounting for the model lane.
 
-The continuation ordinal becomes the scheduler ordinal. It advances for every dispatched action in every lane. This keeps the M5B fairness property and removes the coupling between fairness and model usage.
+The scheduler ordinal advances for every selected action in every lane. This keeps the M5B fairness property and removes the coupling between fairness and model usage.
 
 Restate the M5B invariant in lane terms: each delivered model-lane action is charged once through a durable usage event before another model-lane action can be dispatched. A deterministic-lane action is never charged.
 
-### 4.5 Schema and compatibility
+### 4.5 Schema policy
 
-This is a schema change. Provide a migration from schema version 5, or an explicit rejection path, as `AGENTS.md` requires.
+This project has no external adopters. Persisted development state is disposable.
 
-A v0.6 event stream contains continuation and turn events only. Migration must project them into the model lane and must produce the same canonical state.
+Slice 1 must replace the schema directly. It must not add migration code for schema version 5.
+
+The runtime must reject an unsupported stored schema with a clear error. Tests must use the current schema and may replace old fixtures.
 
 ## 5. Mandatory rules
 
@@ -144,19 +146,19 @@ Consumed turns count model turns only. `/hypagoal status` must say so. A user wh
 Scope:
 
 1. Add the `ActionDispatch` contract and the selected, dispatched, and completed events from section 4.
-2. Move the scheduler ordinal off the turn event.
-3. Project the existing continuation and turn events into the model lane.
-4. Add the schema migration or the explicit rejection path.
+2. Replace the continuation ordinal with the scheduler ordinal in canonical state.
+3. Replace the current continuation lifecycle with the model lane.
+4. Reject unsupported stored schema versions. Do not add migration code.
 
-This slice changes no behaviour. It changes the event model only. Every existing test must still pass.
+This slice changes no execution behaviour. It changes the event model only. Every existing current-schema test must still pass.
 
 Tests:
 
-- a v0.6 event stream migrates and produces the same canonical state;
 - exactly-once turn accounting holds for the model lane;
 - the scheduler ordinal advances without a turn event;
 - round-robin fairness across independent components is unchanged;
-- replay produces the same state and the same stop decision.
+- replay produces the same state and the same stop decision;
+- restore rejects an unsupported stored schema with a clear error.
 
 Exit: the event model supports a lane which is not the model lane, and nothing yet uses it.
 
