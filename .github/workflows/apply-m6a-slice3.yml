@@ -1,0 +1,164 @@
+name: Apply M6A Slice 3 controller integration
+
+on:
+  push:
+    branches:
+      - agent/m6a-slice-3-direct-checks
+    paths:
+      - ".agent/m6a-slice3-apply"
+      - ".github/workflows/apply-m6a-slice3.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/m6a-slice-3-direct-checks
+          fetch-depth: 0
+      - name: Apply controller integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/extension.ts")
+          text = path.read_text()
+
+          old = 'import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";'
+          new = 'import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";\nimport { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";'
+          if text.count(old) != 1:
+              raise SystemExit("deterministic dispatch import did not match")
+          text = text.replace(old, new)
+
+          old = 'import { applyCommandsAndCommit, commitCreatedWorkflow, dispatchReadyGateAndCommit } from "./persistence/coordinator.js";'
+          new = '''import {
+            applyCommandsAndCommit,
+            beginReadyCheckDispatchAndCommit,
+            commitCreatedWorkflow,
+            dispatchReadyGateAndCommit,
+            finishReadyCheckDispatchAndCommit,
+          } from "./persistence/coordinator.js";'''
+          if text.count(old) != 1:
+              raise SystemExit("coordinator import did not match")
+          text = text.replace(old, new)
+
+          marker = '  const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {'
+          if text.count(marker) != 1:
+              raise SystemExit("queueGoalContinuation marker did not match")
+          helper = '''  const runDeterministicCheck = async (decision: ReadyCheckDecision, ctx: ExtensionContext): Promise<boolean> => {
+            if (!state) return false;
+            const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
+            const attemptId = randomUUID();
+            const requestedAt = new Date().toISOString();
+            const dispatchRequest = { dispatchId, decision, at: requestedAt };
+            const begun = await beginReadyCheckDispatchAndCommit(eventStore.lease(), state, dispatchRequest);
+            if (!begun.ok) {
+              ctx.ui.notify(`Hypagoal deterministic check was not dispatched.\n${formatDiagnostics(begun.diagnostics)}`, "warning");
+              return false;
+            }
+            state = begun.state;
+            events.push(...begun.events);
+            updateUi(state, ctx, graphPane);
+
+            const runState = state;
+            const runnable = requireRunnableCommandCheck(runState, decision.nodeId, attemptId, requestedAt);
+            const executor = new CommandCheckExecutor({
+              rootDirectory: ctx.cwd,
+              artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
+            });
+            const runGeneration = sessionGeneration;
+            const execution = activeExecutions.register({
+              workflowId: runState.workflowId,
+              nodeId: decision.nodeId,
+              attemptId,
+              startedAt: requestedAt,
+            });
+            ctx.ui.setStatus("hypagraph-check", `Check ${decision.nodeId}: starting`);
+
+            try {
+              const lifecycle = await runPiCommandCheck({
+                state: runState,
+                executor,
+                store: eventStore.lease(),
+                nodeId: decision.nodeId,
+                attemptId,
+                requestedAt,
+                signal: execution.signal,
+                onTransition: (transition) => {
+                  if (sessionGeneration !== runGeneration) return;
+                  state = transition.state;
+                  events.push(...transition.events);
+                  updateUi(state, ctx, graphPane);
+                },
+              });
+              if (sessionGeneration !== runGeneration || !state) return false;
+              state = lifecycle.state;
+              updateUi(state, ctx, graphPane);
+              const outcome = lifecycle.ok ? "completed" : "failed";
+              const reason = lifecycle.ok
+                ? undefined
+                : lifecycle.diagnostics.map((item) => `${item.code}: ${item.message}`).join("\n");
+              const finished = await finishReadyCheckDispatchAndCommit(
+                eventStore.lease(),
+                state,
+                dispatchRequest,
+                outcome,
+                reason,
+              );
+              if (!finished.ok) {
+                ctx.ui.notify(`Hypagoal deterministic check dispatch did not close.\n${formatDiagnostics(finished.diagnostics)}`, "warning");
+                return false;
+              }
+              state = finished.state;
+              events.push(...finished.events);
+              updateUi(state, ctx, graphPane);
+              if (!lifecycle.ok) {
+                ctx.ui.notify(`Hypagoal deterministic check '${decision.nodeId}' failed.\n${formatDiagnostics(lifecycle.diagnostics)}`, "warning");
+                return false;
+              }
+              return true;
+            } finally {
+              execution.release();
+              ctx.ui.setStatus("hypagraph-check", undefined);
+            }
+          };
+
+'''
+          text = text.replace(marker, helper + marker)
+
+          gate = '''      if (isReadyGateDecision(decision)) {
+'''
+          if text.count(gate) != 1:
+              raise SystemExit("ready gate branch did not match")
+          check = '''      if (isReadyCheckDecision(decision)) {
+            if (deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
+              ctx.ui.notify(
+                `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
+                "warning",
+              );
+              return;
+            }
+            const completed = await runDeterministicCheck(decision, ctx);
+            deterministicDispatches += 1;
+            if (!completed) return;
+            continue;
+          }
+
+'''
+          text = text.replace(gate, check + gate)
+          path.write_text(text)
+          PY
+
+          rm -f .agent/m6a-slice3-apply
+          rmdir .agent 2>/dev/null || true
+          rm -f .github/workflows/apply-m6a-slice3.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Dispatch ready checks through the deterministic lane"
+          git push origin HEAD:agent/m6a-slice-3-direct-checks
