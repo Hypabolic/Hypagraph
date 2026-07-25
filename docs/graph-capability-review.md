@@ -241,7 +241,7 @@ Workflow A needs everything above, and also N4 and N5. It is the further target 
 
 1. N2 deterministic dispatch. It is small, it adds no domain concept, and it removes the largest avoidable model cost.
 2. N1 interaction nodes. They unblock the human gate in both reference workflows, and they reuse the executor and durable-lifecycle seams which already exist.
-3. N3 code mode on a sandbox executor. It completes the deterministic lane and it makes N5 a special case. Evaluate whether to depend on pi-fabric or to adopt only its execution pattern behind a Hypagraph-owned adapter. The license permits both. A Hypagraph-owned adapter is consistent with the rule in the roadmap section 3.3 that reusable external code must sit behind a Hypagraph executor boundary.
+3. N3 code mode on a sandbox executor. It completes the deterministic lane and it makes N5 a special case. Hypagraph adopts the pi-fabric execution pattern behind a Hypagraph-owned adapter. It does not depend on the pi-fabric package. The decision and the adapter contract are in `docs/code-node-adapter-plan.md`.
 4. M7 and M8 as planned. They provide the executor abstraction, the worktree isolation, and the concurrency which fan-out needs.
 5. N6 dynamic fan-out.
 6. N4 and N5 for the complete engineering loop.
