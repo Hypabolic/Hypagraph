@@ -1,4 +1,4 @@
-# Session handoff: v0.6 released to M6
+# Session handoff: v0.6 released to M6A
 
 - Handoff date: 2026-07-24
 - Repository: `Hypabolic/Hypagraph`
@@ -7,7 +7,7 @@
 - Release: `v0.6`
 - Release pull request: #77 — Dogfood and release Hypagoal v0.6
 - Completed milestone: M5B root Hypagoal autonomous controller
-- Current milestone: M6 event history, replay, and debugger UI
+- Current milestone: M6A deterministic dispatch lane. The former M6 is now M6B event history, replay, and debugger UI. See `docs/execution-roadmap.md`.
 - Hypagoal tracking issue: #25
 
 ## 1. Read first
@@ -49,7 +49,7 @@ Tag and GitHub release `v0.6` point to `90a2885bb8f46d61cedd803897ca4d32246bcb44
 
 ## 3. Preserved invariants
 
-Do not weaken these invariants during M6:
+Do not weaken these invariants during M6A and M6B:
 
 - canonical state changes only through the controller and reducers;
 - workflow state remains authoritative for goal completion;
@@ -62,7 +62,7 @@ Do not weaken these invariants during M6:
 - independent branches and bounded regions keep independent lifecycle state;
 - the v0.6 root can later become a one-member goal family without rewriting workflow events.
 
-## 4. Current target: M6
+## 4. Current target: M6A, then M6B
 
 ### Objective
 
@@ -139,7 +139,7 @@ Cover at least:
 
 ## 6. Deferred product direction
 
-The following work remains accepted but deferred beyond M6:
+The following work remains accepted but deferred beyond M6B:
 
 - goal-family persistence;
 - recursive child Hypagoals;

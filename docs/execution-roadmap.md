@@ -1,10 +1,11 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Updated: 2026-07-24
-- Current milestone: M6 event history, replay, and debugger UI
-- Current implementation baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
+- Updated: 2026-07-25
+- Current milestone: M6A deterministic dispatch lane
+- Current implementation baseline: `0d1375a5f19a311528d5c774b66f0239a48164bb`
 - Current release: `v0.6`
+- Capability analysis which added M6A, M6.1, M6.2, M6.3, M8.1, and M10: `docs/graph-capability-review.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -167,13 +168,23 @@ All repository text must follow `AGENTS.md`.
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
 | M5B | v0.6 | Root Hypagoal autonomous controller | Complete; released as v0.6 |
-| M6 | v0.7 | Event history, replay, and debugger UI | Active |
-| M7 | v0.8 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
-| M8 | v0.9 | Worktree integration and bounded concurrent scheduling | Planned |
-| M9 | v0.10 | ACP and named direct agent adapters | Planned |
+| M6A | v0.7 | Deterministic dispatch lane | Active |
+| M6B | v0.7 | Event history, replay, and debugger UI | Planned |
+| M6.1 | v0.8 | Interaction and approval nodes | Planned |
+| M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Planned |
+| M6.3 | v0.10 | External effects and reconciliation | Planned |
+| M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
+| M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
+| M8.1 | v0.13 | Dynamic fan-out regions | Planned |
+| M9 | v0.14 | ACP and named direct agent adapters | Planned |
+| M10 | v0.15 | External triggers and continuous operation | Planned |
 | Exit | v1.0 | Hardened agent-independent execution kernel | Planned |
 
 Release markers are planning values. Acceptance criteria control milestone completion.
+
+M6A, M6.1, M6.2, M6.3, M8.1, and M10 are new. `docs/graph-capability-review.md` gives the analysis which added them. The milestone numbers of M7, M8, and M9 do not change, and their content does not change. This keeps every existing cross-reference correct.
+
+Order note: M6A must complete before M6B. M6A changes the continuation event model, and M6B renders that event model.
 
 ## 5. Completed foundation
 
@@ -446,7 +457,46 @@ Those features are accepted later direction, not rejected scope.
 
 All M5B acceptance criteria are satisfied in v0.6.
 
-## 7. M6 - Event history, replay, and debugger UI
+## 7. M6A - Deterministic dispatch lane
+
+### Objective
+
+Run every canonical action which needs no reasoning without a model turn.
+
+### Problem
+
+The controller delivers every selected action as a Pi follow-up, and it charges one substantive turn for each delivery. Two of the four work actions need no reasoning:
+
+- a check runs through `runPiCheck`, which is a function of state, executor, and store;
+- a gate is one `evaluate-gate` reducer command.
+
+A workflow with three tasks, four checks, and two gates costs at least nine model turns. Six of those turns perform no reasoning. Inside an iteration region the ratio becomes worse, because each iteration adds one evaluation turn and one gate turn.
+
+### Product result
+
+The user runs the same workflow with the same canonical result and consumes model budget only for task work and revision.
+
+### Event-model impact
+
+This milestone changes the continuation event model. It is not only a dispatch change.
+
+The current continuation lifecycle closes only through a delivered model turn. The projection rejects a turn-recorded event when no pending continuation exists. The turn-recorded event also increments the consumed turn count and advances the continuation ordinal. A directly dispatched action produces no Pi usage, so it cannot use that path.
+
+The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
+
+### Acceptance criteria
+
+- A ready check runs without a Pi follow-up and without a charged turn.
+- A ready gate evaluates without a Pi follow-up and without a charged turn.
+- The reducer, the projection, and replay accept the new completion path.
+- Consumed turn and token counts include model turns only, and the product surface says so.
+- Cancellation of a directly dispatched check still works.
+- A directly dispatched action cannot run without a bound. Loop iteration limits and evaluation budgets remain the bound.
+- The continuation selector keeps round-robin fairness across independent components.
+- `hypagraph_run_check` remains available for manual use.
+- Replay reproduces the same canonical state and the same stop decision.
+
+## 8. M6B - Event history, replay, and debugger UI
 
 ### Objective
 
@@ -483,8 +533,111 @@ This must not require replacement of the workflow reducer or Slice 1 goal lifecy
 - The user can identify why a node or goal is not runnable.
 - Protected evaluator data remains protected in history views.
 - Future family and executor event namespaces have defined projection seams.
+- The history view shows a directly dispatched action from M6A and distinguishes it from a delivered model turn.
 
-## 8. M7 - Goal families and isolated Pi execution
+## 9. M6.1 - Interaction and approval nodes
+
+### Objective
+
+Let the graph return to the user for a decision, and let a typed answer control the next work.
+
+### Product result
+
+A workflow can:
+
+1. perform one bounded presentation action, for example render a report artifact or open a plan annotation view;
+2. ask the user one declared question;
+3. record a typed answer as facts and evidence;
+4. route on those facts through an ordinary gate.
+
+### Mandatory rules
+
+Keep the wait node-local. Add node status `awaiting_response`. Do not add a goal status which stops the goal. A stored waiting goal status would break design rule 3.5 and would starve an independent branch or loop which remains runnable.
+
+An `awaiting_response` node is not runnable, exactly as a pending node is not runnable. The continuation selector then keeps every other component eligible.
+
+Report "waiting for a user response" as a derived presentation state. Derive it when the runnable action list is empty and one interaction is outstanding. Do not store it.
+
+Separate deterministic presentation from semantic presentation. A skill is not automatically deterministic. A skill which renders an artifact or opens a fixed surface is deterministic. A skill which instructs a model needs the M7 executor and one model turn.
+
+Free text is evidence only. Free text must never select a route.
+
+The detailed plan is in `docs/m6-1-interaction-node-plan.md`.
+
+### Acceptance criteria
+
+- An interaction node performs its declared presentation effect through the durable lifecycle order.
+- An unanswered interaction does not stop an independent runnable component.
+- An unanswered interaction consumes no budget.
+- A typed answer publishes declared facts and routes through an existing gate.
+- Free text reaches evidence and never reaches a route.
+- A definition which declares a semantic skill as deterministic fails validation.
+- An unanswered interaction survives a reload and is presented again.
+- Replay reproduces the same answer, facts, and route.
+
+## 10. M6.2 - Code nodes and the sandbox executor adapter
+
+### Objective
+
+Let a node perform deterministic work in a sandbox without a model turn.
+
+### Decision
+
+Hypagraph adopts the `pi-fabric` execution pattern behind a Hypagraph-owned executor adapter. Hypagraph does not depend on the `pi-fabric` package.
+
+A program is the body of one node. A program must not orchestrate the workflow. Control flow inside an opaque program is not a gate, a loop region, a typed fact, or a replayable decision.
+
+The decision, the adapter contract, the definition shape, the authoring rules, and ten implementation slices are in `docs/code-node-adapter-plan.md`.
+
+### Acceptance criteria
+
+- A code node runs one type-checked program in a QuickJS sandbox and publishes declared facts.
+- The program is part of the definition and part of the snapshot hash.
+- The TypeScript check runs at definition time and reports a line-numbered error.
+- The reducer stays pure. The sandbox stays on the executor side.
+- The controller validates the returned value against the node `produces` contract.
+- The capability allowlist denies by default, and a revision cannot widen it.
+- A mutating program is verified against its declared scope.
+- Replay replays the recorded result and never runs the program again.
+- A definition-time advisory reports a program which is probably more than one node.
+
+## 11. M6.3 - External effects and reconciliation
+
+### Objective
+
+Let a node change external state safely, for example open a pull request, merge, deploy, or notify.
+
+### Problem
+
+A sandbox and an idempotency key give the execution mechanism. They do not give the state model.
+
+An external effect can complete in the external system after the host loses the result. The existing `interrupted` check status records only that the host could not store a result. It does not reconcile.
+
+### Mandatory rules
+
+An external effect node must use three durable states:
+
+- `requested`: the controller stored the intent before the effect started;
+- `observed`: the controller confirmed the outcome from the external system;
+- `indeterminate`: the controller cannot decide the outcome.
+
+An indeterminate effect must not be retried blindly. Restart must run a declared reconciliation query against the external system and resolve the effect to `observed` or keep it `indeterminate` and block.
+
+Each effect declares an idempotency key which is derived from canonical identity, so that a repeated attempt is safe.
+
+The detailed plan is in `docs/m6-3-external-effect-plan.md`.
+
+### Acceptance criteria
+
+- An effect stores `requested` before it starts the external call.
+- A lost result produces `indeterminate` and never a silent success.
+- Restart reconciles an indeterminate effect through a declared query.
+- An unresolved indeterminate effect blocks its dependants explicitly.
+- A repeated attempt with the same idempotency key does not duplicate the external effect.
+- Execution success and external success remain separate states.
+- Replay reproduces the effect state without repeating the external call.
+
+## 12. M7 - Goal families and isolated Pi execution
 
 The detailed architecture is in `docs/goal-family-and-concurrent-execution-plan.md` and `docs/delegation-and-visualisation.md`.
 
@@ -548,7 +701,7 @@ Do not adopt raw final text as the canonical result, model-owned spawning, same-
 
 M7 can dispatch sequentially or with limited isolated capacity. Production concurrent mutation waits for M8 worktree isolation.
 
-## 9. M8 - Worktree integration and bounded concurrency
+## 13. M8 - Worktree integration and bounded concurrency
 
 ### Objective
 
@@ -605,7 +758,38 @@ Initial default concurrency is two isolated attempts.
 - Scheduler fairness prevents starvation.
 - Replay reproduces scheduler, lease, integration, and terminal family state.
 
-## 10. M9 - External executor adapters
+## 14. M8.1 - Dynamic fan-out regions
+
+### Objective
+
+Let one declared region expand into a number of branches which the runtime derives.
+
+### Scope boundary
+
+A fixed set of branches does not need this milestone. An author can declare three reviewers as three nodes, and M8 executes them concurrently.
+
+This milestone is needed only when the branch count is a runtime value, for example one branch for each changed package, or one branch for each item in a queue.
+
+Confirm that a workflow needs a derived count before you plan work here.
+
+### Mandatory rules
+
+A derived branch must keep every property of a declared node. Each branch must have its own attempt, evidence, retry, status, and graph-pane identity.
+
+Parallel calls inside one program are not fan-out. A program which uses `Promise.all` hides its branches from the graph. It removes per-branch attempts, evidence, retry, visibility, and replay granularity. Do not implement this milestone inside a code node.
+
+The derived count must come from a typed fact. It must be bounded by a declared maximum. Expansion is a canonical event, so replay must reproduce the same branch set.
+
+### Acceptance criteria
+
+- One region expands into a branch set which a typed fact derives.
+- Expansion is bounded by a declared maximum.
+- Each branch has its own attempt, evidence, and status.
+- The scheduler executes compatible branches concurrently under M8 limits.
+- Fan-in waits for every branch and applies a declared policy for a failed branch.
+- Replay reproduces the same branch set and the same results.
+
+## 15. M9 - External executor adapters
 
 ### Objective
 
@@ -644,7 +828,45 @@ Do not use an arbitrary command as a strict mutating executor.
 - Pi RPC, ACP, and CLI executors return the same normalized result type.
 - Untrusted output cannot change canonical state without controller validation.
 
-## 11. Version 1.0 exit criteria
+## 16. M10 - External triggers and continuous operation
+
+### Objective
+
+Let an external event start bounded work, and let Hypagraph run as a service.
+
+### Product decision required before implementation
+
+This milestone changes the product model. Every earlier milestone assumes one bounded objective which reaches a terminal state.
+
+A continuous loop does not reach a terminal state. The two models must be reconciled explicitly, and the decision must be recorded before implementation starts.
+
+The recommended reconciliation keeps the bounded model as the unit of work:
+
+1. a trigger creates one bounded goal for each external item;
+2. each goal keeps its own budgets, terminal state, and evidence;
+3. the service is the supervisor which creates goals. The service is not one goal which never ends.
+
+This keeps every existing invariant. It also matches the reference workflow, in which each backlog item is one unit of work.
+
+### Scope
+
+1. Trigger adapters: schedule, webhook, and issue-tracker poll.
+2. A durable trigger record with an item identity, so that one item creates one goal.
+3. A supervisor which applies concurrency, rate, and cost limits across goals.
+4. Deduplication, so that a repeated external event does not create a second goal.
+5. Explicit operator control: pause the service, drain the service, and inspect every active goal.
+
+### Acceptance criteria
+
+- One external item creates exactly one bounded goal.
+- A repeated event does not create a second goal for the same item.
+- The supervisor limits concurrent goals, rate, and total cost.
+- An operator can pause and drain the service without losing canonical state.
+- A failed goal does not stop the supervisor.
+- Restart reconciles active goals and pending triggers.
+- Every goal keeps its own terminal state and evidence.
+
+## 17. Version 1.0 exit criteria
 
 Hypagraph can release version 1.0 when:
 
@@ -664,13 +886,20 @@ Hypagraph can release version 1.0 when:
 - integration failure is separate from execution failure;
 - the user interface explains readiness, failure, family, executor, and workspace state;
 - documentation follows repository writing rules;
-- a complete medium coding objective succeeds through root and child Hypagoals with isolated concurrent execution and no manual state repair.
+- a complete medium coding objective succeeds through root and child Hypagoals with isolated concurrent execution and no manual state repair;
+- a canonical action which needs no reasoning runs without a model turn;
+- an interaction node returns to the user without stopping an independent runnable component;
+- a code node runs a definition-time program in a sandbox, and replay never runs it again;
+- an external effect resolves to an observed or an explicitly indeterminate state, and restart reconciles it;
+- a derived branch set keeps per-branch attempts, evidence, and replay;
+- a trigger creates one bounded goal for each external item, and the supervisor bounds concurrency and cost.
 
-## 12. Immediate next work
+## 18. Immediate next work
 
-1. Implement M5B Slice 2 atomic `/hypagoal` creation.
-2. Keep Slice 1 `GoalRuntime` as the workflow-local lifecycle.
-3. Include goal and workflow identity in later continuation actions.
-4. Keep independent components available to the continuation selector.
-5. Keep v0.6 persistence compatible with later one-member family migration.
-6. Do not implement child goals or subagents before the root controller is complete.
+1. Decide the M6A continuation-completion design. Choose between a completion event for a deterministic action and no continuation request for a deterministic action. Record the decision in `docs/m6a-deterministic-dispatch-plan.md`.
+2. Implement M6A Slice 1 and Slice 2. These give a directly dispatched gate and a directly dispatched check.
+3. State in the product surface that consumed turns count model turns only.
+4. Complete M6A before M6B, so that the history views render the final event model.
+5. Confirm whether reference workflow B needs a fixed or a derived reviewer count. This decides whether M8.1 is on the critical path.
+6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
+7. Do not start M10 before the bounded-goal and continuous-service reconciliation is recorded.

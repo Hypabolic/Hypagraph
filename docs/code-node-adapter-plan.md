@@ -1,8 +1,12 @@
 # Code node and sandbox executor adapter plan
 
 - Status: accepted decision, implementation not started
+- Milestone: M6.2
+- Release marker: v0.9
+- Prerequisite: M6A deterministic dispatch
 - Updated: 2026-07-25
 - Depends on: `docs/graph-capability-review.md`, `docs/execution-roadmap.md`
+- Consumed by: `docs/m6-3-external-effect-plan.md`
 - Pattern source: https://github.com/monotykamary/pi-fabric (MIT)
 - Writing standard: ASD-STE100 Simplified Technical English
 
