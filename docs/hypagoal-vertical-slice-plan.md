@@ -465,4 +465,4 @@ A child Hypagoal is not a subagent. The family scheduler owns orchestration. Sub
 | M9 | v0.10 | ACP and direct agent adapters |
 | Exit | v1.0 | Hardened agent-independent execution kernel |
 
-M5B is complete and released as v0.6. M6 event history, replay, and debugger UI is the current roadmap phase.
+M5B is complete and released as v0.6. M6A deterministic dispatch is the current roadmap phase. The former M6 is now M6B. See `docs/execution-roadmap.md` for the revised sequence.

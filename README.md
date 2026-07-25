@@ -331,9 +331,14 @@ Implemented:
 
 Next:
 
+- a deterministic dispatch lane, so that a check or a gate runs without a model turn;
 - event-history, replay, and debugger UI;
+- interaction and approval nodes, so that the graph can return to the user for a typed decision;
+- code nodes which run a definition-time program in a sandbox;
+- external effects with explicit requested, observed, and indeterminate states and restart reconciliation;
 - goal families and bounded child Hypagoals;
 - isolated executors, worktree integration, and bounded concurrency;
+- dynamic fan-out regions, only when a branch count is derived at run time;
 - ACP and named direct agent adapters.
 
 ## Develop locally
