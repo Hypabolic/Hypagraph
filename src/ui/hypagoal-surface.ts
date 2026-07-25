@@ -279,7 +279,7 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
     lines.push(...wrap("Objective: ", surface.objective, width));
     lines.push(...wrap("Next: ", surface.action.next, width));
     lines.push(`Ready: ${surface.action.readyNodeIds.join(", ") || "none"}`);
-    lines.push(`Budget: turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+    lines.push(`Budget: model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
     lines.push(`Actions: ${surface.dispatch.scheduledActions} scheduled · ${surface.dispatch.chargedModelTurns} model turns charged`);
     lines.push(...wrap("Turns: ", surface.dispatch.turnAccounting, width));
     lines.push(`Revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}${surface.automaticRevision.pending ? " pending" : ""}${surface.automaticRevision.lastOutcomeCode ? ` · ${surface.automaticRevision.lastOutcomeCode}` : ""}`);
@@ -297,7 +297,7 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
   lines.push(`Current action: ${surface.action.activeNodeId ?? "none"}`);
   lines.push(...wrap("Next action: ", surface.action.next, width));
   lines.push(`Ready work: ${surface.action.readyNodeIds.join(", ") || "none"}`);
-  lines.push(`Goal budget: turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+  lines.push(`Goal budget: model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
   lines.push(`Scheduled actions: ${surface.dispatch.scheduledActions}; charged model turns ${surface.dispatch.chargedModelTurns}`);
   lines.push(...wrap("Turn accounting: ", surface.dispatch.turnAccounting, width));
   const lastDispatch = surface.dispatch.pending ?? surface.dispatch.lastOutcome;

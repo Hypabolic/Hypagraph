@@ -62,7 +62,7 @@ describe("Hypagoal product surface", () => {
     const narrow = renderHypagoalStatus(state, 52);
     const wide = renderHypagoalStatus(state, 110);
     expect(narrow).toContain("Hypagoal active · workflow running");
-    expect(narrow).toContain("Budget: turns 0/8");
+    expect(narrow).toContain("Budget: model turns 0/8");
     expect(narrow).toContain("/hypagoal status");
     expect(narrow.split("\n").every((line) => line.length <= 52)).toBe(true);
     expect(wide).toContain("Hypagoal status");
