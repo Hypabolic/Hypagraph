@@ -17,6 +17,11 @@ import {
   type DeterministicGateDispatchRequest,
   type DeterministicGateDispatchResult,
 } from "../domain/deterministic-gate-dispatch.js";
+import {
+  interruptPendingActionDispatch,
+  type PendingDispatchRecoveryRequest,
+  type PendingDispatchRecoveryResult,
+} from "../domain/action-dispatch-recovery.js";
 import { WorkflowBranchChangedError, WorkflowSequenceConflictError, type WorkflowEventStore } from "./event-store.js";
 
 export interface CommittedCommandBatch {
@@ -127,6 +132,26 @@ export async function finishReadyCheckDispatchAndCommit(
   reason?: string,
 ): Promise<DeterministicCheckDispatchResult> {
   return appendDispatch(store, state, finishReadyCheckDispatch(state, request, outcome, reason));
+}
+
+export async function interruptPendingActionDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: PendingDispatchRecoveryRequest,
+): Promise<PendingDispatchRecoveryResult> {
+  const reduced = interruptPendingActionDispatch(state, request);
+  if (!reduced.ok || !reduced.interrupted) return reduced;
+  try {
+    await store.append({
+      workflowId: state.workflowId,
+      expectedSequence: state.sequence,
+      events: reduced.events,
+      snapshot: reduced.state,
+    });
+  } catch (error) {
+    return { ok: false, diagnostics: [storeDiagnostic(error)] };
+  }
+  return reduced;
 }
 
 export async function dispatchReadyGateAndCommit(

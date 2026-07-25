@@ -103,10 +103,11 @@ export async function runDeterministicCheckDispatch(
       requestedAt: input.at,
       signal: handle.signal,
       onTransition: (transition) => {
-        if (input.stale?.()) return;
+        // The returned events always describe what the store accepted. A stale
+        // controller stops mirroring the commits, but the durable record stands.
         state = transition.state;
         events.push(...transition.events);
-        input.onCommit?.(state, transition.events);
+        if (!input.stale?.()) input.onCommit?.(state, transition.events);
       },
     });
     state = lifecycle.state;

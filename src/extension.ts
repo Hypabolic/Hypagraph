@@ -19,7 +19,12 @@ import {
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
 import { isDispatchableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
-import { applyCommandsAndCommit, commitCreatedWorkflow, dispatchReadyGateAndCommit } from "./persistence/coordinator.js";
+import {
+  applyCommandsAndCommit,
+  commitCreatedWorkflow,
+  dispatchReadyGateAndCommit,
+  interruptPendingActionDispatchAndCommit,
+} from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
@@ -199,6 +204,23 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       const recovered = [...recovery.recoveredAttemptIds, ...orphaned.recoveredAttemptIds];
       if (recovered.length > 0) {
         ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
+      }
+      // A deterministic dispatch has no delivered model turn to close it. Close it here,
+      // so a lost dispatch cannot block every later selection.
+      const closed = await interruptPendingActionDispatchAndCommit(recoveryStore, state, {
+        commandId: `interrupt-action-dispatch:${branchChanged ? "branch_change" : "session_reload"}:${randomUUID()}`,
+        reason: branchChanged
+          ? "The Pi branch changed before the action dispatch completed."
+          : "The Pi session reloaded before the action dispatch completed.",
+        at: new Date().toISOString(),
+      });
+      if (closed.ok && closed.interrupted) {
+        state = closed.state;
+        events.push(...closed.events);
+        ctx.ui.notify(`Hypagraph closed the interrupted action dispatch '${closed.dispatchId}'.`, "warning");
+      } else if (!closed.ok) {
+        ctx.ui.notify(`Hypagraph could not close the interrupted action dispatch.
+${formatDiagnostics(closed.diagnostics)}`, "warning");
       }
     }
     const pendingRevision = state?.goal?.pendingContinuation?.action.kind === "request-revision"
