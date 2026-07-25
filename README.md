@@ -71,19 +71,25 @@ Hypagraph then:
 5. creates the workflow, initial readiness, and workflow-local goal lifecycle in one durable event batch;
 6. reports the workflow ID, goal ID, revision, goal-control state, ready work, and authoring advisories.
 
-The atomic creation operation does not start a task, run a check, or invoke an executor. After the authoring turn ends, the graph-aware controller stores one state-bound continuation request and sends one Pi follow-up for the selected canonical action.
+The atomic creation operation does not start a task, run a check, or invoke an executor. After the authoring turn ends, the graph-aware controller selects one canonical action and dispatches it in one lane.
+
+Hypagraph uses one generic action-dispatch model. Every selected action records a selected event, a dispatched event, and one terminal event. A model-lane action stores one state-bound continuation request and sends one Pi follow-up. A deterministic-lane action needs no reasoning, so the controller runs it directly: a ready gate is one reducer command, and a ready check runs through the existing durable check lifecycle. The controller selects again after the deterministic action resolves.
 
 The current v0.6 product surface allows one root workflow and one root goal in the active Pi session. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain itself remains able to represent separate workflow aggregates for the later goal-family architecture.
 
-The controller selects from all runnable root components in stable definition order. An event-backed continuation ordinal rotates selection when multiple components remain runnable. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
+The controller selects from all runnable root components in stable definition order. An event-backed scheduler ordinal rotates selection when multiple components remain runnable. The scheduler ordinal advances for every selected action in every lane, so round-robin fairness does not depend on model usage. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
 
-A Hypagoal can also declare a maximum substantive-turn count, a maximum token count, or both. Pi assistant usage is normalized from input, output, cache-read, and cache-write tokens. Each delivered continuation is charged once through a durable turn event before another continuation can be requested. Budget exhaustion stops autonomous continuation as `budget_limited`; it does not mark the workflow successful.
+A Hypagoal can also declare a maximum substantive-turn count, a maximum token count, or both. Pi assistant usage is normalized from input, output, cache-read, and cache-write tokens. Each delivered model-lane continuation is charged once through a durable turn event before another model-lane action can be dispatched. Budget exhaustion stops autonomous continuation as `budget_limited`; it does not mark the workflow successful.
+
+Consumed turns count model turns only. A deterministic action consumes no turn. `/hypagoal status` reports the scheduled action count next to the charged model-turn count and states this rule, so a user who compares node count with turn count does not think that work is missing. A turn-budget stop ends automatic continuation in every lane.
+
+Deterministic work still has a bound. Loop iteration limits, patience, evaluation budgets, and check retry limits remain unchanged, and the controller stops after 64 consecutive deterministic dispatches in one pass.
 
 When the selected action belongs to a bounded iteration region, the continuation includes canonical loop and evaluation context. It reports the current iteration, typed success condition, current and best accepted metrics, progress direction, patience, invalid-evaluation count, evaluation-attempt budget, purpose, trust, feedback mode, and failure policy when these values exist. It does not expose protected evaluator commands, paths, hashes, raw reports, standard output, standard error, hidden assertions, or holdout details.
 
 Evaluation validity, numeric progress, and typed success remain separate. An invalid evaluation cannot update the best metric or satisfy success. The same root selector continues to rotate across disconnected branches and independent loop components. A loop does not own the next turn because it produced the latest event.
 
-A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Review canonical state and use `/hypagoal resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
+A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Restore also closes a deterministic dispatch which a stopped host left pending, so a lost dispatch cannot block a later selection. Review canonical state and use `/hypagoal resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
 
 ## Start a workflow
 
@@ -327,11 +333,16 @@ Implemented:
 - complete `/hypagoal` status, pause, resume, cancel, and graph controls;
 - compact lifecycle messages and explicit typed stop reasons;
 - narrow and wide root-goal terminal rendering;
-- integrated v0.6 product-path dogfood across loops, evaluation, gates, reload recovery, revision, and canonical completion.
+- integrated v0.6 product-path dogfood across loops, evaluation, gates, reload recovery, revision, and canonical completion;
+- a generic action-dispatch model with a deterministic, a model, and an executor lane;
+- a scheduler ordinal which advances for every selected action, independent of model usage;
+- direct deterministic dispatch of a ready gate and a ready check, without a model turn;
+- an explicit maximum for consecutive deterministic dispatches in one controller pass;
+- turn accounting which counts model turns only, and a product surface which says so;
+- interrupted-dispatch recovery on reload, so a lost dispatch cannot block a later selection.
 
 Next:
 
-- a deterministic dispatch lane, so that a check or a gate runs without a model turn;
 - event-history, replay, and debugger UI;
 - interaction and approval nodes, so that the graph can return to the user for a typed decision;
 - code nodes which run a definition-time program in a sandbox;

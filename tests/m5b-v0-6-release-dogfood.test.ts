@@ -267,6 +267,15 @@ const continuationPrompts = (value: ReturnType<typeof harness>): string[] => val
   .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation.")
     || prompt.startsWith("Hypagraph automatic bounded revision."));
 
+const batches = (value: ReturnType<typeof harness>): any[] => value.entries
+  .filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE);
+
+/** Collect the quality-loop runtime after each verified development evaluation, in durable order. */
+const evaluationLoopSnapshots = (value: ReturnType<typeof harness>): any[] => batches(value)
+  .filter((entry) => (entry.data.events ?? []).some((event: any) => event.nodeId === "evaluate"
+    && (event.type === "hypagraph.verification.passed" || event.type === "hypagraph.verification.failed")))
+  .map((entry) => structuredClone(entry.data.snapshot.runtime.loops.quality));
+
 const creationRequestFromPrompt = (prompt: string): unknown => {
   const match = prompt.match(/Use this exact creation request identity without changing any field:\n(\{[\s\S]*?\})\n\nCall hypagoal_start/);
   if (!match?.[1]) throw new Error("The authoring prompt did not contain a creation request identity.");
@@ -348,7 +357,6 @@ describe("M5B v0.6 release dogfood", () => {
     expect(continuationPrompts(value)).toEqual([]);
 
     const selected: string[] = [];
-    const evaluationSnapshots: any[] = [];
     let observedPromptCount = 0;
     let reloadVerified = false;
     await agentEnd(value);
@@ -410,25 +418,6 @@ describe("M5B v0.6 release dogfood", () => {
         await completeTask(value, action.nodeId);
       } else if (action.nodeId === "audit-result") {
         await completeTask(value, action.nodeId, [{ name: "audit.complete", type: "boolean", value: true }]);
-      } else if (action.nodeId === "evaluate") {
-        await value.tools.get("hypagraph_run_check")!.execute(
-          `run-development-${evaluationSnapshots.length + 1}`,
-          { nodeId: "evaluate" },
-          undefined,
-          undefined,
-          value.ctx,
-        );
-        evaluationSnapshots.push(structuredClone(latestState(value).runtime.loops.quality));
-      } else if (action.nodeId === "probe") {
-        await value.tools.get("hypagraph_run_check")!.execute(
-          "run-release-probe",
-          { nodeId: "probe" },
-          undefined,
-          undefined,
-          value.ctx,
-        );
-      } else if (action.nodeId === "route") {
-        await transition(value, "route", "evaluate");
       } else if (action.nodeId === "finalize" && before.goal.automaticRevision.consumedAttempts === 0) {
         await transition(value, "finalize", "block", {
           reason: "A bounded release-note step is missing.",
@@ -442,7 +431,7 @@ describe("M5B v0.6 release dogfood", () => {
 
       await agentEnd(value);
 
-      if (action.nodeId === "evaluate" && evaluationSnapshots.length === 1 && !reloadVerified) {
+      if (!reloadVerified && (latestState(value).runtime.evaluations?.development ?? 0) >= 1) {
         const promptCountBeforeReload = continuationPrompts(value).length;
         await invoke(value, "session_start", { type: "session_start", reason: "reload" });
         expect(continuationPrompts(value)).toHaveLength(promptCountBeforeReload);
@@ -456,26 +445,22 @@ describe("M5B v0.6 release dogfood", () => {
     }
 
     const state = latestState(value);
+    const evaluationSnapshots = evaluationLoopSnapshots(value);
     expect(reloadVerified).toBe(true);
-    expect(selected.slice(0, 10)).toEqual([
+    // M6A: only task nodes and the one bounded revision reach the model lane.
+    expect(selected).toEqual([
       "refine:quality:0",
       "audit:documentation-audit:0",
-      "evaluate:quality:1",
       "refine:quality:2",
       "audit-result:documentation-audit:1",
-      "evaluate:quality:2",
       "refine:quality:3",
-      "evaluate:quality:3",
       "refine:quality:4",
-      "evaluate:quality:4",
-    ]);
-    expect(selected.slice(10)).toEqual([
-      "probe:root:0",
       "finalize:root:0",
       "revision",
       "write-release-note:root:0",
       "finalize:root:0",
     ]);
+    expect(selected.some((item) => item.startsWith("evaluate:") || item.startsWith("probe:") || item.startsWith("route:"))).toBe(false);
 
     expect(evaluationSnapshots[0]).toMatchObject({
       invalidEvaluationCount: 1,

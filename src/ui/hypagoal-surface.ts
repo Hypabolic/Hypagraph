@@ -1,13 +1,39 @@
+import type { DispatchLane } from "../domain/action-dispatch.js";
 import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-blockage.js";
 import { selectGoalContinuation, type GoalContinuationDecision } from "../domain/goal-continuation.js";
 import type { GoalContinuationAction, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopSurfaceSummaries, type LoopSurfaceSummary } from "./loop-surface.js";
 
+/**
+ * M6A turn accounting. Hypagraph charges a turn for a model-lane action only.
+ * A user who compares node count with turn count must not think that work is missing.
+ */
+export const TURN_ACCOUNTING_NOTE = "Consumed turns count model turns only. "
+  + "A deterministic action, such as a ready check or a ready gate, consumes no turn. "
+  + "A turn-budget stop ends automatic continuation in every lane.";
+
 export interface HypagoalBudgetSurface {
   consumed: number;
   limit?: number;
   remaining?: number;
+}
+
+export interface HypagoalDispatchAction {
+  dispatchId: string;
+  lane: DispatchLane;
+  status: string;
+  action: string;
+  schedulerOrdinal: number;
+}
+
+export interface HypagoalDispatchSurface {
+  /** The scheduler ordinal counts every selected action in every lane. */
+  scheduledActions: number;
+  chargedModelTurns: number;
+  turnAccounting: string;
+  pending?: HypagoalDispatchAction;
+  lastOutcome?: HypagoalDispatchAction;
 }
 
 export interface HypagoalSurface {
@@ -33,6 +59,7 @@ export interface HypagoalSurface {
     turns: HypagoalBudgetSurface;
     tokens: HypagoalBudgetSurface;
   };
+  dispatch: HypagoalDispatchSurface;
   blockage: GoalBlockageDecision;
   automaticRevision: {
     consumed: number;
@@ -98,6 +125,36 @@ const stopCode = (
   return undefined;
 };
 
+const dispatchAction = (
+  value: {
+    dispatchId: string;
+    lane: DispatchLane;
+    status: string;
+    schedulerOrdinal: number;
+    action: GoalContinuationAction;
+  },
+): HypagoalDispatchAction => ({
+  dispatchId: value.dispatchId,
+  lane: value.lane,
+  status: value.status,
+  action: actionLabel(value.action),
+  schedulerOrdinal: value.schedulerOrdinal,
+});
+
+const dispatchSurface = (state: HypagraphState): HypagoalDispatchSurface => {
+  const goal = state.goal!;
+  const runtime = goal.actionDispatch;
+  const pending = runtime?.pending;
+  const lastOutcome = runtime?.lastOutcome;
+  return {
+    scheduledActions: goal.schedulerOrdinal ?? goal.continuationOrdinal,
+    chargedModelTurns: goal.budget.consumedTurns,
+    turnAccounting: TURN_ACCOUNTING_NOTE,
+    ...(pending === undefined ? {} : { pending: dispatchAction(pending) }),
+    ...(lastOutcome === undefined ? {} : { lastOutcome: dispatchAction(lastOutcome) }),
+  };
+};
+
 const controls = (state: HypagraphState): string[] => {
   const goal = state.goal;
   if (!goal) return ["/hypagoal <objective>"];
@@ -141,6 +198,7 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       turns: budgetSurface(goal.budget.consumedTurns, goal.budget.limits.maximumTurns),
       tokens: budgetSurface(goal.budget.consumedTokens.totalTokens, goal.budget.limits.maximumTokens),
     },
+    dispatch: dispatchSurface(state),
     blockage,
     automaticRevision: {
       consumed: goal.automaticRevision.consumedAttempts,
@@ -221,7 +279,9 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
     lines.push(...wrap("Objective: ", surface.objective, width));
     lines.push(...wrap("Next: ", surface.action.next, width));
     lines.push(`Ready: ${surface.action.readyNodeIds.join(", ") || "none"}`);
-    lines.push(`Budget: turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+    lines.push(`Budget: model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+    lines.push(`Actions: ${surface.dispatch.scheduledActions} scheduled · ${surface.dispatch.chargedModelTurns} model turns charged`);
+    lines.push(...wrap("Turns: ", surface.dispatch.turnAccounting, width));
     lines.push(`Revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}${surface.automaticRevision.pending ? " pending" : ""}${surface.automaticRevision.lastOutcomeCode ? ` · ${surface.automaticRevision.lastOutcomeCode}` : ""}`);
     if (surface.stopCode || surface.goal.stopReason) lines.push(...wrap(`Stop ${surface.stopCode ?? "reason"}: `, surface.goal.stopReason ?? "none", width));
     if (surface.blockage.kind !== "not-blocked") lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
@@ -237,7 +297,13 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
   lines.push(`Current action: ${surface.action.activeNodeId ?? "none"}`);
   lines.push(...wrap("Next action: ", surface.action.next, width));
   lines.push(`Ready work: ${surface.action.readyNodeIds.join(", ") || "none"}`);
-  lines.push(`Goal budget: turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+  lines.push(`Goal budget: model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}`);
+  lines.push(`Scheduled actions: ${surface.dispatch.scheduledActions}; charged model turns ${surface.dispatch.chargedModelTurns}`);
+  lines.push(...wrap("Turn accounting: ", surface.dispatch.turnAccounting, width));
+  const lastDispatch = surface.dispatch.pending ?? surface.dispatch.lastOutcome;
+  if (lastDispatch) {
+    lines.push(...wrap("Last action: ", `${lastDispatch.lane} lane; ${lastDispatch.status}; ordinal ${lastDispatch.schedulerOrdinal}; ${lastDispatch.action}`, width));
+  }
   lines.push(`Automatic revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}; remaining ${surface.automaticRevision.remaining}${surface.automaticRevision.pending ? "; pending" : ""}${surface.automaticRevision.lastOutcome ? `; last ${surface.automaticRevision.lastOutcome}` : ""}${surface.automaticRevision.lastOutcomeCode ? ` (${surface.automaticRevision.lastOutcomeCode})` : ""}`);
   lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
   if (surface.loops.length > 0) {
@@ -255,5 +321,5 @@ export function renderHypagoalLifecycleMessage(state: HypagraphState): string {
   const surface = projectHypagoalSurface(state);
   if (!surface) return "There is no active Hypagoal.";
   const stop = surface.stopCode ? ` Stop: ${surface.stopCode}${surface.goal.stopReason ? ` — ${surface.goal.stopReason}` : ""}.` : "";
-  return `Hypagoal ${surface.goal.status}; workflow ${surface.workflow.phase}; next ${surface.action.next}; turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}; revision ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}.${stop}`;
+  return `Hypagoal ${surface.goal.status}; workflow ${surface.workflow.phase}; next ${surface.action.next}; model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}; scheduled actions ${surface.dispatch.scheduledActions}; revision ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}.${stop}`;
 }

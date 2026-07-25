@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.7.0 - 2026-07-25
+
+M6A adds the deterministic dispatch lane. A canonical action which needs no reasoning runs without a model turn.
+
+### Added
+
+- one generic action-dispatch model with a deterministic, a model, and an executor lane;
+- selected, dispatched, completed, failed, and interrupted action events for every lane;
+- a scheduler ordinal which advances for every selected action, independent of model usage;
+- direct deterministic evaluation of a ready gate;
+- direct deterministic execution of a ready check through the existing durable check lifecycle;
+- an explicit maximum of 64 consecutive deterministic dispatches in one controller pass;
+- scheduled action count, charged model-turn count, and the turn-accounting rule in `/hypagoal status`, in the lifecycle message, and in the model-visible workflow view;
+- interrupted-dispatch recovery on reload, so a lost deterministic dispatch cannot block a later selection.
+
+### Changed
+
+- consumed turns count model turns only. A deterministic action consumes no turn;
+- the model lane replaces the previous continuation lifecycle. Exactly-once turn accounting for a delivered model turn does not change;
+- persisted state uses schema version 6. The runtime rejects an unsupported stored schema with a clear error and adds no migration code.
+
+### Unchanged
+
+- the domain reducer stays pure. Direct dispatch belongs to the controller;
+- the durable check order: store the check start, run the bounded external effect, store the result and evidence, publish declared facts, then store verification and the loop decision;
+- cancellation, retry, backoff, artifacts, recovery, evaluation budgets, and protected evaluator redaction;
+- round-robin fairness across independent components;
+- `hypagraph_run_check` and the evaluate action of `hypagraph_transition`, so a user or a model can still run a check or a gate explicitly.
+
+### Release evidence
+
+- one dogfood objective with a bounded two-iteration repair region, two checks, two gates, and four tasks costs 4 model turns instead of 9;
+- the loop continuation product path costs 6 model turns instead of 10;
+- the v0.6 release product path costs 10 model turns instead of 15;
+- each path produces the same canonical result, the same routes, the same stop decision, and the same replayed state.
+
+See `docs/m6a-dogfood.md` and `docs/m6a-deterministic-dispatch-plan.md`.
+
 ## v0.6.0 - 2026-07-24
 
 M5A and M5B add trusted evaluation contracts and the root Hypagoal autonomous controller.
