@@ -6,6 +6,11 @@ import type {
   ReducerResult,
 } from "../domain/model.js";
 import { handleCommand } from "../domain/reducer.js";
+import {
+  dispatchReadyGate,
+  type DeterministicGateDispatchRequest,
+  type DeterministicGateDispatchResult,
+} from "../domain/deterministic-gate-dispatch.js";
 import { WorkflowBranchChangedError, WorkflowSequenceConflictError, type WorkflowEventStore } from "./event-store.js";
 
 export interface CommittedCommandBatch {
@@ -79,4 +84,24 @@ export async function applyCommandAndCommit(
   command: HypagraphCommand,
 ): Promise<DurableCommandResult> {
   return applyCommandsAndCommit(store, state, [command]);
+}
+
+export async function dispatchReadyGateAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicGateDispatchRequest,
+): Promise<DeterministicGateDispatchResult> {
+  const reduced = dispatchReadyGate(state, request);
+  if (!reduced.ok) return reduced;
+  try {
+    await store.append({
+      workflowId: state.workflowId,
+      expectedSequence: state.sequence,
+      events: reduced.events,
+      snapshot: reduced.state,
+    });
+  } catch (error) {
+    return { ok: false, diagnostics: [storeDiagnostic(error)] };
+  }
+  return reduced;
 }

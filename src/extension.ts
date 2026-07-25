@@ -17,7 +17,7 @@ import {
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
 import { isDispatchableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
-import { applyCommandsAndCommit, commitCreatedWorkflow } from "./persistence/coordinator.js";
+import { applyCommandsAndCommit, commitCreatedWorkflow, dispatchReadyGateAndCommit } from "./persistence/coordinator.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
@@ -44,6 +44,8 @@ import {
 } from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
+
+export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
   throw new Error(`Hypagraph rejected the operation:\n${formatDiagnostics(diagnostics)}`);
@@ -280,48 +282,85 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   };
 
   const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
-    if (pendingContinuation || !state || activeExecutions.hasActive()) return;
-    const decision = selectGoalContinuation(state);
-    if (!isDispatchableGoalContinuation(decision)) {
-      if (decision.kind === "invariant-error") {
-        if (state.goal?.status === "active") ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
-      } else {
-        ctx.ui.notify(renderHypagoalLifecycleMessage(state), decision.kind === "stop-completed" ? "info" : "warning");
+    if (pendingContinuation || deliveredContinuation || !state || activeExecutions.hasActive()) return;
+    let deterministicDispatches = 0;
+
+    while (true) {
+      const decision = selectGoalContinuation(state);
+      if (!isDispatchableGoalContinuation(decision)) {
+        if (decision.kind === "invariant-error") {
+          if (state.goal?.status === "active") ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
+        } else {
+          ctx.ui.notify(renderHypagoalLifecycleMessage(state), decision.kind === "stop-completed" ? "info" : "warning");
+        }
+        return;
       }
-      return;
-    }
-    const operationId = `hypagoal-continuation:${randomUUID()}`;
-    const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
-      type: "request-goal-continuation",
-      goalId: decision.goalId,
-      workflowId: decision.workflowId,
-      expectedRevision: decision.revision,
-      expectedSequence: decision.sequence,
-      expectedSnapshotHash: decision.snapshotHash,
-      expectedContinuationOrdinal: decision.continuationOrdinal,
-      sessionGeneration,
-      branchGeneration,
-       action: decision.kind === "request-revision"
-         ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
-         : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
-      commandId: operationId,
-      correlationId: operationId,
-      at: new Date().toISOString(),
-    }]);
-    if (!request.ok) {
-      ctx.ui.notify(`Hypagoal continuation was not queued.
+
+      if (decision.kind === "evaluate-ready-gate") {
+        if (deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
+          ctx.ui.notify(
+            `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
+            "warning",
+          );
+          return;
+        }
+        const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
+        const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state, {
+          dispatchId,
+          decision,
+          at: new Date().toISOString(),
+        });
+        if (!dispatched.ok) {
+          ctx.ui.notify(`Hypagoal deterministic gate was not dispatched.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+          return;
+        }
+        state = dispatched.state;
+        events.push(...dispatched.events);
+        deterministicDispatches += 1;
+        updateUi(state, ctx, graphPane);
+        if (dispatched.outcome === "failed") {
+          ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+          return;
+        }
+        continue;
+      }
+
+      const operationId = `hypagoal-continuation:${randomUUID()}`;
+      const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
+        type: "request-goal-continuation",
+        goalId: decision.goalId,
+        workflowId: decision.workflowId,
+        expectedRevision: decision.revision,
+        expectedSequence: decision.sequence,
+        expectedSnapshotHash: decision.snapshotHash,
+        expectedContinuationOrdinal: decision.continuationOrdinal,
+        sessionGeneration,
+        branchGeneration,
+        action: decision.kind === "request-revision"
+          ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
+          : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
+        commandId: operationId,
+        correlationId: operationId,
+        at: new Date().toISOString(),
+      }]);
+      if (!request.ok) {
+        ctx.ui.notify(`Hypagoal continuation was not queued.
 ${formatDiagnostics(request.diagnostics)}`, "warning");
+        return;
+      }
+      state = request.value.state;
+      events.push(...request.value.events);
+      updateUi(state, ctx, graphPane);
+      if (state.goal?.status === "budget_limited") {
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
+        return;
+      }
+      pendingContinuation = createPendingGoalContinuation(decision, state, { sessionGeneration, branchGeneration }, operationId);
+      pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
       return;
     }
-    state = request.value.state;
-    events.push(...request.value.events);
-    updateUi(state, ctx, graphPane);
-    if (state.goal?.status === "budget_limited") {
-      ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
-      return;
-    }
-    pendingContinuation = createPendingGoalContinuation(decision, state, { sessionGeneration, branchGeneration }, operationId);
-    pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
   };
 
   const nodeIdRequired = (nodeId: string | undefined): string => {
