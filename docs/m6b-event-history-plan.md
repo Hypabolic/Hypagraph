@@ -264,6 +264,27 @@ Scope:
 3. Record evidence in `docs/m6b-dogfood.md`.
 4. Update the README status list and the changelog.
 
+## 6.1 Slice status
+
+| Slice | Result | Evidence |
+| --- | --- | --- |
+| 1 | Timeline projection | `src/history/timeline.ts`, `tests/m6b-event-timeline.test.ts` |
+| 2 | Replay to an event | `src/history/replay.ts`, `tests/m6b-replay.test.ts` |
+| 3 | Decision explanation | `src/history/explain.ts`, `tests/m6b-explain.test.ts` |
+| 4 | History surface | `src/ui/history-surface.ts`, `tests/m6b-history-surface.test.ts` |
+| 5 | Debugger pane | `src/pi/graph-pane.ts`, `tests/m6b-debugger-pane.test.ts` |
+| 6 | Revisions and seams | `src/history/revisions.ts`, `tests/m6b-revisions-and-seams.test.ts` |
+| 7 | Dogfood and release | not started |
+
+Rule 5.7 holds. The schema version stays 6, and M6B adds no event type and no
+stored field.
+
+One implementation decision was recorded during Slice 6. A revision returns an
+invalidated node to `ready` when its dependencies allow it, and keeps the node
+`stale` while they do not. Node status alone therefore does not identify a
+discarded result. `projectStaleResults` reads the invalidation events of the
+current revision and joins them with the attempt history.
+
 ## 7. Acceptance criteria
 
 - Replay to any event produces the correct historical state.
