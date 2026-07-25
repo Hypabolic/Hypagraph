@@ -335,7 +335,11 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
         },
       });
       if (!dispatch.ok) {
-        ctx.ui.notify(`Hypagoal deterministic check '${decision.nodeId}' was not dispatched.
+        ctx.ui.notify(dispatch.dispatched
+          ? `Hypagoal ran deterministic check '${decision.nodeId}', but it could not store the dispatch outcome '${dispatch.outcome}'.
+The check lifecycle is durable. Restore closes the interrupted dispatch.
+${formatDiagnostics(dispatch.diagnostics)}`
+          : `Hypagoal deterministic check '${decision.nodeId}' was not dispatched.
 ${formatDiagnostics(dispatch.diagnostics)}`, "warning");
         return false;
       }

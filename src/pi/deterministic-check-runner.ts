@@ -37,11 +37,26 @@ export interface DeterministicCheckDispatchInput {
 
 export type DeterministicCheckDispatchResult =
   | {
+    /** The dispatch was rejected before the runner stored any event. Nothing ran. */
     ok: false;
     dispatched: false;
     state: HypagraphState;
     events: DomainEvent[];
     diagnostics: Diagnostic[];
+  }
+  | {
+    /**
+     * The check ran through its durable lifecycle, but the runner could not store the
+     * terminal action event. The dispatch stays pending until restore closes it.
+     */
+    ok: false;
+    dispatched: true;
+    state: HypagraphState;
+    events: DomainEvent[];
+    diagnostics: Diagnostic[];
+    outcome: DeterministicCheckOutcome;
+    reason?: string;
+    result?: CheckResult;
   }
   | {
     ok: true;
@@ -143,7 +158,18 @@ export async function runDeterministicCheckDispatch(
     reason,
   );
   if (!finished.ok) {
-    return { ok: false, dispatched: false, state, events, diagnostics: finished.diagnostics };
+    // The check already ran and its lifecycle is durable. Only the terminal action event
+    // is missing, so the caller must not report that nothing was dispatched.
+    return {
+      ok: false,
+      dispatched: true,
+      state,
+      events,
+      diagnostics: finished.diagnostics,
+      outcome,
+      ...(reason === undefined ? {} : { reason }),
+      ...(result ? { result } : {}),
+    };
   }
   state = finished.state;
   events.push(...finished.events);

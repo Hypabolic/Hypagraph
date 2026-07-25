@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ActiveCheckExecutionRegistry } from "../src/checks/active-executions.js";
 import { recoverInterruptedChecks } from "../src/checks/recovery.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
+import { interruptPendingActionDispatch } from "../src/domain/action-dispatch-recovery.js";
 import { isReadyCheckDecision, type ReadyCheckDecision } from "../src/domain/deterministic-check-dispatch.js";
 import { isRunnableGoalContinuation, selectGoalContinuation } from "../src/domain/goal-continuation.js";
 import type {
@@ -108,6 +109,24 @@ class RecordingStore implements WorkflowEventStore {
 
   eventTypes(): string[][] {
     return this.appends.map((append) => append.events.map((event) => event.type));
+  }
+}
+
+const TERMINAL_ACTION_TYPES = new Set([
+  "hypagraph.action.completed",
+  "hypagraph.action.failed",
+  "hypagraph.action.interrupted",
+]);
+
+/** Accept every append except the terminal action event. */
+class TerminalFailureStore implements WorkflowEventStore {
+  constructor(private readonly inner: WorkflowEventStore) {}
+
+  async append(input: WorkflowEventAppend): Promise<void> {
+    if (input.events.some((event) => TERMINAL_ACTION_TYPES.has(event.type))) {
+      throw new Error("The event store rejected the terminal action event.");
+    }
+    await this.inner.append(input);
   }
 }
 
@@ -449,6 +468,63 @@ describe("M6A Slice 3 deterministic check dispatch", () => {
     expect(recovery.recoveredAttemptIds).toEqual(["attempt-lost"]);
     expect(recovery.state.runtime.nodes.tests?.status).toBe("failed");
     expect(recovery.state.goal?.budget.consumedTurns).toBe(0);
+  });
+
+  it("reports a dispatched check when only the terminal action append fails", async () => {
+    const created = create();
+    const inner = seededStore(created);
+    const store = new TerminalFailureStore(inner);
+    const dispatch = await runDeterministicCheckDispatch({
+      state: created.state,
+      decision: readyCheck(created.state),
+      dispatchId: "check-dispatch-terminal-failure",
+      attemptId: "attempt-terminal-failure",
+      at,
+      finishedAt,
+      store,
+      executor: executorFor((attemptId) => checkResult(attemptId, "passed")),
+      registry: new ActiveCheckExecutionRegistry(),
+    });
+
+    // The check ran. Only the terminal action event is missing.
+    expect(dispatch.ok).toBe(false);
+    expect(dispatch.dispatched).toBe(true);
+    if (dispatch.ok || !dispatch.dispatched) throw new Error("Expected a dispatched terminal failure.");
+    expect(dispatch.diagnostics).toMatchObject([{ code: "event_store_append_failed" }]);
+    expect(dispatch.outcome).toBe("completed");
+    expect(dispatch.result?.status).toBe("passed");
+
+    // The durable check lifecycle reached the store, and the returned events describe it.
+    expect(dispatch.events.map((event) => event.type)).toEqual([
+      "hypagraph.action.selected",
+      "hypagraph.action.dispatched",
+      "hypagraph.check.started",
+      "hypagraph.fact.published",
+      "hypagraph.check.result-recorded",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+    ]);
+    expect(dispatch.state.runtime.nodes.tests?.status).toBe("succeeded");
+    expect(dispatch.state.goal?.budget.consumedTurns).toBe(0);
+
+    const stored = inner.appends.at(-1)!.snapshot;
+    expect(stored.runtime.nodes.tests?.status).toBe("succeeded");
+    expect(stored.goal?.actionDispatch?.pending).toMatchObject({
+      dispatchId: "check-dispatch-terminal-failure",
+      lane: "deterministic",
+      status: "dispatched",
+    });
+    expect(stored.goal?.actionDispatch?.lastOutcome).toBeUndefined();
+
+    // Restore closes the pending dispatch through the Slice 5 recovery path.
+    const closed = interruptPendingActionDispatch(stored, {
+      commandId: "interrupt-after-terminal-failure",
+      reason: "The Pi session reloaded before the action dispatch completed.",
+      at: finishedAt,
+    });
+    if (!closed.ok || !closed.interrupted) throw new Error("The pending dispatch was not closed.");
+    expect(closed.state.goal?.actionDispatch?.pending).toBeUndefined();
+    expect(replayEvents([...created.events, ...dispatch.events, ...closed.events])).toEqual(closed.state);
   });
 
   it("rejects a stale check selection without producing events", async () => {
