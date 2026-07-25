@@ -33,7 +33,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
 
   const actionDispatch = event.type === "hypagraph.goal.started"
     ? createActionDispatchRuntime()
-    : applyGoalEventToActionDispatch(previousDispatch, event);
+    : event.type === "hypagraph.goal.completed" || event.type === "hypagraph.goal.failed"
+      ? previousDispatch
+      : applyGoalEventToActionDispatch(previousDispatch, event);
   next.goal.actionDispatch = actionDispatch;
   next.goal.schedulerOrdinal = actionDispatch.schedulerOrdinal;
   return withCanonicalSnapshotHash(next);

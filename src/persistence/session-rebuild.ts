@@ -35,13 +35,15 @@ const storedSchemaVersion = (entry: unknown): number | undefined => {
   return typeof stored?.schemaVersion === "number" ? stored.schemaVersion : undefined;
 };
 
+const SUPPORTED_STORED_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, HYPAGRAPH_SCHEMA_VERSION]);
+
 const rejectUnsupportedSchemas = (entries: readonly unknown[]): void => {
   for (const entry of entries) {
     const version = storedSchemaVersion(entry);
-    if (version !== undefined && version !== HYPAGRAPH_SCHEMA_VERSION) {
+    if (version !== undefined && !SUPPORTED_STORED_SCHEMA_VERSIONS.has(version)) {
       throw new Error(
         `Unsupported Hypagraph schema version '${version}'. Expected schema version ${HYPAGRAPH_SCHEMA_VERSION}. `
-        + "Discard development snapshots from older schemas and start a new session.",
+        + "Discard development snapshots from unsupported schemas and start a new session.",
       );
     }
   }
