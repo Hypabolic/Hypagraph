@@ -471,7 +471,6 @@ describe("M5B v0.6 release dogfood", () => {
     ]);
     expect(selected.slice(10)).toEqual([
       "probe:root:0",
-      "route:root:0",
       "finalize:root:0",
       "revision",
       "write-release-note:root:0",
@@ -515,7 +514,21 @@ describe("M5B v0.6 release dogfood", () => {
       consumedTokens: { totalTokens: selected.length * 13 },
     });
 
-    const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);
+    const domainEvents = value.entries.flatMap((entry) => entry.data?.events ?? []);
+    const schedulerSelections = domainEvents.filter((event: any) =>
+      event.type === "hypagraph.goal.continuation-requested" || event.type === "hypagraph.action.selected");
+    expect(state.goal.schedulerOrdinal).toBe(schedulerSelections.length);
+    expect(state.goal.continuationOrdinal).toBe(schedulerSelections.length);
+
+    const actionSelections = domainEvents
+      .filter((event: any) => event.type === "hypagraph.action.selected")
+      .map((event: any) => event.data.dispatch);
+    expect(actionSelections).toContainEqual(expect.objectContaining({
+      lane: "deterministic",
+      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),
+    }));
+
+    const eventTypes = domainEvents.map((event: any) => event.type);
     expect(eventTypes).toContain("hypagraph.workflow.revised");
     expect(eventTypes).toContain("hypagraph.goal.completed");
 

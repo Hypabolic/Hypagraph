@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import hypagraphExtension from "../src/extension.js";
+import hypagraphExtension, { MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES } from "../src/extension.js";
 import { selectGoalContinuation, isRunnableGoalContinuation } from "../src/domain/goal-continuation.js";
 import { handleCommand } from "../src/domain/reducer.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
@@ -201,13 +201,7 @@ describe("Hypagoal Pi continuation", () => {
 
     await agentEnd(value);
     prompts = continuationPrompts(value);
-    expect(prompts.at(-1)).toContain("evaluate ready gate 'route'");
-    system = await beforeAgentStart(value, prompts.at(-1)!);
-    expect(system).toContain("Evaluate gate 'route'");
-    await transition(value, "route", "evaluate");
-
-    await agentEnd(value);
-    prompts = continuationPrompts(value);
+    expect(prompts.some((prompt) => prompt.includes("evaluate ready gate 'route'"))).toBe(false);
     expect(prompts.at(-1)).toContain("start ready task 'finish-primary'");
     await beforeAgentStart(value, prompts.at(-1)!);
     await completeTask(value, "finish-primary");
@@ -223,7 +217,127 @@ describe("Hypagoal Pi continuation", () => {
     expect(lastSnapshot.runtime.nodes.document.status).toBe("succeeded");
     expect(lastSnapshot.runtime.nodes["finish-alternate"].status).toBe("skipped");
     expect(lastSnapshot.goal.continuationOrdinal).toBe(4);
+    expect(lastSnapshot.goal.schedulerOrdinal).toBe(4);
+    expect(lastSnapshot.goal.budget.consumedTurns).toBe(3);
+    const directGateBatch = batches.find((entry) => entry.data.events.some((event: { type: string; data?: any }) =>
+      event.type === "hypagraph.action.selected" && event.data?.dispatch?.lane === "deterministic"));
+    expect(directGateBatch?.data.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining([
+      "hypagraph.action.selected",
+      "hypagraph.action.dispatched",
+      "hypagraph.route.selected",
+      "hypagraph.action.completed",
+    ]));
     expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("Hypagoal completed; workflow completed"), "info");
+  });
+
+  it("dispatches two ready gates and queues only the remaining task model turn", async () => {
+    const value = harness();
+    await value.tools.get("hypagoal_start")!.execute(
+      "create-two-gates",
+      {
+        objective: "Resolve two deterministic decisions and complete one task.",
+        definition: {
+          title: "Two deterministic gates",
+          goal: "The model cannot replace the objective.",
+          nodes: [
+            {
+              id: "first-gate", title: "First gate", kind: "gate", requires: [], acceptance: [],
+              gate: {
+                condition: { kind: "compare", left: { kind: "literal", value: true }, operator: "eq", right: { kind: "literal", value: true } },
+                onTrue: ["second-gate"], onFalse: ["first-alternate"],
+              },
+            },
+            {
+              id: "second-gate", title: "Second gate", kind: "gate", requires: ["first-gate"], acceptance: [],
+              gate: {
+                condition: { kind: "compare", left: { kind: "literal", value: true }, operator: "eq", right: { kind: "literal", value: true } },
+                onTrue: ["work"], onFalse: ["second-alternate"],
+              },
+            },
+            { id: "first-alternate", title: "First alternate", requires: ["first-gate"], acceptance: [] },
+            { id: "work", title: "Model work", requires: ["second-gate"], acceptance: [] },
+            { id: "second-alternate", title: "Second alternate", requires: ["second-gate"], acceptance: [] },
+          ],
+          loops: [],
+          policy: { mode: "guided", requireEvidence: false },
+        },
+      },
+      undefined,
+      undefined,
+      value.ctx,
+    );
+
+    await agentEnd(value);
+    const prompts = continuationPrompts(value);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("start ready task 'work'");
+    expect(prompts[0]).not.toContain("gate");
+
+    const batches = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE);
+    const latest = batches.at(-1)?.data.snapshot;
+    expect(latest.runtime.nodes["first-gate"].status).toBe("succeeded");
+    expect(latest.runtime.nodes["second-gate"].status).toBe("succeeded");
+    expect(latest.runtime.nodes["first-alternate"].status).toBe("skipped");
+    expect(latest.runtime.nodes["second-alternate"].status).toBe("skipped");
+    expect(latest.goal.budget.consumedTurns).toBe(0);
+    expect(latest.goal.schedulerOrdinal).toBe(3);
+    expect(latest.goal.actionDispatch.pending).toMatchObject({ lane: "model", action: { kind: "start-ready-task", nodeId: "work" } });
+    expect(batches.flatMap((entry) => entry.data.events).filter((event: { type: string; data?: any }) =>
+      event.type === "hypagraph.action.completed" && event.data?.dispatchId?.startsWith("hypagoal-dispatch:"))).toHaveLength(2);
+  });
+
+  it("stops one controller pass at the consecutive deterministic dispatch maximum", async () => {
+    const value = harness();
+    const gateCount = MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES + 1;
+    const nodes: any[] = [];
+    for (let index = 0; index < gateCount; index += 1) {
+      const gateId = `gate-${index}`;
+      const selectedId = index + 1 < gateCount ? `gate-${index + 1}` : "work";
+      nodes.push({
+        id: gateId,
+        title: `Gate ${index}`,
+        kind: "gate",
+        requires: index === 0 ? [] : [`gate-${index - 1}`],
+        acceptance: [],
+        gate: {
+          condition: { kind: "compare", left: { kind: "literal", value: true }, operator: "eq", right: { kind: "literal", value: true } },
+          onTrue: [selectedId],
+          onFalse: [`alternate-${index}`],
+        },
+      });
+      nodes.push({ id: `alternate-${index}`, title: `Alternate ${index}`, requires: [gateId], acceptance: [] });
+    }
+    nodes.push({ id: "work", title: "Final model work", requires: [`gate-${gateCount - 1}`], acceptance: [] });
+
+    await value.tools.get("hypagoal_start")!.execute(
+      "create-gate-chain",
+      {
+        objective: "Resolve the bounded deterministic gate chain.",
+        definition: {
+          title: "Long deterministic gate chain",
+          goal: "The model cannot replace the objective.",
+          nodes,
+          loops: [],
+          policy: { mode: "guided", requireEvidence: false },
+        },
+      },
+      undefined,
+      undefined,
+      value.ctx,
+    );
+
+    await agentEnd(value);
+    expect(continuationPrompts(value)).toEqual([]);
+    let latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal.schedulerOrdinal).toBe(MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES);
+    expect(latest.runtime.nodes[`gate-${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES}`].status).toBe("ready");
+    expect(value.notify).toHaveBeenCalledWith(expect.stringContaining(`${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions`), "warning");
+
+    await agentEnd(value);
+    expect(continuationPrompts(value)).toHaveLength(1);
+    expect(continuationPrompts(value)[0]).toContain("start ready task 'work'");
+    latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal.schedulerOrdinal).toBe(gateCount + 1);
   });
 
   it("queues at most one state-bound continuation", async () => {

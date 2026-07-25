@@ -38,6 +38,8 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       : applyGoalEventToActionDispatch(previousDispatch, event);
   next.goal.actionDispatch = actionDispatch;
   next.goal.schedulerOrdinal = actionDispatch.schedulerOrdinal;
+  // Slice 2 keeps the pre-M6A field as a compatibility alias while every caller migrates to the scheduler name.
+  next.goal.continuationOrdinal = actionDispatch.schedulerOrdinal;
   return withCanonicalSnapshotHash(next);
 }
 
