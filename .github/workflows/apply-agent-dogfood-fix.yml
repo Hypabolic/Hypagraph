@@ -1,0 +1,39 @@
+name: Apply agent dogfood fix
+
+on:
+  push:
+    branches:
+      - agent/m6a-slice-2-direct-gates
+    paths:
+      - ".agent/m6a-dogfood.patch.gz.b64"
+      - ".github/workflows/apply-agent-dogfood-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply dogfood fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .agent/m6a-dogfood.patch.gz.b64 ]; then
+            exit 0
+          fi
+          base64 -d .agent/m6a-dogfood.patch.gz.b64 | gzip -d > /tmp/m6a-dogfood.patch
+          git apply --check /tmp/m6a-dogfood.patch
+          git apply /tmp/m6a-dogfood.patch
+          rm -f .agent/m6a-dogfood.patch.gz.b64
+          rmdir .agent 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update release dogfood for deterministic gates"
+          git push origin HEAD:${GITHUB_REF_NAME}
