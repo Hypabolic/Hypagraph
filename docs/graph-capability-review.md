@@ -75,8 +75,8 @@ Result: the middle of workflow A is the strongest part of the current product. T
 | Task to Planner | Available | The bundled skill and `hypagoal_start` compile prose into one canonical graph in one turn. |
 | Plan Reviewer and plan feedback | Partial | A review node is representable. A plan-feedback cycle is not. The only automatic re-plan path is the one bounded revision. It permits one attempt, it needs a classified blocker, and it rejects weakening changes. |
 | Worker as a resident agent | Absent | A node cannot declare an executor, an agent identity, or a session lifetime. |
-| Fan-out to Reviewer 1 to N at the same time | Absent, and a hard blocker | `enumerateRootWorkActions` returns an empty list when more than one node is active. The controller queues one continuation. Execution is strictly sequential. |
-| A runtime-sized number of reviewers | Absent | A definition is static. There is no map region over a runtime collection. |
+| Fan-out to Reviewer 1 to N at the same time | Absent today, planned as M8 | `enumerateRootWorkActions` returns an empty list when more than one node is active. The controller queues one continuation. Execution is strictly sequential. This is a deliberate M5B constraint, not an architectural limit. M8 plans bounded concurrent scheduling with an initial default of two isolated attempts. M8 depends on the M7 executor abstraction. |
+| A runtime-sized number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6. |
 | Resident agent against ephemeral worker | Absent | The model has no node lifetime concept. |
 | Synthesise | Available | `requires` gives structural fan-in. |
 | Pass decision | Available | A gate evaluates a typed condition over published facts. |
@@ -84,7 +84,11 @@ Result: the middle of workflow A is the strongest part of the current product. T
 | Turn into haiku | Available | This is an ordinary task node. |
 | Send to user | Absent | There is no output node. A result reaches the user as incidental chat text. It is not a canonical node with evidence. |
 
-Result: every structural element of workflow B except fan-out is available or close. Parallel fan-out is the single hard blocker. Dynamic N and the final user-facing output node are the next two gaps.
+Result: every structural element of workflow B except fan-out is available or close.
+
+Separate the two fan-out gaps. Concurrent execution of independent nodes which the definition already declares is planned as M8. It blocks workflow B today, but the roadmap answers it. A runtime-sized number of branches is not planned. It is gap N6, and workflow B needs it, because the reviewer count is a runtime value.
+
+The final user-facing output node is the third gap.
 
 ## 5. Question 1: code mode nodes
 
