@@ -11,6 +11,7 @@ import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
 import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
+import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import { projectGraphView } from "./graph/projection.js";
 import {
@@ -27,6 +28,7 @@ import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition 
 import { GraphPaneController } from "./pi/graph-pane.js";
 import { projectModelVisibleGraphView, projectModelVisibleWorkflowSummary } from "./pi/model-visible-state.js";
 import { formatPiCheckCommand } from "./pi/check-runner.js";
+import { runDeterministicCheckDispatch } from "./pi/deterministic-check-runner.js";
 import {
   continuationSystemPrompt,
   createPendingGoalContinuation,
@@ -282,6 +284,51 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     }
   };
 
+  const dispatchDeterministicCheck = async (
+    ctx: ExtensionContext,
+    decision: ReadyCheckDecision,
+  ): Promise<boolean> => {
+    const runGeneration = sessionGeneration;
+    const runBranch = branchGeneration;
+    ctx.ui.setStatus("hypagraph-check", `Check ${decision.nodeId}: running`);
+    try {
+      const dispatch = await runDeterministicCheckDispatch({
+        state: state!,
+        decision,
+        dispatchId: `hypagoal-dispatch:${randomUUID()}`,
+        attemptId: randomUUID(),
+        at: new Date().toISOString(),
+        store: eventStore.lease(),
+        executor: new CommandCheckExecutor({
+          rootDirectory: ctx.cwd,
+          artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
+        }),
+        registry: activeExecutions,
+        stale: () => sessionGeneration !== runGeneration || branchGeneration !== runBranch,
+        onCommit: (next, committed) => {
+          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
+          state = next;
+          events.push(...committed);
+          updateUi(state, ctx, graphPane);
+        },
+      });
+      if (!dispatch.ok) {
+        ctx.ui.notify(`Hypagoal deterministic check '${decision.nodeId}' was not dispatched.
+${formatDiagnostics(dispatch.diagnostics)}`, "warning");
+        return false;
+      }
+      if (dispatch.stale) return false;
+      if (dispatch.outcome !== "completed") {
+        ctx.ui.notify(`Hypagoal deterministic check '${decision.nodeId}' ${dispatch.outcome}.
+${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
+        return false;
+      }
+      return true;
+    } finally {
+      ctx.ui.setStatus("hypagraph-check", undefined);
+    }
+  };
+
   const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
     if (pendingContinuation || deliveredContinuation || !state || activeExecutions.hasActive()) return;
     let deterministicDispatches = 0;
@@ -297,14 +344,23 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
         return;
       }
 
+      const deterministic = isReadyGateDecision(decision) || isReadyCheckDecision(decision);
+      if (deterministic && deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
+        ctx.ui.notify(
+          `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
+          "warning",
+        );
+        return;
+      }
+
+      if (isReadyCheckDecision(decision)) {
+        const continued = await dispatchDeterministicCheck(ctx, decision);
+        deterministicDispatches += 1;
+        if (!continued) return;
+        continue;
+      }
+
       if (isReadyGateDecision(decision)) {
-        if (deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
-          ctx.ui.notify(
-            `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
-            "warning",
-          );
-          return;
-        }
         const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
         const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state, {
           dispatchId,

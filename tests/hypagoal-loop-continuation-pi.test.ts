@@ -184,6 +184,23 @@ const prompts = (value: ReturnType<typeof harness>): string[] => value.sendUserM
   .map((call) => String(call[0]))
   .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation."));
 
+const batches = (value: ReturnType<typeof harness>): any[] => value.entries
+  .filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE);
+
+const domainEvents = (value: ReturnType<typeof harness>): any[] => batches(value)
+  .flatMap((entry) => entry.data.events ?? []);
+
+/** Collect the quality-loop runtime after each verified evaluation, in durable order. */
+const evaluationLoopSnapshots = (value: ReturnType<typeof harness>): any[] => batches(value)
+  .filter((entry) => (entry.data.events ?? []).some((event: any) => event.nodeId === "evaluate"
+    && (event.type === "hypagraph.verification.passed" || event.type === "hypagraph.verification.failed")))
+  .map((entry) => structuredClone(entry.data.snapshot.runtime.loops.quality));
+
+const deterministicDispatches = (value: ReturnType<typeof harness>): any[] => domainEvents(value)
+  .filter((event: any) => event.type === "hypagraph.action.selected")
+  .map((event: any) => event.data.dispatch)
+  .filter((dispatch: any) => dispatch.lane === "deterministic");
+
 const agentEnd = async (value: ReturnType<typeof harness>) => invoke(value, "agent_end", {
   type: "agent_end",
   messages: [{
@@ -237,7 +254,6 @@ describe("M5B Slice 5 Pi loop continuation", () => {
     await value.tools.get("hypagoal_start")!.execute("create-root", rootInput(), undefined, undefined, value.ctx);
 
     const selected: string[] = [];
-    const evaluationSnapshots: any[] = [];
     let observedPromptCount = 0;
     await agentEnd(value);
 
@@ -258,9 +274,6 @@ describe("M5B Slice 5 Pi loop continuation", () => {
         await completeTask(value, action.nodeId);
       } else if (action.nodeId === "audit-result") {
         await completeTask(value, action.nodeId, [{ name: "audit.complete", type: "boolean", value: true }]);
-      } else if (action.nodeId === "evaluate") {
-        await value.tools.get("hypagraph_run_check")!.execute("run-evaluator", { nodeId: "evaluate" }, undefined, undefined, value.ctx);
-        evaluationSnapshots.push(structuredClone(latestState(value).runtime.loops.quality));
       } else {
         throw new Error(`Unexpected selected node '${action.nodeId}'.`);
       }
@@ -268,19 +281,24 @@ describe("M5B Slice 5 Pi loop continuation", () => {
     }
 
     const state = latestState(value);
+    const evaluationSnapshots = evaluationLoopSnapshots(value);
+    // M6A: the model lane receives task nodes only. The controller runs each check itself.
     expect(selected).toEqual([
       "refine:quality:0",
       "audit:documentation-audit:0",
-      "evaluate:quality:1",
       "audit-result:documentation-audit:1",
       "refine:quality:2",
-      "evaluate:quality:2",
       "refine:quality:3",
-      "evaluate:quality:3",
       "refine:quality:4",
-      "evaluate:quality:4",
     ]);
-    expect(selected.filter((item) => item.startsWith("evaluate:"))).toHaveLength(4);
+    expect(selected.some((item) => item.startsWith("evaluate:"))).toBe(false);
+    expect(deterministicDispatches(value).map((dispatch) => dispatch.action)).toEqual([
+      { kind: "run-ready-check", nodeId: "evaluate", loopId: "quality" },
+      { kind: "run-ready-check", nodeId: "evaluate", loopId: "quality" },
+      { kind: "run-ready-check", nodeId: "evaluate", loopId: "quality" },
+      { kind: "run-ready-check", nodeId: "evaluate", loopId: "quality" },
+    ]);
+    expect(evaluationSnapshots).toHaveLength(4);
     expect(evaluationSnapshots[0]).toMatchObject({
       currentIteration: 2,
       invalidEvaluationCount: 1,
@@ -297,6 +315,8 @@ describe("M5B Slice 5 Pi loop continuation", () => {
     expect(state.goal.budget.consumedTurns).toBe(selected.length);
     expect(state.goal.budget.consumedTokens.totalTokens).toBe(selected.length * 11);
     expect(prompts(value)).toHaveLength(selected.length);
+    // The scheduler ordinal counts every lane. The turn count counts the model lane only.
+    expect(state.goal.schedulerOrdinal).toBe(selected.length + 4);
 
     const promptCountBeforeRestore = prompts(value).length;
     await invoke(value, "session_start", { type: "session_start", reason: "reload" });
