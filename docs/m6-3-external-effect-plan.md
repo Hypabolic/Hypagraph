@@ -11,7 +11,9 @@
 
 M6.3 lets a node change external state safely.
 
-Reference workflow A needs this for "open a pull request", "merge", and "promote to production". Reference workflow B needs it for "send to user".
+Reference workflow A needs this for "open a pull request", "merge", and "promote to production".
+
+Reference workflow B does not need this for "send to user". Displaying a result in Pi is a presentation action, and it belongs to M6.1. It is not equivalent to posting to Slack, sending email, opening a pull request, merging, or deploying. Only an actual outbound delivery to an external system needs this milestone.
 
 ## 2. Problem
 
@@ -61,19 +63,23 @@ A program which exits zero has not proved that the pull request exists. Only an 
 
 ## 4. Definition shape
 
+Do not nest one node definition inside another node definition. Use the reusable executable body which `docs/code-node-adapter-plan.md` section 6 defines.
+
 ```ts
 export interface EffectNodeDefinition {
   kind: "effect";
   version: 1;
-  effect: CodeNodeDefinition;
-  reconcile: CodeNodeDefinition;
+  effect: SandboxProgramDefinition;
+  reconcile: SandboxProgramDefinition;
   idempotency: { from: "canonical-identity" };
   externalIdentity: FactContract[];
   onIndeterminate: "block-dependants" | "fail-workflow";
 }
 ```
 
-The effect and the reconciliation query both use the M6.2 code node and the sandbox adapter. The reconciliation query must declare a read-only capability grant. Validation must reject a reconciliation query which declares a mutating capability.
+`SandboxProgramDefinition` carries the program, the inputs, the capabilities, and the bounds. It carries no node semantics. This keeps node semantics separate while both programs share the QuickJS mechanism.
+
+The effect program may declare `external-effect` capabilities. The reconciliation program may declare `observation` capabilities only. `docs/code-node-adapter-plan.md` section 6.1 gives the effect classes, and validation must enforce them.
 
 ## 5. Mandatory rules
 
@@ -156,5 +162,6 @@ Scope:
 ## 8. Out of scope
 
 - worktree integration and merge conflict handling, which belong to M8;
-- triggers which start work from an external event, which belong to M10;
+- displaying a result in Pi, which is a presentation action in M6.1;
+- an external event which starts Hypagraph while it does not run. Roadmap design rule 3.9 puts this out of scope;
 - a general external-service adapter library. Each effect declares its own bounded capability grant.

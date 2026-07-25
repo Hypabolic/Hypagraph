@@ -5,7 +5,7 @@
 - Current milestone: M6A deterministic dispatch lane
 - Current implementation baseline: `0d1375a5f19a311528d5c774b66f0239a48164bb`
 - Current release: `v0.6`
-- Capability analysis which added M6A, M6.1, M6.2, M6.3, M8.1, and M10: `docs/graph-capability-review.md`
+- Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -152,7 +152,28 @@ A mutating delegated attempt uses one workspace lease and one git worktree by de
 
 Execution success and integration success are separate states.
 
-### 3.9 Use ASD-STE100 technical English
+### 3.9 Do not add a persistent host process
+
+Hypagraph runs inside a Pi session. It is not a service, a daemon, or a supervisor which owns its own process lifetime.
+
+Do not add:
+
+- a trigger supervisor which creates goals while no Pi session runs;
+- a rate limiter or a scheduler which must stay resident;
+- an external event listener which owns canonical state;
+- any promise of an exact wall-clock action while no Hypagraph process exists.
+
+Separate three different needs. Only the second and the third are in scope:
+
+| Need | Status |
+| --- | --- |
+| An external event starts Hypagraph while it does not run. | Out of scope. |
+| A running node waits for external state, for example a Linear item, a CI result, or a merge. | Supported through a check or a code node. |
+| An active graph waits and then processes work again and again. | A graph-loop policy, not a host service. |
+
+Use level-triggered recovery for every time-dependent rule. Persist an absolute deadline. Evaluate the deadline when the controller next wakes, resumes, or reloads. Do not depend on a timer which must keep running.
+
+### 3.10 Use ASD-STE100 technical English
 
 All repository text must follow `AGENTS.md`.
 
@@ -177,12 +198,13 @@ All repository text must follow `AGENTS.md`.
 | M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
 | M8.1 | v0.13 | Dynamic fan-out regions | Planned |
 | M9 | v0.14 | ACP and named direct agent adapters | Planned |
-| M10 | v0.15 | External triggers and continuous operation | Planned |
 | Exit | v1.0 | Hardened agent-independent execution kernel | Planned |
 
 Release markers are planning values. Acceptance criteria control milestone completion.
 
-M6A, M6.1, M6.2, M6.3, M8.1, and M10 are new. `docs/graph-capability-review.md` gives the analysis which added them. The milestone numbers of M7, M8, and M9 do not change, and their content does not change. This keeps every existing cross-reference correct.
+M6A, M6.1, M6.2, M6.3, and M8.1 are new. `docs/graph-capability-review.md` gives the analysis which added them. The milestone numbers of M7, M8, and M9 do not change, and their content does not change. This keeps every existing cross-reference correct.
+
+An earlier version of this document contained an M10 milestone for external triggers and continuous operation. That milestone is removed. It required a resident supervisor and a service lifetime, which design rule 3.9 rejects. The monitoring need which it described is met by a monitor node inside the graph. Section 16 gives that model.
 
 Order note: M6A must complete before M6B. M6A changes the continuation event model, and M6B renders that event model.
 
@@ -828,43 +850,61 @@ Do not use an arbitrary command as a strict mutating executor.
 - Pi RPC, ACP, and CLI executors return the same normalized result type.
 - Untrusted output cannot change canonical state without controller validation.
 
-## 16. M10 - External triggers and continuous operation
+## 16. Monitoring inside the graph, not a service
 
-### Objective
+### Decision
 
-Let an external event start bounded work, and let Hypagraph run as a service.
+Hypagraph does not add a trigger supervisor, a resident scheduler, or a service lifetime. Design rule 3.9 rejects them.
 
-### Product decision required before implementation
+An earlier version of this document contained an M10 milestone which added them. That milestone is removed.
 
-This milestone changes the product model. Every earlier milestone assumes one bounded objective which reaches a terminal state.
+### The need which remains
 
-A continuous loop does not reach a terminal state. The two models must be reconciled explicitly, and the decision must be recorded before implementation starts.
+Reference workflow A waits for a Linear item, for a CI result, and for a merge. That need is real. A resident service is not the way to meet it.
 
-The recommended reconciliation keeps the bounded model as the unit of work:
+Meet it with a monitor node inside the graph:
 
-1. a trigger creates one bounded goal for each external item;
-2. each goal keeps its own budgets, terminal state, and evidence;
-3. the service is the supervisor which creates goals. The service is not one goal which never ends.
+```text
+monitor node
+    waits for the external condition
+    publishes one typed observation
+    completes
+        |
+        v
+ordinary graph work
+        |
+        v
+feedback edge returns to the monitor node
+```
 
-This keeps every existing invariant. It also matches the reference workflow, in which each backlog item is one unit of work.
+A monitor node is an ordinary check node or code node. The wait is bounded by a timeout and by a retry policy. The repetition is an ordinary bounded iteration region.
 
-### Scope
+### What this needs, and where it comes from
 
-1. Trigger adapters: schedule, webhook, and issue-tracker poll.
-2. A durable trigger record with an item identity, so that one item creates one goal.
-3. A supervisor which applies concurrency, rate, and cost limits across goals.
-4. Deduplication, so that a repeated external event does not create a second goal.
-5. Explicit operator control: pause the service, drain the service, and inspect every active goal.
+| Requirement | Milestone |
+| --- | --- |
+| Direct deterministic dispatch, so that a poll does not cost a model turn | M6A |
+| Fact-bound command and program inputs, so that a monitor can query a specific item or run | M6.2 |
+| Cancellation and interruption handling | Available in v0.6 |
+| Restart reconciliation for an observation which the host lost | M6.3 |
+| An until-cancelled loop policy, only when a genuinely indefinite graph is required | Small addition to the existing loop model. Not yet accepted. |
 
-### Acceptance criteria
+Every one of these already belongs to an accepted milestone, except the last.
 
-- One external item creates exactly one bounded goal.
-- A repeated event does not create a second goal for the same item.
-- The supervisor limits concurrent goals, rate, and total cost.
-- An operator can pause and drain the service without losing canonical state.
-- A failed goal does not stop the supervisor.
-- Restart reconciles active goals and pending triggers.
-- Every goal keeps its own terminal state and evidence.
+### The until-cancelled loop policy
+
+The current loop model requires a hard iteration limit. That rule is correct for a bounded objective.
+
+A monitor loop which must run until a user cancels it does not have a natural limit. If a product decision accepts an indefinite monitor graph, then add one explicit loop policy which permits no iteration limit and which requires an explicit cancel or an explicit typed stop condition.
+
+Do not add this policy before a real workflow needs it. An indefinite loop removes a safeguard which every other loop keeps.
+
+### Out of scope
+
+- An external event which starts Hypagraph while no Pi session runs.
+- A supervisor which creates goals without a user.
+- A rate limiter or a cost limiter which must stay resident.
+- Any promise of an exact wall-clock action while no Hypagraph process exists.
 
 ## 17. Version 1.0 exit criteria
 
@@ -892,14 +932,14 @@ Hypagraph can release version 1.0 when:
 - a code node runs a definition-time program in a sandbox, and replay never runs it again;
 - an external effect resolves to an observed or an explicitly indeterminate state, and restart reconciles it;
 - a derived branch set keeps per-branch attempts, evidence, and replay;
-- a trigger creates one bounded goal for each external item, and the supervisor bounds concurrency and cost.
+- a monitor node waits for external state inside the graph, and no resident host process exists.
 
 ## 18. Immediate next work
 
-1. Decide the M6A continuation-completion design. Choose between a completion event for a deterministic action and no continuation request for a deterministic action. Record the decision in `docs/m6a-deterministic-dispatch-plan.md`.
+1. Implement the M6A generic action-dispatch event model. It replaces the earlier choice between a continuation-completion event and no continuation event. `docs/m6a-deterministic-dispatch-plan.md` section 4 gives the contract.
 2. Implement M6A Slice 1 and Slice 2. These give a directly dispatched gate and a directly dispatched check.
 3. State in the product surface that consumed turns count model turns only.
 4. Complete M6A before M6B, so that the history views render the final event model.
 5. Confirm whether reference workflow B needs a fixed or a derived reviewer count. This decides whether M8.1 is on the critical path.
 6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
-7. Do not start M10 before the bounded-goal and continuous-service reconciliation is recorded.
+7. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.

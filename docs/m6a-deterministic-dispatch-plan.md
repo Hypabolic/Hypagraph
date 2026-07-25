@@ -41,52 +41,65 @@ The current continuation lifecycle closes only through a delivered model turn.
 
 A directly dispatched action produces no Pi usage. It cannot use step 3, so it cannot close the continuation which step 1 created.
 
-An earlier version of the analysis stated that this milestone does not change the reducer or the events. That statement is wrong. This milestone changes the continuation event model.
+An earlier version of the analysis stated that this milestone does not change the reducer or the events. That statement is wrong. This milestone changes the dispatch event model. Section 4 gives the replacement contract.
 
-## 4. Design decision to record first
+## 4. Generic action dispatch
 
-Choose one design before implementation starts. Record the choice in this document.
+An earlier version of this plan offered two narrow options: add a continuation-completion event, or create no continuation event for a deterministic action. Both keep "continuation" as the name for every dispatched action. That name becomes wrong as execution becomes broader, because M7 adds executor attempts and M8 adds concurrent attempts which are not Pi continuations.
 
-### Design 1: add a completion event
+Use a generic dispatch model instead. It gives the inspection value of a completion event without treating every action as a Pi continuation.
 
-Add `hypagraph.goal.continuation-completed`. It closes the pending continuation and advances the continuation ordinal without usage accounting.
+### 4.1 Contract
 
-Advantages:
+```ts
+export type DispatchLane = "deterministic" | "model" | "executor";
 
-- one uniform audit trail for every dispatched action;
-- the history view in M6B shows every action in one sequence;
-- the continuation ordinal keeps one meaning.
+export interface ActionDispatch {
+  dispatchId: string;
+  action: ScheduledAction;
+  lane: DispatchLane;
+  selectedSequence: number;
+  selectedSnapshotHash: string;
+  schedulerOrdinal: number;
+}
+```
 
-Costs:
+### 4.2 Events
 
-- one new event type and one new command;
-- the projection must accept a continuation which closes without usage;
-- the turn count and the continuation count stop being equal, and every surface which assumes they are equal must change.
+Use one lifecycle for every lane:
 
-### Design 2: do not create a continuation request for a deterministic action
+```text
+action selected
+    |
+    v
+action dispatched
+    |
+    v
+action completed, failed, or interrupted
+```
 
-The controller dispatches a deterministic action directly and then selects again. A continuation request then means "a model turn is required".
+A model-backed action records model usage in addition. A deterministic action does not.
 
-Advantages:
+### 4.3 Why this is better
 
-- the accounting question disappears instead of needing an answer;
-- `record-goal-turn-usage` keeps its exact current contract;
-- the pending-continuation identity rules do not change;
-- fewer events for a graph which is mostly checks and gates.
+- one audit trail for M6B, across every lane;
+- a scheduler ordinal which is independent from model-turn accounting, so round-robin fairness is preserved without the turn event;
+- a direct extension into M7 isolated executors and M8 bounded concurrency, because the executor lane already exists in the model;
+- no need to redefine "continuation" as execution becomes broader.
 
-Costs:
+### 4.4 Migration from the current model
 
-- the continuation ordinal no longer advances for a deterministic action, so component fairness must come from a separate rotation;
-- the event stream does not record which deterministic action the controller selected, unless the check and gate events are treated as sufficient;
-- the M6B history view must derive the selection order from node and check events.
+The current `request-goal-continuation` and `record-goal-turn-usage` events become the model lane of this contract. Keep their data. Keep exactly-once turn accounting for the model lane.
 
-### Recommendation
+The continuation ordinal becomes the scheduler ordinal. It advances for every dispatched action in every lane. This keeps the M5B fairness property and removes the coupling between fairness and model usage.
 
-Design 2 is simpler for accounting. Design 1 is better for inspection, and M6B is an inspection milestone.
+Restate the M5B invariant in lane terms: each delivered model-lane action is charged once through a durable usage event before another model-lane action can be dispatched. A deterministic-lane action is never charged.
 
-The fairness cost of Design 2 is the deciding risk. Round-robin fairness across independent components is an M5B acceptance property, and it currently depends on the continuation ordinal. Design 2 must prove that fairness holds without an ordinal advance.
+### 4.5 Schema and compatibility
 
-Prototype the fairness behaviour of Design 2 in Slice 1. If fairness needs a durable rotation value, then Design 2 has re-created the ordinal, and Design 1 is the better choice.
+This is a schema change. Provide a migration from schema version 5, or an explicit rejection path, as `AGENTS.md` requires.
+
+A v0.6 event stream contains continuation and turn events only. Migration must project them into the model lane and must produce the same canonical state.
 
 ## 5. Mandatory rules
 
@@ -126,15 +139,34 @@ Consumed turns count model turns only. `/hypagoal status` must say so. A user wh
 
 ## 6. Vertical slices
 
-### Slice 1 - Direct gate evaluation and the design decision
+### Slice 1 - Generic dispatch model and the model lane
 
 Scope:
 
-1. Prototype both designs from section 4 against the independent-component fairness tests.
-2. Record the decision in section 4 of this document.
-3. Dispatch `evaluate-ready-gate` directly in the controller.
-4. Select again after the gate resolves.
-5. Add the consecutive-dispatch maximum from rule 5.3.
+1. Add the `ActionDispatch` contract and the selected, dispatched, and completed events from section 4.
+2. Move the scheduler ordinal off the turn event.
+3. Project the existing continuation and turn events into the model lane.
+4. Add the schema migration or the explicit rejection path.
+
+This slice changes no behaviour. It changes the event model only. Every existing test must still pass.
+
+Tests:
+
+- a v0.6 event stream migrates and produces the same canonical state;
+- exactly-once turn accounting holds for the model lane;
+- the scheduler ordinal advances without a turn event;
+- round-robin fairness across independent components is unchanged;
+- replay produces the same state and the same stop decision.
+
+Exit: the event model supports a lane which is not the model lane, and nothing yet uses it.
+
+### Slice 2 - Direct gate evaluation
+
+Scope:
+
+1. Dispatch `evaluate-ready-gate` in the deterministic lane.
+2. Select again after the gate resolves.
+3. Add the consecutive-dispatch maximum from rule 5.3.
 
 A gate is the smallest case. It is one reducer command with no external effect, no artifacts, and no cancellation.
 
@@ -143,13 +175,14 @@ Tests:
 - a ready gate resolves without a Pi follow-up;
 - the gate publishes the same route event as the current path;
 - consumed turns do not increase;
+- the scheduler ordinal advances for the deterministic action;
 - an independent component still receives its turn in rotation;
 - replay reproduces the same route;
 - the consecutive-dispatch maximum stops a deterministic cycle.
 
 Exit: a workflow with two gates and one task costs one model turn.
 
-### Slice 2 - Direct check execution
+### Slice 3 - Direct check execution
 
 Scope:
 
@@ -168,7 +201,7 @@ Tests:
 
 Exit: a bounded iteration region completes several iterations and consumes model turns only for its task nodes.
 
-### Slice 3 - Accounting, budgets, and surfaces
+### Slice 4 - Accounting, budgets, and surfaces
 
 Scope:
 
@@ -183,7 +216,7 @@ Tests:
 - the no-progress guard does not fire for a deterministic dispatch;
 - the status surface explains the turn meaning.
 
-### Slice 4 - Reload, restore, and replay
+### Slice 5 - Reload, restore, and replay
 
 Scope:
 
@@ -197,7 +230,7 @@ Tests:
 - replay produces the same state, the same routes, and the same stop decision;
 - a stale session or branch generation cannot dispatch.
 
-### Slice 5 - Dogfood and release
+### Slice 6 - Dogfood and release
 
 Scope:
 

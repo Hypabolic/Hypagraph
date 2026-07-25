@@ -50,18 +50,42 @@ A skill is not automatically deterministic.
 
 | Class | Examples | Executor | Model turn |
 | --- | --- | --- | --- |
-| Deterministic presentation | Render an HTML or Markdown artifact from a canonical projection. Open a fixed user-interface surface, for example a plan annotation view. Run a bounded command which produces an artifact. | Command or sandbox executor | None |
+| Deterministic presentation | Render an HTML or Markdown artifact from a canonical projection. Open a fixed user-interface surface, for example a plan annotation view. Run a bounded command which produces an artifact. | Direct Pi user-interface adapter, canonical report renderer, or bounded command executor | None |
 | Semantic presentation | Run a skill which is a set of model instructions, for example summarise the change before the question. | M7 model executor | One |
 
 A named Pi skill can belong to either class. The definition must declare the class. Validation must reject a deterministic declaration for a skill which needs model work.
 
 Until M7 exists, M6.1 supports the deterministic class only. A definition which declares a semantic presentation must fail validation with a clear diagnostic which names M7.
 
-### 3.4 Keep free text out of routing
+M6.1 comes before M6.2, so the sandbox executor does not exist yet. M6.1 supports three deterministic presentation implementations:
 
-A declared response option maps to typed facts. Free text is captured as evidence.
+1. a direct Pi user-interface adapter;
+2. a canonical report renderer;
+3. a bounded command executor.
 
-Free text must never select a route. A route must come from a typed fact through an ordinary gate condition. This keeps the existing rule that a gate does not use model or human prose judgement.
+Sandbox-backed presentation becomes available additively after M6.2. Do not make M6.1 depend on it.
+
+### 3.4 Separate routing from feedback content
+
+An interaction answer has two independent outputs. Keep them separate.
+
+```ts
+export interface InteractionAnswer {
+  responseId: string;
+  feedbackArtifact?: ArtifactReference;
+  evidence?: EvidenceReference[];
+}
+```
+
+`responseId` selects one declared response option, which publishes typed facts. Only those facts control routing.
+
+`feedbackArtifact` carries structured content from the presentation surface. It must never select a route.
+
+A response option and bounded free text are sufficient for approve, reject, and changes-requested. They are not sufficient for a plan annotation surface, which can return line annotations, several comments, selected regions, structured revision instructions, and artifact-level metadata.
+
+The feedback artifact is bounded and stored by identity in the existing artifact store. The next semantic task receives it through its explicit context projection, which satisfies design rule 3.7. A model reads the artifact. A gate does not.
+
+Free text remains evidence only, exactly as before.
 
 ### 3.5 Use the existing durable order
 
@@ -79,6 +103,18 @@ The current policy pauses an active goal after a reload. That policy stays for a
 
 A waiting interaction consumes no turns and no tokens. Waiting is not work.
 
+### 3.8 Use level-triggered timeout semantics
+
+Hypagraph has no resident process. Roadmap design rule 3.9 rejects one. No timer runs while Pi is closed.
+
+A timeout must therefore:
+
+1. persist an absolute deadline when the interaction is requested;
+2. be evaluated when the controller next wakes, resumes, or reloads;
+3. promise no exact wall-clock notification while no Hypagraph process exists.
+
+This is the same level-triggered recovery model which a check uses when it asks whether CI is green now. Do not describe a timeout as a scheduled action.
+
 ## 4. Canonical model
 
 ### 4.1 Definition
@@ -91,7 +127,7 @@ export interface InteractionNodeDefinition {
   question: string;
   responses: InteractionResponseOption[];
   freeText?: { prompt: string; maxBytes: number };
-  timeout?: { afterMs: number; onTimeout: "block" | "select"; selectResponseId?: string };
+  timeout?: { deadline: InteractionDeadline; onTimeout: "block" | "select"; selectResponseId?: string };
 }
 
 export interface InteractionResponseOption {
@@ -118,7 +154,18 @@ Use new event types. Do not reuse check event types. M6B history views must dist
 
 ### 4.3 Runtime
 
-An interaction attempt records the presentation observation, the artifact reference, the selected response identifier, the published facts, and the free-text evidence reference.
+An interaction attempt records the presentation observation, the presentation artifact reference, the selected response identifier, the published facts, the feedback artifact reference, and the free-text evidence reference.
+
+### 4.4 Deadline
+
+```ts
+export interface InteractionDeadline {
+  absolute: string;
+  source: "requested-at-plus-duration" | "declared-absolute";
+}
+```
+
+Store the absolute deadline when the request event is stored. Evaluate it on wake, resume, and reload. Never depend on a running timer.
 
 ## 5. Vertical slices
 
@@ -159,20 +206,41 @@ Tests:
 - a failed effect produces an explicit state and not a silent question;
 - a semantic declaration fails validation.
 
-### Slice 3 - Routing, free text, and timeouts
+### Slice 3 - Routing, structured feedback, and deadlines
 
 Scope:
 
 1. Route on published facts through an existing gate with no new routing semantics.
 2. Capture free text as evidence with a byte bound.
-3. Add the optional timeout policy.
+3. Capture a bounded structured feedback artifact and store it by identity.
+4. Add the absolute deadline and level-triggered evaluation from rule 3.8.
 
 Tests:
 
 - free text never changes a route;
-- a timeout with `block` produces an explicit blocked node;
-- a timeout with `select` publishes the declared default facts;
+- a feedback artifact never changes a route;
+- a feedback artifact reaches the next semantic task through its explicit context projection;
+- a deadline which passed while Pi was closed is applied on the next wake;
+- a deadline with `block` produces an explicit blocked node;
+- a deadline with `select` publishes the declared default facts;
 - a gate after an interaction behaves exactly as a gate after a check.
+
+Acceptance case which must pass:
+
+```text
+plan annotation surface returns line annotations
+    |
+    v
+responseId "changes_requested" publishes changes_requested = true
+    |
+    v
+gate routes back to the worker task
+    |
+    v
+worker receives the bounded annotation artifact in its context projection
+```
+
+Without this case, an interaction node can route to revision but cannot communicate canonically what the user requested.
 
 ### Slice 4 - Reload, restore, and product surface
 
@@ -203,13 +271,19 @@ Scope:
 - An unanswered interaction consumes no budget.
 - A typed answer publishes declared facts and routes through an existing gate.
 - Free text reaches evidence and never reaches a route.
+- A structured feedback artifact reaches the next semantic task and never reaches a route.
+- The plan-annotation acceptance case in Slice 3 passes.
 - A definition which declares a semantic skill as deterministic fails validation.
 - An unanswered interaction survives a reload and is presented again without a repeated effect.
+- A deadline which passed while no Hypagraph process existed is applied on the next wake.
 - The waiting state is derived and not stored.
-- Replay reproduces the same answer, facts, and route.
+- Replay reproduces the same answer, facts, route, and feedback artifact identity.
 
 ## 7. Out of scope
 
 - semantic presentation, which needs the M7 executor;
-- a general notification channel, which belongs to M6.3 external effects;
+- sandbox-backed presentation, which becomes available additively after M6.2;
+- outbound delivery to an external service, for example Slack or email, which belongs to M6.3;
 - external review systems, which belong to M6.3.
+
+Displaying a result in Pi is not an external effect. It is a presentation action, and it belongs here.

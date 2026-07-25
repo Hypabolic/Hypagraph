@@ -65,16 +65,18 @@ The model cannot select a route, complete a loop, or complete a goal. This rule 
 | Merged items queued for release | Absent | The session supports one root workflow and one root goal. There is no queue aggregate and no fan-in from outside the graph. |
 | Release candidate, build and test again | Partial | The check kinds exist. The trigger and the queue do not. |
 | Promote to production after checks pass | Absent | There is no effect node with external authority, no deployment adapter, and no approval binding. |
-| Both loops run continuously | Absent | The design is bounded. A loop must declare a hard iteration limit. A goal reaches a terminal state and stops. There is no daemon, schedule, or automatic re-entry. |
+| Both loops run continuously | Partial | An ordinary bounded iteration region already repeats a wait and a process cycle. Every loop must declare a hard iteration limit, so a genuinely indefinite graph needs one new until-cancelled loop policy. A resident daemon or schedule is out of scope, and roadmap design rule 3.9 rejects it. |
 
-Result: the middle of workflow A is the strongest part of the current product. The implement, check, revise, and hard-stop path is available now. The two ends are absent. Both ends cross a process boundary which the kernel does not yet cross.
+Result: the middle of workflow A is the strongest part of the current product. The implement, check, revise, and hard-stop path is available now.
+
+The two ends need external authority. Waiting for external state is already partly available through a check. Changing external state needs the effect model. Starting Hypagraph from an external event while no Pi session runs stays out of scope.
 
 ## 4. Reference workflow B: planner and reviewer fan-out
 
 | Diagram element | Status | Evidence or gap |
 | --- | --- | --- |
 | Task to Planner | Available | The bundled skill and `hypagoal_start` compile prose into one canonical graph in one turn. |
-| Plan Reviewer and plan feedback | Partial | A review node is representable. A plan-feedback cycle is not. The only automatic re-plan path is the one bounded revision. It permits one attempt, it needs a classified blocker, and it rejects weakening changes. |
+| Plan Reviewer and plan feedback | Partial | The topology is available now. A planner, a reviewer, and a feedback edge are an ordinary bounded iteration region with a typed success condition. What is missing is isolated executor identity and session affinity, so the planner and the reviewer cannot be separate durable agents. A re-plan which rewrites the graph itself is a different thing, and only the one bounded revision provides it. |
 | Worker as a resident agent | Absent | A node cannot declare an executor, an agent identity, or a session lifetime. |
 | Fan-out to Reviewer 1 to N at the same time | Absent today, planned as M8 | `enumerateRootWorkActions` returns an empty list when more than one node is active. The controller queues one continuation. Execution is strictly sequential. This is a deliberate M5B constraint, not an architectural limit. M8 plans bounded concurrent scheduling with an initial default of two isolated attempts. M8 depends on the M7 executor abstraction. |
 | A runtime-derived number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6. A fixed set of reviewers does not need N6. Only a count which the runtime derives needs it. |
@@ -83,7 +85,7 @@ Result: the middle of workflow A is the strongest part of the current product. T
 | Pass decision | Available | A gate evaluates a typed condition over published facts. |
 | No, return feedback to Worker | Available | A loop feedback edge provides this. |
 | Turn into haiku | Available | This is an ordinary task node. |
-| Send to user | Absent | There is no output node. A result reaches the user as incidental chat text. It is not a canonical node with evidence. |
+| Send to user | Partial | Pi already displays assistant output, so the user does see a result. What is absent is a canonical output node, an artifact contract, and a replayable presentation event. This is a presentation action for M6.1. It is not an external effect, because displaying a result in Pi is not an outbound delivery. |
 
 Result: every structural element of workflow B except fan-out is available or close.
 
@@ -256,17 +258,28 @@ Not yet planned:
 - N1: interaction and approval nodes, with skill and report presentation effects, typed responses, and a non-fault wait state;
 - N2: a deterministic dispatch lane for checks and gates;
 - N3: a `code` node kind on a sandbox executor, with injected fact input, validated fact output, and scope verification. See section 5 for the pi-fabric reference implementation;
-- N4: external work sources, triggers, schedules, and a continuous service mode with one bounded goal for each item;
+- N4: monitoring of external state from inside the graph. A monitor node waits, publishes one typed observation, and completes. Repetition is an ordinary bounded iteration region. This needs fact-bound inputs from N3 and direct dispatch from N2. It does not need a resident supervisor or a service lifetime, which roadmap design rule 3.9 rejects;
 - N5: effect nodes with external authority, for example open a pull request, merge, deploy, or notify. An idempotency key and durable effect ordering give the execution mechanism. They do not give the state model. An external effect also needs explicit `requested`, `observed`, and `indeterminate` states, and a reconciliation step which resolves an indeterminate effect against the external system after a restart. The existing `interrupted` check status is the nearest concept, but it only records that the host could not store a result. It does not reconcile;
-- N6: dynamic fan-out over a runtime collection. Reviewer 1 to N needs this. "Merged items queued for release" needs the same mechanism.
+- N6: dynamic fan-out over a runtime collection. This is needed only when a branch count is derived at run time. A fixed set of reviewers which the definition declares does not need it, because M8 executes declared independent nodes concurrently.
 
 ## 9. Distance to each reference workflow
 
-Workflow B without the human parts needs M7, M8, and N6. That is the next two planned milestones plus dynamic fan-out.
+Workflow B without the human parts needs M7 and M8 when the reviewer set is fixed and declared in the graph.
+
+It needs M7, M8, and N6 only when the reviewer count is derived from a runtime fact.
+
+| Reviewer count | Milestones |
+| --- | --- |
+| Fixed, declared in the graph | M7 and M8 |
+| Derived from a runtime fact | M7, M8, and N6 |
+
+The supplied diagram uses `N`. That notation does not prove that the count is derived at run time. Confirm the intended case before you plan N6.
 
 Workflow B in full also needs N1 for plan approval and a user-facing output node.
 
-Workflow A needs everything above, and also N4 and N5. It is the further target for two reasons. It crosses three external process boundaries, which are the issue tracker, the Git host, and the deployment target. It also requires continuous operation, which conflicts with the current bounded and terminal goal model. That conflict is a product decision, not only an implementation gap.
+Workflow A needs everything above, and also N4 and N5. It is the further target, because it crosses three external process boundaries, which are the issue tracker, the Git host, and the deployment target.
+
+An earlier version of this document stated that workflow A requires continuous operation and a service model. That statement is wrong. A monitor node inside the graph meets the monitoring need, and an ordinary bounded iteration region meets the repetition need. Roadmap design rule 3.9 rejects a resident host process. Only an external event which starts Hypagraph while it does not run stays out of scope.
 
 ## 10. Recommended order
 

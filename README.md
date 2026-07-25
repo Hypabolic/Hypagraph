@@ -338,9 +338,8 @@ Next:
 - external effects with explicit requested, observed, and indeterminate states and restart reconciliation;
 - goal families and bounded child Hypagoals;
 - isolated executors, worktree integration, and bounded concurrency;
-- dynamic fan-out regions for a runtime-derived branch count;
-- ACP and named direct agent adapters;
-- external triggers and continuous operation.
+- dynamic fan-out regions, only when a branch count is derived at run time;
+- ACP and named direct agent adapters.
 
 ## Develop locally
 

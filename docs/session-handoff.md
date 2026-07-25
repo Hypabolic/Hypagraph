@@ -62,69 +62,48 @@ Do not weaken these invariants during M6A and M6B:
 - independent branches and bounded regions keep independent lifecycle state;
 - the v0.6 root can later become a one-member goal family without rewriting workflow events.
 
-## 4. Current target: M6A, then M6B
+## 4. Current target: M6A deterministic dispatch
 
 ### Objective
 
-Make execution history, replay, and controller decisions inspectable without changing canonical workflow semantics.
+Run every canonical action which needs no reasoning without a model turn.
 
-### Proposed vertical slices
+A check runs through `runPiCheck`, which is a function of state, executor, and store. A gate is one `evaluate-gate` reducer command. Both currently cost one charged model turn, because the controller delivers every selected action as a Pi follow-up.
 
-1. Add a transport-neutral event-history projection with stable event identity and protected-data filtering.
-2. Add replay to an exact event sequence and compare live state with replay state.
-3. Add deterministic decision explanations for readiness, blockage, gates, loops, evaluations, budgets, revisions, and goal state.
-4. Add Pi event-timeline and replay controls.
-5. Add live-versus-replay graph rendering and preserve graph positions across small revisions.
-6. Add revision, invalidation, stale-result, and external-effect history views.
-7. Add future family, executor, workspace, and integration projection seams without implementing those runtimes.
-8. Dogfood, harden, document, and release v0.7.
+The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
+
+### Vertical slices
+
+1. Add the generic action-dispatch event model with the deterministic, model, and executor lanes. Move the scheduler ordinal off the turn event. Migrate the v0.6 event stream. This slice changes no behaviour.
+2. Dispatch a ready gate in the deterministic lane. Add the consecutive-dispatch maximum.
+3. Dispatch a ready check in the deterministic lane through the existing durable lifecycle.
+4. Update accounting, budgets, and the product surface, so that consumed turns describe model turns only.
+5. Confirm reload, restore, and replay.
+6. Dogfood, record the measured turn reduction, and release v0.7.
 
 ### Slice 1 recommendation
 
-Start with the pure event-history projection.
+Start with the event model, not with dispatch. Behaviour must not change in Slice 1, and every existing test must still pass.
 
 Suggested branch:
 
-`agent/m6-slice-1-event-history-projection`
+`agent/m6a-slice-1-action-dispatch-model`
 
 Suggested pull request title:
 
-`Add event history projection`
-
-### Slice 1 product result
-
-A caller can request a bounded chronological projection of persisted events and receive:
-
-- stable sequence and event identity;
-- event type and timestamp;
-- workflow, goal, revision, node, loop, attempt, check, and continuation identity when present;
-- a concise public summary;
-- explicit redaction markers for protected evaluator data;
-- enough metadata for later timeline grouping and replay selection.
+`Add generic action dispatch event model`
 
 ### Slice 1 constraints
 
-- Do not add a second event store.
-- Do not change reducer semantics.
-- Do not replay external effects.
-- Do not expose protected evaluator commands, paths, hashes, reports, stdout, stderr, or holdout details.
-- Do not add goal families, executors, worktrees, or physical concurrency.
-- Keep the projection independent of Pi.
-- Keep future family and executor identities additive.
+- The reducer stays pure.
+- A v0.6 event stream migrates and produces the same canonical state.
+- Exactly-once turn accounting holds for the model lane.
+- Round-robin fairness across independent components does not change.
+- Replay produces the same state and the same stop decision.
 
-### Slice 1 terminal coverage
+### Next milestone: M6B event history, replay, and debugger UI
 
-Cover at least:
-
-- workflow definition and revision;
-- node attempts and verification;
-- checks and typed facts;
-- gates and selected routes;
-- loop iteration, evaluation, success, and bounded failure;
-- goal start, pause, resume, budget stop, blockage, revision, completion, failure, and cancellation;
-- stale continuation and stale result rejection;
-- reload and branch-change pause;
-- malformed or legacy events which the current schema can restore.
+M6B follows M6A. Do not start M6B first. M6A changes the dispatch event model, and M6B renders that model. The M6B slices are in `docs/execution-roadmap.md` section 8.
 
 ## 5. Release evidence
 
@@ -141,9 +120,15 @@ Cover at least:
 
 The following work remains accepted but deferred beyond M6B:
 
+- interaction and approval nodes;
+- code nodes and the sandbox executor adapter;
+- external effects and reconciliation;
 - goal-family persistence;
 - recursive child Hypagoals;
 - executor abstraction and isolated Pi execution;
 - worktree leases and integration;
 - bounded physical concurrency;
+- dynamic fan-out regions, only when a branch count is derived at run time;
 - ACP and named direct agent adapters.
+
+Rejected direction: a resident supervisor, a trigger service, or any persistent host process. Roadmap design rule 3.9 rejects them. A monitor node inside the graph meets the monitoring need.

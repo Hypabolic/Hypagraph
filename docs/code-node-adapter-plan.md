@@ -98,24 +98,69 @@ Use the same terminal status set as a check: `passed`, `failed`, `timed_out`, `c
 
 ## 6. Definition shape
 
+Separate the executable body from the node semantics. A node definition must not contain another node definition.
+
 ```ts
-export interface CodeNodeDefinition {
-  kind: "code";
+export interface SandboxProgramDefinition {
   version: 1;
   program: string;
   inputs: string[];
   capabilities: CodeCapability[];
   timeoutMs: number;
-  maxMemoryBytes?: number;
+  maxMemoryBytes: number;
+  maxBridgeCalls: number;
+  maxResultBytes: number;
+}
+
+export interface CodeNodeDefinition {
+  kind: "code";
+  execution: SandboxProgramDefinition;
   retry?: CheckRetryPolicy;
 }
 ```
+
+`SandboxProgramDefinition` is the reusable executable body. M6.3 reuses it for an effect program and for a reconciliation program. M6.1 can reuse it for a presentation program after M6.2.
 
 The node reuses the existing `produces` fact contract and the existing `scope.paths`.
 
 `capabilities` is an allowlist. The bridge must deny by default. A capability declares one surface, for example a named Pi tool, a named MCP server with named methods, or bounded read access to declared paths.
 
 A declarative allowlist is a Hypagraph addition. The pattern source applies approvals at run time. Hypagraph must decide the permitted surface at definition time, so that validation and the non-weakening revision rules can inspect it.
+
+### 6.1 Capability effect classes
+
+Every capability in the bridge registry must declare an effect class:
+
+```ts
+export type CapabilityEffectClass =
+  | "pure"
+  | "observation"
+  | "workspace-mutation"
+  | "external-effect";
+```
+
+Validation must enforce which node kind may use which class:
+
+| Node kind | Permitted classes |
+| --- | --- |
+| Code node | `pure`, `observation`, and declared `workspace-mutation` |
+| Effect node, effect program | `external-effect`, plus the classes above |
+| Effect node, reconciliation program | `observation` only |
+| Interaction presentation program | `pure`, `observation`, and a bounded presentation capability |
+
+Without this rule an ordinary code node could call a mutating MCP method. It would then perform an external effect and bypass every M6.3 guarantee about requested, observed, and indeterminate state.
+
+The bridge must reject a call whose capability class the node kind does not permit. Validation must reject the definition before execution, and the bridge must reject it again at run time.
+
+### 6.2 "Deterministic" describes the control path, not the observation
+
+A code node is deterministic in its control path. The program text is fixed at definition time, the bindings come from canonical facts, and the sandbox denies ambient input.
+
+An observation is not deterministic. A query to CI, to Linear, or to any external system can return a different answer at a different time.
+
+The result becomes deterministic for replay only after the controller records the observation. Replay then replays the recorded value.
+
+Use the word "deterministic" for the dispatch lane and for the control path. Do not use it to claim that an observation returns a stable value.
 
 ## 7. Constraints which Hypagraph adds
 
@@ -128,7 +173,56 @@ A declarative allowlist is a Hypagraph addition. The pattern source applies appr
 7. Route a program which the runtime discovers later through `hypagraph_revise` or the bounded-revision path.
 8. Treat the capability allowlist as a safeguard for the non-weakening revision rules. A revision must not widen it.
 
-## 8. Authoring rules which hold the node-body placement
+## 8. Compilation and runtime pinning contract
+
+A program which type-checks under one toolchain must not execute differently after an upgrade. The executor already carries an identity and a version. The compiler configuration and the bridge schemas need durable identity too.
+
+### 8.1 Pinned values
+
+Record every value below in a durable `SandboxRuntimeIdentity`, and include it in the snapshot hash:
+
+| Value | Reason |
+| --- | --- |
+| TypeScript compiler version | A new compiler can accept or reject different source. |
+| TypeScript compiler options, as an exact object | Target, lib, strictness, and module settings change the emitted code. |
+| Allowed language target | A newer target emits syntax which the sandbox may not support. |
+| Ambient type definitions, as a fingerprint | The program must see only the declared bridge surface, and no Node or DOM globals. |
+| QuickJS runtime version | The engine decides which syntax and which built-ins exist. |
+| Bridge action schema fingerprint | A changed argument or result schema changes program behaviour. |
+
+### 8.2 Bounds
+
+Every program declares, and the executor enforces:
+
+- a maximum execution time;
+- a maximum memory size;
+- a maximum bridge-call count;
+- a maximum result size.
+
+These are mandatory, not optional. `SandboxProgramDefinition` in section 6 makes `maxMemoryBytes`, `maxBridgeCalls`, and `maxResultBytes` required for this reason.
+
+### 8.3 Transpilation
+
+Transpilation must be deterministic. The same source and the same pinned configuration must produce the same JavaScript, byte for byte.
+
+Decide and record whether compiled output is persisted or regenerated:
+
+- persist the compiled output when replay must not depend on the compiler being installed;
+- regenerate the output when the definition must stay small, and accept that replay then needs the exact pinned compiler.
+
+The recommendation is to persist the compiled output and its hash. Replay then needs the QuickJS runtime only, and it does not need the TypeScript compiler. This keeps replay closer to the rule that replay must not recompute an external result.
+
+### 8.4 Upgrade path
+
+A change to any pinned value is a runtime-identity change. Treat it as a schema change:
+
+1. record the new identity;
+2. keep the old identity readable for replay of an old event stream;
+3. do not silently re-execute an old program under a new runtime identity.
+
+An existing workflow keeps its recorded identity until an explicit revision changes it. A revision which changes the runtime identity must be visible, because it can change behaviour.
+
+## 9. Authoring rules which hold the node-body placement
 
 The decision in section 1 is a boundary, not only a position. Without an authoring rule the boundary moves. An author can write a larger program at each revision until the graph becomes decorative and the control flow is again invisible.
 
@@ -143,24 +237,24 @@ Apply these rules when a workflow declares a code node:
 
 Add a definition-time advisory when a program exceeds a declared size, or when it declares many produced facts. Report the advisory through the existing authoring advisory surface. Do not reject the definition. The advisory identifies a probable modelling error, not an invalid graph.
 
-Add these rules to the bundled skill when the slices in section 9 start.
+Add these rules to the bundled skill when the slices in section 10 start.
 
-## 9. Implementation slices
+## 10. Implementation slices
 
 1. Add the `code` node kind, the definition schema, and structural validation.
 2. Add the `CodeExecutor` seam and one in-memory test executor.
 3. Add the QuickJS sandbox executor and the JSON host bridge with a deny-by-default registry.
 4. Add binding injection from declared inputs and result validation against `produces`.
-5. Add the TypeScript check at definition time with line-numbered diagnostics.
+5. Add the TypeScript check at definition time with line-numbered diagnostics, the pinned compiler configuration, and the durable `SandboxRuntimeIdentity` from section 8.
 6. Add the durable lifecycle, the new event types, cancellation, retry, and artifacts.
-7. Add capability allowlists for Pi tools and MCP servers.
+7. Add capability allowlists for Pi tools and MCP servers, with the effect classes from section 6.1 enforced at validation time and again at the bridge.
 8. Add scope verification for a mutating program.
 9. Add graph-pane and model-visible surfaces.
 10. Add replay, restore, and non-weakening revision tests.
 
 Use new event types which mirror the check events. Do not reuse the check event types. Separate types let the M6 history and replay views show a code node correctly.
 
-## 10. Relation to other gaps
+## 11. Relation to other gaps
 
 - N2 deterministic dispatch must land first. A code node needs no model turn, so it belongs in the same deterministic lane as a check and a gate.
 - N5 effect nodes use a code node with a capability grant for one external surface. The sandbox and an idempotency key give the execution mechanism only. An external effect still needs durable `requested`, `observed`, and `indeterminate` states and a reconciliation step after a restart. Do not treat a code node as sufficient for a merge, a deployment, or a pull-request creation.

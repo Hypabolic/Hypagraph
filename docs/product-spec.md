@@ -71,7 +71,15 @@ Each Hypagoal owns one workflow. A future goal family composes separate workflow
 
 A node is a bounded work contract containing intent, acceptance criteria, scope, required evidence, consumed and produced facts, runtime state, and attempt history.
 
-Implemented node kinds are task, check, and gate. Approval and delegated execution remain planned.
+Implemented node kinds are task, check, and gate.
+
+Accepted and planned node kinds are:
+
+- `interaction`, which performs a bounded presentation action, asks a declared question, and publishes typed facts from a typed answer. See M6.1.
+- `code`, which runs one definition-time program in a sandbox and publishes typed facts. See M6.2.
+- `effect`, which changes external state through explicit requested, observed, and indeterminate states with restart reconciliation. See M6.3.
+
+Delegated execution through an executor adapter remains planned. See M7.
 
 A future child goal can be bound to an active task. The task waits for a validated child result. A check or gate cannot create a child goal.
 
@@ -339,8 +347,7 @@ M5B Slices 1 through 8 are complete in PRs #62, #65, #67, #69, #71, #73, #75, an
 11. M8 worktree integration and bounded concurrent scheduling.
 12. M8.1 dynamic fan-out regions.
 13. M9 ACP and named direct agent adapters.
-14. M10 external triggers and continuous operation.
-15. Hardened v1.0 execution kernel.
+14. Hardened v1.0 execution kernel.
 
 The detailed M7 and M8 architecture is in `docs/goal-family-and-concurrent-execution-plan.md` and `docs/delegation-and-visualisation.md`.
 
