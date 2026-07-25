@@ -15,48 +15,9 @@ on:
       - "**"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-scheduler-assertion:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m6a-slice-2-direct-gates'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/m6a-slice-2-direct-gates
-          fetch-depth: 0
-      - name: Align dogfood with scheduler invariant
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("tests/m5b-v0-6-release-dogfood.test.ts")
-          lines = path.read_text().splitlines(keepends=True)
-          start_line = '    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);\n'
-          end_line = '    const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);\n'
-          if start_line not in lines:
-              raise SystemExit(0)
-          if lines.count(start_line) != 1 or lines.count(end_line) != 1:
-              raise SystemExit("The scheduler assertion block is not unique.")
-          start = lines.index(start_line)
-          end = lines.index(end_line) + 1
-          replacement = '''    const domainEvents = value.entries.flatMap((entry) => entry.data?.events ?? []);\n    const schedulerSelections = domainEvents.filter((event: any) =>\n      event.type === "hypagraph.goal.continuation-requested" || event.type === "hypagraph.action.selected");\n    expect(state.goal.schedulerOrdinal).toBe(schedulerSelections.length);\n    expect(state.goal.continuationOrdinal).toBe(schedulerSelections.length);\n\n    const actionSelections = domainEvents\n      .filter((event: any) => event.type === "hypagraph.action.selected")\n      .map((event: any) => event.data.dispatch);\n    expect(actionSelections).toContainEqual(expect.objectContaining({\n      lane: "deterministic",\n      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),\n    }));\n\n    const eventTypes = domainEvents.map((event: any) => event.type);\n'''.splitlines(keepends=True)
-          lines[start:end] = replacement
-          path.write_text(''.join(lines))
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/m5b-v0-6-release-dogfood.test.ts
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "Assert the durable scheduler selection count"
-          git push origin HEAD:agent/m6a-slice-2-direct-gates
-
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
