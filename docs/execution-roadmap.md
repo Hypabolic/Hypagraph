@@ -106,6 +106,32 @@ An executor returns a structured result. The controller validates the result bef
 
 A child Hypagoal does not own a competing controller.
 
+#### Planner output is a work product, not graph authority
+
+Keep these two capabilities separate:
+
+| Capability | Authority | Mechanism |
+| --- | --- | --- |
+| Planner output changes work products. | Node output. | A node publishes facts, writes a plan artifact, and submits evidence. The graph topology and the contracts do not change. |
+| Controller revision changes the executable graph. | Controller only. | A revision can add, remove, or alter nodes, dependencies, contracts, scopes, and loop structure. |
+
+A node must not gain graph-mutation authority because its output is called a plan. A planner node produces a plan artifact and typed facts. It does not re-author the graph.
+
+Repeated planning work is an ordinary bounded iteration region:
+
+```text
+planner --> reviewer --> gate
+   ^                      |
+   |                      |
+   +------- feedback ------+
+```
+
+The planner updates a plan artifact or publishes revised facts on each iteration. The topology and the contracts stay unchanged. This is available in v0.6.
+
+Re-planning which changes the graph itself is a workflow revision. Today only the single bounded non-weakening automatic revision path provides it, and only for a classified blocker.
+
+Do not describe the loop mechanism as arbitrary graph re-authoring. They are materially different capabilities.
+
 ### 3.4 Keep completion derived
 
 Workflow state determines workflow-local goal completion, failure, blockage, and cancellation.
@@ -790,7 +816,20 @@ Let one declared region expand into a number of branches which the runtime deriv
 
 A fixed set of branches does not need this milestone. An author can declare three reviewers as three nodes, and M8 executes them concurrently.
 
-This milestone is needed only when the branch count is a runtime value, for example one branch for each changed package, or one branch for each item in a queue.
+Configurable is not the same as derived. A user or an authoring model can choose the branch count before execution starts, for example "create five reviewer nodes". The authoring turn then produces a static canonical graph with five declared nodes. That is a fixed count, and it needs M7 and M8 only.
+
+| Case | Example | Milestones |
+| --- | --- | --- |
+| Fixed at definition time | A security reviewer, an architecture reviewer, and a correctness reviewer. Five reviewer nodes which the authoring turn creates. | M7 and M8 |
+| Derived during execution | One reviewer for each changed package. One reviewer for each discovered subsystem. One branch for each item which a query returns. A count which comes from a typed runtime fact. | M7, M8, and M8.1 |
+
+This milestone is needed only for the second case, because the runtime must canonically expand a collection into branch identities, attempts, evidence, and a fan-in policy.
+
+### Default
+
+Treat a branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection.
+
+This default keeps M8.1 off the critical path of an ordinary reviewer panel. It preserves the capability for genuinely data-driven expansion later.
 
 Confirm that a workflow needs a derived count before you plan work here.
 
@@ -940,6 +979,6 @@ Hypagraph can release version 1.0 when:
 2. Implement M6A Slice 1 and Slice 2. These give a directly dispatched gate and a directly dispatched check.
 3. State in the product surface that consumed turns count model turns only.
 4. Complete M6A before M6B, so that the history views render the final event model.
-5. Confirm whether reference workflow B needs a fixed or a derived reviewer count. This decides whether M8.1 is on the critical path.
+5. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
 6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
 7. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.

@@ -85,6 +85,8 @@ A response option and bounded free text are sufficient for approve, reject, and 
 
 The feedback artifact is bounded and stored by identity in the existing artifact store. The next semantic task receives it through its explicit context projection, which satisfies design rule 3.7. A model reads the artifact. A gate does not.
 
+A feedback artifact changes work products only. It does not grant graph authority. A task which reads annotations can update a plan artifact and publish revised facts. It cannot add, remove, or alter nodes, dependencies, contracts, scopes, or loop structure. Roadmap design rule 3.3 keeps that authority in the controller, and only the bounded revision path can use it.
+
 Free text remains evidence only, exactly as before.
 
 ### 3.5 Use the existing durable order

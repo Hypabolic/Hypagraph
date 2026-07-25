@@ -76,10 +76,11 @@ The two ends need external authority. Waiting for external state is already part
 | Diagram element | Status | Evidence or gap |
 | --- | --- | --- |
 | Task to Planner | Available | The bundled skill and `hypagoal_start` compile prose into one canonical graph in one turn. |
-| Plan Reviewer and plan feedback | Partial | The topology is available now. A planner, a reviewer, and a feedback edge are an ordinary bounded iteration region with a typed success condition. What is missing is isolated executor identity and session affinity, so the planner and the reviewer cannot be separate durable agents. A re-plan which rewrites the graph itself is a different thing, and only the one bounded revision provides it. |
+| Plan Reviewer and plan feedback, over a stable graph | Available | A planner, a reviewer, a gate, and a feedback edge are an ordinary bounded iteration region. The planner updates a plan artifact or publishes revised facts on each iteration. The topology and the contracts do not change. What is missing is isolated executor identity and session affinity, so the planner and the reviewer cannot yet be separate durable agents. That is M7. |
+| Re-planning which changes the graph itself | Absent, except for one bounded path | A change to nodes, dependencies, contracts, scopes, or loop structure is a workflow revision, not planner output. Only the single bounded non-weakening automatic revision provides it, and only for a classified blocker. Roadmap design rule 3.3 keeps this authority in the controller. A planner node does not gain graph-mutation authority because its output is called a plan. |
 | Worker as a resident agent | Absent | A node cannot declare an executor, an agent identity, or a session lifetime. |
 | Fan-out to Reviewer 1 to N at the same time | Absent today, planned as M8 | `enumerateRootWorkActions` returns an empty list when more than one node is active. The controller queues one continuation. Execution is strictly sequential. This is a deliberate M5B constraint, not an architectural limit. M8 plans bounded concurrent scheduling with an initial default of two isolated attempts. M8 depends on the M7 executor abstraction. |
-| A runtime-derived number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6. A fixed set of reviewers does not need N6. Only a count which the runtime derives needs it. |
+| A runtime-derived number of reviewers | Absent, and not planned | A definition is static. There is no map region over a runtime collection. M7, M8, and M9 do not add one. This is gap N6, which the roadmap plans as M8.1. Configurable is not derived: an authoring turn which creates five reviewer nodes still produces a static graph, and it needs M7 and M8 only. Only a count which comes from a typed runtime fact needs N6. |
 | Resident agent against ephemeral worker | Absent | The model has no node lifetime concept. |
 | Synthesise | Available | `requires` gives structural fan-in. |
 | Pass decision | Available | A gate evaluates a typed condition over published facts. |
@@ -91,7 +92,18 @@ Result: every structural element of workflow B except fan-out is available or cl
 
 Separate the two fan-out gaps. Concurrent execution of independent nodes which the definition already declares is planned as M8. It blocks workflow B today, but the roadmap answers it.
 
-A runtime-derived number of branches is not planned. It is gap N6. Workflow B needs N6 only when the reviewer count is a runtime value. When the author declares a fixed set of reviewers, M7 and M8 are sufficient. The diagram uses `N`, which does not state which case applies. Confirm the intended case before you plan N6.
+A runtime-derived number of branches is not planned. It is gap N6.
+
+Configurable is not the same as derived. A user or an authoring model can choose the reviewer count before execution. The authoring turn then produces a static canonical graph, and M7 with M8 is sufficient.
+
+| Case | Example | Milestones |
+| --- | --- | --- |
+| Fixed at definition time | A security reviewer, an architecture reviewer, and a correctness reviewer. Five reviewer nodes which the authoring turn creates. | M7 and M8 |
+| Derived during execution | One reviewer for each changed package. One branch for each item which a query returns. | M7, M8, and N6 |
+
+The diagram uses `N`. That notation does not prove runtime derivation. The default interpretation is a fixed authored reviewer panel, which a user or an authoring model can configure before the workflow starts.
+
+Treat a branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default, N6 is not on the critical path of workflow B.
 
 The final user-facing output node is the third gap.
 
@@ -264,16 +276,9 @@ Not yet planned:
 
 ## 9. Distance to each reference workflow
 
-Workflow B without the human parts needs M7 and M8 when the reviewer set is fixed and declared in the graph.
+Workflow B without the human parts needs M7 and M8. The default interpretation of the diagram is a fixed authored reviewer panel, so N6 is not on its critical path.
 
-It needs M7, M8, and N6 only when the reviewer count is derived from a runtime fact.
-
-| Reviewer count | Milestones |
-| --- | --- |
-| Fixed, declared in the graph | M7 and M8 |
-| Derived from a runtime fact | M7, M8, and N6 |
-
-The supplied diagram uses `N`. That notation does not prove that the count is derived at run time. Confirm the intended case before you plan N6.
+Workflow B needs N6 only when a use case explicitly requires the runtime to derive the reviewer count from a collection.
 
 Workflow B in full also needs N1 for plan approval and a user-facing output node.
 
