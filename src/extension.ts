@@ -158,7 +158,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   let staleContinuationTurn = false;
   let continuationToolsBeforeDelivery: string[] | undefined;
   let revisionProposalHandled = false;
-  const graphPane = new GraphPaneController();
+  const graphPane = new GraphPaneController(() => events);
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
 
