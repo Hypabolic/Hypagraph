@@ -1,6 +1,8 @@
 # M6A deterministic dispatch lane vertical-slice plan
 
-- Status: active
+- Status: complete
+- Completed: 2026-07-25
+- Dogfood evidence: `docs/m6a-dogfood.md`
 - Milestone: M6A
 - Release marker: v0.7
 - Prerequisite: v0.6
@@ -240,6 +242,28 @@ Scope:
 2. Record the model-turn count before and after M6A.
 3. Record evidence in `docs/m6a-dogfood.md`.
 4. Update the README status list and the changelog.
+
+## 6.1 Recorded slice outcomes
+
+| Slice | Result | Evidence |
+| --- | --- | --- |
+| 1 | Generic dispatch model and the model lane | `tests/m6a-action-dispatch.test.ts`, `tests/m6a-canonical-action-dispatch.test.ts` |
+| 2 | Direct gate evaluation | `tests/m6a-direct-gate-dispatch.test.ts` |
+| 3 | Direct check execution | `tests/m6a-direct-check-dispatch.test.ts` |
+| 4 | Accounting, budgets, and surfaces | `tests/m6a-turn-accounting.test.ts` |
+| 5 | Reload, restore, and replay | `tests/m6a-restore-replay.test.ts` |
+| 6 | Dogfood and release | `tests/m6a-dogfood.test.ts`, `docs/m6a-dogfood.md` |
+
+Two decisions were recorded during implementation.
+
+1. A turn-budget stop ends automatic continuation in every lane. The reducer
+   records the budget stop when it accounts the delivered model turn, so a
+   deterministic remainder does not run after the stop. Section 5.7 states this
+   rule in the product surface.
+2. A deterministic dispatch has no delivered model turn to close it. A host which
+   stops between the dispatched event and the terminal event leaves a pending
+   dispatch, and a pending dispatch blocks every later selection. Restore records
+   one interrupted action event for a pending non-model dispatch.
 
 ## 7. Acceptance criteria
 

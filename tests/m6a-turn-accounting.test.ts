@@ -8,6 +8,7 @@ import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
 import { projectHypagoalSurface, renderHypagoalStatus, TURN_ACCOUNTING_NOTE } from "../src/ui/hypagoal-surface.js";
 import { renderWorkflow } from "../src/ui/format.js";
 import type { HypagraphState } from "../src/domain/model.js";
+import { selectGoalContinuation } from "../src/domain/goal-continuation.js";
 
 interface ToolDefinition {
   name: string;
@@ -185,7 +186,87 @@ const start = async (value: ReturnType<typeof harness>, budget?: { maximumTurns?
     value.ctx,
   );
 
+/** A graph with no task node. Only the loop iteration limit can stop it. */
+const deterministicOnlyDefinition = () => ({
+  title: "Deterministic iteration region",
+  goal: "Stop a graph which has no task node",
+  nodes: [
+    {
+      id: "probe",
+      title: "Probe the repository",
+      kind: "check",
+      requires: ["assess"],
+      acceptance: [],
+      produces: [{ name: "probe.passed", type: "boolean", required: true }],
+      check: {
+        kind: "command",
+        command: process.execPath,
+        arguments: ["-e", ""],
+        timeoutMs: 30_000,
+        publish: [{ source: "passed", fact: "probe.passed" }],
+      },
+    },
+    {
+      id: "assess",
+      title: "Assess the probe",
+      kind: "check",
+      requires: ["probe"],
+      acceptance: [],
+      produces: [{ name: "assess.passed", type: "boolean", required: true }],
+      check: {
+        kind: "command",
+        command: process.execPath,
+        arguments: ["-e", "process.exit(1)"],
+        timeoutMs: 30_000,
+        publish: [{ source: "passed", fact: "assess.passed" }],
+      },
+    },
+  ],
+  loops: [{
+    id: "watch",
+    nodes: ["probe", "assess"],
+    entry: "probe",
+    evaluateAfter: "assess",
+    feedbackEdges: [{ from: "assess", to: "probe" }],
+    successWhen: {
+      kind: "compare",
+      left: { kind: "fact", name: "assess.passed" },
+      operator: "eq",
+      right: { kind: "literal", value: true },
+    },
+    maxIterations: 2,
+    failurePolicy: "record-and-continue",
+  }],
+  policy: { mode: "guided", requireEvidence: false },
+});
+
 describe("M6A Slice 4 turn accounting and budgets", () => {
+  it("stops a graph which has no task node at the loop iteration limit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hypagraph-m6a-bound-"));
+    roots.push(root);
+    const value = harness(root);
+    await value.tools.get("hypagoal_start")!.execute(
+      "create-root",
+      { objective, definition: deterministicOnlyDefinition() },
+      undefined,
+      undefined,
+      value.ctx,
+    );
+    await agentEnd(value);
+
+    const state = latestState(value) as HypagraphState;
+    expect(prompts(value)).toEqual([]);
+    expect(state.goal?.budget.consumedTurns).toBe(0);
+    expect(state.runtime.loops.watch).toMatchObject({
+      status: "failed",
+      currentIteration: 2,
+      exitReason: "max_iterations",
+    });
+    expect(state.goal?.schedulerOrdinal).toBe(4);
+    expect(["completed", "failed", "blocked"]).toContain(state.phase);
+    expect(selectGoalContinuation(state).kind.startsWith("stop-")).toBe(true);
+  }, 30_000);
+
   it("charges one model turn and completes the deterministic remainder", async () => {
     const root = await mkdtemp(join(tmpdir(), "hypagraph-m6a-accounting-"));
     roots.push(root);
