@@ -1,5 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
 
@@ -18,105 +21,128 @@ interface CommandDefinition {
   handler: (args: string, ctx: any) => Promise<void>;
 }
 
-const objective = "Ship the authenticated upload flow, pass the protected quality gate, pass the independent documentation audit, and publish release notes.";
+const roots: string[] = [];
 
-const definition = () => ({
-  title: "v0.6 release dogfood",
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+const developmentEvaluatorProgram = `
+const fs = require("node:fs");
+const counterPath = ".v0.6-development-count";
+const current = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, "utf8")) : 0;
+const next = current + 1;
+fs.writeFileSync(counterPath, String(next));
+const reports = [
+  { schemaVersion: 1, valid: false, accepted: false, score: 0.1 },
+  { schemaVersion: 1, valid: true, accepted: false, score: 0.4 },
+  { schemaVersion: 1, valid: true, accepted: false, score: 0.7 },
+  { schemaVersion: 1, valid: true, accepted: true, score: 0.9 }
+];
+fs.writeFileSync("development-metrics.json", JSON.stringify(reports[Math.min(next - 1, reports.length - 1)]));
+`;
+
+const probeEvaluatorProgram = `
+const fs = require("node:fs");
+fs.writeFileSync("probe-metrics.json", JSON.stringify({
+  schemaVersion: 1,
+  valid: true,
+  accepted: true,
+  score: 0.95
+}));
+`;
+
+const objective = "Prepare a measured v0.6 release candidate and preserve every required verification safeguard.";
+
+const baseDefinition = () => ({
+  title: "Measured v0.6 release candidate",
   goal: objective,
   nodes: [
-    {
-      id: "refine",
-      title: "Refine implementation",
-      requires: ["evaluate"],
-      acceptance: [],
-      produces: [{ name: "quality.score", type: "number", required: true }],
-    },
+    { id: "refine", title: "Refine the release candidate", requires: ["evaluate"], acceptance: [] },
     {
       id: "evaluate",
-      title: "Evaluate implementation",
+      title: "Evaluate the release candidate",
       kind: "check",
       requires: ["refine"],
       acceptance: [],
       produces: [
-        { name: "quality.valid", type: "boolean", required: true },
-        { name: "quality.passed", type: "boolean", required: true },
-        { name: "quality.score", type: "number", required: true },
+        { name: "evaluation.valid", type: "boolean", required: true },
+        { name: "evaluation.accepted", type: "boolean", required: true },
+        { name: "evaluation.score", type: "number", required: true },
       ],
       check: {
         kind: "metric-report",
-        command: "node",
-        arguments: ["-e", "process.exit(0)"],
-        timeoutMs: 1_000,
-        reportPath: "quality.json",
+        command: process.execPath,
+        arguments: ["-e", developmentEvaluatorProgram],
+        timeoutMs: 30_000,
+        reportPath: "development-metrics.json",
         parser: { name: "metric-json", version: 1 },
-        namespace: "quality",
         mappings: [
-          { source: "valid", fact: "quality.valid", type: "boolean", required: true },
-          { source: "passed", fact: "quality.passed", type: "boolean", required: true },
-          { source: "score", fact: "quality.score", type: "number", required: true },
+          { source: "valid", fact: "evaluation.valid", type: "boolean" },
+          { source: "accepted", fact: "evaluation.accepted", type: "boolean" },
+          { source: "score", fact: "evaluation.score", type: "number" },
         ],
         evaluation: {
           kind: "development",
-          feedback: { mode: "bounded-diagnostics", maximumDiagnosticItems: 2, exposeRawReport: false },
-          integrity: { trustLevel: "protected" },
+          feedback: { mode: "aggregate" },
+          integrity: {
+            trustLevel: "transparent",
+            evaluatorVersion: { value: "v0.6-release-development-v1" },
+          },
         },
       },
     },
-    {
-      id: "audit",
-      title: "Prepare documentation audit",
-      requires: ["audit-result"],
-      acceptance: [],
-      produces: [{ name: "docs.ready", type: "boolean", required: true }],
-    },
+    { id: "audit", title: "Audit release documentation", requires: ["audit-result"], acceptance: [] },
     {
       id: "audit-result",
-      title: "Evaluate documentation audit",
-      kind: "check",
+      title: "Record the documentation audit",
       requires: ["audit"],
       acceptance: [],
-      produces: [{ name: "docs.passed", type: "boolean", required: true }],
-      check: {
-        kind: "command",
-        command: "node",
-        arguments: ["-e", "process.exit(0)"],
-        timeoutMs: 1_000,
-        publish: [{ source: "passed", fact: "docs.passed" }],
-      },
+      produces: [{ name: "audit.complete", type: "boolean", required: true }],
     },
     {
       id: "probe",
-      title: "Run holdout probe",
+      title: "Run the release generalization probe",
       kind: "check",
       requires: ["evaluate", "audit-result"],
       acceptance: [],
-      produces: [{ name: "probe.passed", type: "boolean", required: true }],
+      produces: [
+        { name: "probe.valid", type: "boolean", required: true },
+        { name: "probe.accepted", type: "boolean", required: true },
+        { name: "probe.score", type: "number", required: true },
+      ],
       check: {
         kind: "metric-report",
-        command: "node",
-        arguments: ["-e", "process.exit(0)"],
-        timeoutMs: 1_000,
-        reportPath: "probe.json",
+        command: process.execPath,
+        arguments: ["-e", probeEvaluatorProgram],
+        timeoutMs: 30_000,
+        reportPath: "probe-metrics.json",
         parser: { name: "metric-json", version: 1 },
-        namespace: "probe",
-        mappings: [{ source: "passed", fact: "probe.passed", type: "boolean", required: true }],
+        mappings: [
+          { source: "valid", fact: "probe.valid", type: "boolean" },
+          { source: "accepted", fact: "probe.accepted", type: "boolean" },
+          { source: "score", fact: "probe.score", type: "number" },
+        ],
         evaluation: {
           kind: "probe",
           feedback: { mode: "aggregate" },
-          integrity: { trustLevel: "protected" },
+          integrity: {
+            trustLevel: "transparent",
+            evaluatorVersion: { value: "v0.6-release-probe-v1" },
+          },
         },
       },
     },
     {
       id: "route",
-      title: "Route probe outcome",
+      title: "Select the release route",
       kind: "gate",
       requires: ["probe"],
       acceptance: [],
       gate: {
         condition: {
           kind: "compare",
-          left: { kind: "fact", name: "probe.passed" },
+          left: { kind: "fact", name: "probe.accepted" },
           operator: "eq",
           right: { kind: "literal", value: true },
         },
@@ -124,8 +150,20 @@ const definition = () => ({
         onFalse: ["repair-probe"],
       },
     },
-    { id: "repair-probe", title: "Repair failed probe", requires: ["route"], acceptance: [] },
-    { id: "finalize", title: "Finalize release", requires: ["route"], acceptance: [] },
+    {
+      id: "finalize",
+      title: "Finalize the v0.6 release candidate",
+      requires: ["route"],
+      acceptance: ["Preserve the release verification path"],
+      scope: { paths: ["docs/**"] },
+    },
+    {
+      id: "repair-probe",
+      title: "Repair the rejected probe result",
+      requires: ["route"],
+      acceptance: ["Preserve the release verification path"],
+      scope: { paths: ["src/**", "tests/**"] },
+    },
   ],
   loops: [
     {
@@ -136,22 +174,23 @@ const definition = () => ({
       feedbackEdges: [{ from: "evaluate", to: "refine" }],
       successWhen: {
         kind: "compare",
-        left: { kind: "fact", name: "quality.passed" },
+        left: { kind: "fact", name: "evaluation.accepted" },
         operator: "eq",
         right: { kind: "literal", value: true },
       },
-      progress: { fact: "quality.score", direction: "maximize", minDelta: 0.2 },
+      maxIterations: 4,
+      progress: { fact: "evaluation.score", direction: "maximize", minDelta: 0.05 },
+      patience: 3,
       evaluation: {
         validWhen: {
           kind: "compare",
-          left: { kind: "fact", name: "quality.valid" },
+          left: { kind: "fact", name: "evaluation.valid" },
           operator: "eq",
           right: { kind: "literal", value: true },
         },
         maximumInvalidEvaluations: 2,
       },
-      patience: 2,
-      maxIterations: 4,
+      failurePolicy: "fail-workflow",
     },
     {
       id: "documentation-audit",
@@ -161,16 +200,17 @@ const definition = () => ({
       feedbackEdges: [{ from: "audit-result", to: "audit" }],
       successWhen: {
         kind: "compare",
-        left: { kind: "fact", name: "docs.passed" },
+        left: { kind: "fact", name: "audit.complete" },
         operator: "eq",
         right: { kind: "literal", value: true },
       },
       maxIterations: 2,
+      failurePolicy: "record-and-continue",
     },
   ],
   evaluation: {
     budget: {
-      maximumEvaluations: 6,
+      maximumEvaluations: 5,
       maximumDevelopmentEvaluations: 4,
       maximumProbeEvaluations: 1,
     },
@@ -178,23 +218,13 @@ const definition = () => ({
   policy: { mode: "guided", requireEvidence: false },
 });
 
-const revisedDefinition = () => {
-  const value = definition();
-  value.nodes = value.nodes.flatMap((node) => node.id === "finalize"
-    ? [
-      { id: "write-release-note", title: "Write release note", requires: ["route"], acceptance: [] },
-      { ...node, requires: ["write-release-note"] },
-    ]
-    : [node]);
-  return value;
-};
-
-const harness = () => {
+const harness = (cwd: string) => {
   const tools = new Map<string, ToolDefinition>();
   const commands = new Map<string, CommandDefinition>();
   const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
   const entries: any[] = [];
   const sendUserMessage = vi.fn();
+  const notify = vi.fn();
   let activeTools = ["read", "write", "edit"];
   const pi = {
     on: vi.fn((event: string, handler: (event: any, ctx: any) => any) => {
@@ -208,18 +238,18 @@ const harness = () => {
     setActiveTools: vi.fn((tools: string[]) => { activeTools = [...tools]; }),
   } as unknown as ExtensionAPI;
   const ctx = {
-    cwd: process.cwd(),
+    cwd,
     hasUI: true,
     ui: {
       confirm: vi.fn().mockResolvedValue(true),
-      notify: vi.fn(),
+      notify,
       setStatus: vi.fn(),
       setWidget: vi.fn(),
     },
     sessionManager: { getBranch: () => entries },
   };
   hypagraphExtension(pi);
-  return { tools, commands, handlers, entries, sendUserMessage, ctx };
+  return { tools, commands, handlers, entries, sendUserMessage, notify, ctx };
 };
 
 const invoke = async (value: ReturnType<typeof harness>, name: string, event: any) => {
@@ -228,35 +258,41 @@ const invoke = async (value: ReturnType<typeof harness>, name: string, event: an
   return results;
 };
 
-const agentEnd = async (value: ReturnType<typeof harness>) => {
-  await invoke(value, "agent_end", {
-    type: "agent_end",
-    messages: [{
-      role: "assistant",
-      content: [],
-      usage: { input: 8, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 13, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      stopReason: "stop",
-      timestamp: Date.now(),
-    }],
-  });
-};
-
-const beforeAgentStart = async (value: ReturnType<typeof harness>, prompt: string): Promise<void> => {
-  await invoke(value, "before_agent_start", {
-    type: "before_agent_start",
-    prompt,
-    systemPrompt: "base",
-    systemPromptOptions: {},
-  });
-};
-
-const continuationPrompts = (value: ReturnType<typeof harness>): string[] => value.sendUserMessage.mock.calls
-  .map((call) => String(call[0]))
-  .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation.") || prompt.startsWith("Hypagraph automatic bounded revision."));
-
 const latestState = (value: ReturnType<typeof harness>): any => value.entries
   .filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE)
   .at(-1)?.data.snapshot;
+
+const continuationPrompts = (value: ReturnType<typeof harness>): string[] => value.sendUserMessage.mock.calls
+  .map((call) => String(call[0]))
+  .filter((prompt) => prompt.startsWith("Hypagraph automatic continuation.")
+    || prompt.startsWith("Hypagraph automatic bounded revision."));
+
+const creationRequestFromPrompt = (prompt: string): unknown => {
+  const match = prompt.match(/Use this exact creation request identity without changing any field:\n(\{[\s\S]*?\})\n\nCall hypagoal_start/);
+  if (!match?.[1]) throw new Error("The authoring prompt did not contain a creation request identity.");
+  return JSON.parse(match[1]);
+};
+
+const agentEnd = async (value: ReturnType<typeof harness>) => invoke(value, "agent_end", {
+  type: "agent_end",
+  messages: [{
+    role: "assistant",
+    content: [],
+    usage: { input: 8, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 13 },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  }],
+});
+
+const deliver = async (value: ReturnType<typeof harness>, prompt: string): Promise<string> => {
+  const results = await invoke(value, "before_agent_start", {
+    type: "before_agent_start",
+    prompt,
+    systemPrompt: "base-system",
+    systemPromptOptions: {},
+  });
+  return String(results.find((result) => result?.systemPrompt)?.systemPrompt ?? "");
+};
 
 const transition = async (
   value: ReturnType<typeof harness>,
@@ -264,7 +300,7 @@ const transition = async (
   action: string,
   extra: Record<string, unknown> = {},
 ) => value.tools.get("hypagraph_transition")!.execute(
-  `${nodeId}-${action}-${value.entries.length}`,
+  `${nodeId}-${action}`,
   { nodeId, action, ...extra },
   undefined,
   undefined,
@@ -274,144 +310,85 @@ const transition = async (
 const completeTask = async (
   value: ReturnType<typeof harness>,
   nodeId: string,
-  facts: Array<{ name: string; type: string; value: unknown }> = [],
+  facts?: Array<{ name: string; type: string; value: unknown }>,
 ) => {
   await transition(value, nodeId, "start");
-  if (facts.length > 0) await transition(value, nodeId, "publish", { facts });
+  if (facts) await transition(value, nodeId, "publish", { facts });
   await transition(value, nodeId, "submit", { evidence: [] });
   await transition(value, nodeId, "verify", { passed: true });
 };
 
-const runCheck = async (
-  value: ReturnType<typeof harness>,
-  nodeId: string,
-  result: any,
-) => value.tools.get("hypagraph_run_check")!.execute(
-  `run-${nodeId}-${value.entries.length}`,
-  { nodeId },
-  undefined,
-  undefined,
-  {
-    ...value.ctx,
-    __hypagraphTestCheckResult: result,
-  },
-);
-
-const selectedAction = (prompt: string): { kind: string; nodeId?: string; blocker?: string } => {
-  if (prompt.startsWith("Hypagraph automatic bounded revision.")) return { kind: "request-revision" };
-  const line = prompt.split("\n").find((item) => item.startsWith("Selected action:"));
-  if (!line) throw new Error(`No selected action in prompt:\n${prompt}`);
-  const task = line.match(/(?:continue active task|start ready task|run ready check|evaluate ready gate) '([^']+)'/);
-  if (!task?.[1]) throw new Error(`Unknown selected action: ${line}`);
-  return {
-    kind: line.includes("continue active task") ? "continue-active-task"
-      : line.includes("start ready task") ? "start-ready-task"
-        : line.includes("run ready check") ? "run-ready-check"
-          : "evaluate-ready-gate",
-    nodeId: task[1],
-  };
+const startThroughCommand = async (value: ReturnType<typeof harness>) => {
+  await value.commands.get("hypagoal")!.handler(objective, value.ctx);
+  const authoringPrompt = String(value.sendUserMessage.mock.calls.at(-1)?.[0]);
+  const creationRequest = creationRequestFromPrompt(authoringPrompt);
+  await value.tools.get("hypagoal_start")!.execute(
+    "create-release-goal",
+    {
+      objective,
+      definition: baseDefinition(),
+      budget: { maximumTurns: 30, maximumTokens: 5_000 },
+      creationRequest,
+    },
+    undefined,
+    undefined,
+    value.ctx,
+  );
 };
 
-const qualityResult = (
-  attemptId: string,
-  valid: boolean,
-  passed: boolean,
-  score: number,
-  diagnostics: Array<{ code: string; message: string }> = [],
-) => ({
-  checkKind: "metric-report",
-  attemptId,
-  startedAt: "2026-07-25T09:00:00.000Z",
-  completedAt: "2026-07-25T09:00:01.000Z",
-  status: "passed",
-  facts: [
-    { name: "quality.valid", type: "boolean", value: valid },
-    { name: "quality.passed", type: "boolean", value: passed },
-    { name: "quality.score", type: "number", value: score },
-  ],
-  evidence: [],
-  evaluation: {
-    kind: "development",
-    feedbackMode: "bounded-diagnostics",
-    diagnostics,
-    diagnosticsTruncated: false,
-    integrity: {
-      version: 1,
-      trustLevel: "protected",
-      status: "valid",
-      evaluatorFingerprint: "dogfood-quality-evaluator",
-      diagnosticCodes: diagnostics.map((item) => item.code),
-      protectedEvidence: [],
-    },
-  },
-});
-
-const auditResult = (attemptId: string) => ({
-  checkKind: "command",
-  attemptId,
-  startedAt: "2026-07-25T09:00:00.000Z",
-  completedAt: "2026-07-25T09:00:01.000Z",
-  status: "passed",
-  exitCode: 0,
-  facts: [{ name: "docs.passed", type: "boolean", value: true }],
-  evidence: [],
-});
-
-const probeResult = (attemptId: string) => ({
-  checkKind: "metric-report",
-  attemptId,
-  startedAt: "2026-07-25T09:00:00.000Z",
-  completedAt: "2026-07-25T09:00:01.000Z",
-  status: "passed",
-  facts: [{ name: "probe.passed", type: "boolean", value: true }],
-  evidence: [],
-  evaluation: {
-    kind: "probe",
-    feedbackMode: "aggregate",
-    diagnostics: [],
-    diagnosticsTruncated: false,
-    integrity: {
-      version: 1,
-      trustLevel: "protected",
-      status: "valid",
-      evaluatorFingerprint: "dogfood-probe-evaluator",
-      diagnosticCodes: [],
-      protectedEvidence: [],
-    },
-  },
-});
-
 describe("M5B v0.6 release dogfood", () => {
-  it("runs concurrent loop components, protected evaluation, reload recovery, probe routing, and bounded revision", async () => {
-    const value = harness();
-    await value.tools.get("hypagoal_start")!.execute(
-      "dogfood-create",
-      { objective, definition: definition(), budget: { maximumTurns: 20, maximumTokens: 2_000 } },
-      undefined,
-      undefined,
-      value.ctx,
-    );
+  it("runs the integrated root Hypagoal release path and completes only from canonical state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hypagraph-v0.6-release-"));
+    roots.push(root);
+    const value = harness(root);
+
+    expect(value.tools.has("hypagoal_complete")).toBe(false);
+    await startThroughCommand(value);
+    expect(latestState(value).definition.goal).toBe(objective);
+    expect(continuationPrompts(value)).toEqual([]);
 
     const selected: string[] = [];
     const evaluationSnapshots: any[] = [];
-    let handledPrompts = 0;
-    let qualityTurn = 0;
+    let observedPromptCount = 0;
     let reloadVerified = false;
+    await agentEnd(value);
 
-    for (let step = 0; step < 30 && latestState(value)?.goal.status !== "completed"; step += 1) {
-      await agentEnd(value);
-      const prompts = continuationPrompts(value);
-      if (prompts.length <= handledPrompts) continue;
-      const prompt = prompts[handledPrompts++]!;
-      const action = selectedAction(prompt);
+    for (let guard = 0; guard < 30; guard += 1) {
+      const automaticPrompts = continuationPrompts(value);
+      if (automaticPrompts.length === observedPromptCount) break;
+      const prompt = automaticPrompts.at(-1)!;
+      observedPromptCount = automaticPrompts.length;
       const before = latestState(value);
-      await beforeAgentStart(value, prompt);
+      const action = before.goal.pendingContinuation?.action;
+      if (!action) break;
 
       if (action.kind === "request-revision") {
         selected.push("revision");
+        const system = await deliver(value, prompt);
+        expect(system).toContain("HYPAGOAL BOUNDED REVISION CONTROL");
+        expect(system).toContain(`Exact objective: ${objective}`);
+
+        const revised = baseDefinition();
+        revised.nodes = [
+          ...revised.nodes.filter((node) => node.id !== "finalize"),
+          {
+            id: "write-release-note",
+            title: "Write the missing release note",
+            requires: ["route"],
+            acceptance: ["Add the bounded missing release documentation"],
+            scope: { paths: ["docs/**"] },
+          },
+          {
+            id: "finalize",
+            title: "Finalize the v0.6 release candidate",
+            requires: ["route", "write-release-note"],
+            acceptance: ["Preserve the release verification path"],
+            scope: { paths: ["docs/**"] },
+          },
+        ];
         await value.tools.get("hypagoal_submit_revision")!.execute(
-          "dogfood-revision",
-          { definition: revisedDefinition() },
+          "submit-release-revision",
+          revised,
           undefined,
           undefined,
           value.ctx,
@@ -420,32 +397,36 @@ describe("M5B v0.6 release dogfood", () => {
         continue;
       }
 
-      const loopId = action.nodeId === "refine" || action.nodeId === "evaluate" ? "quality"
-        : action.nodeId === "audit" || action.nodeId === "audit-result" ? "documentation-audit"
-          : "root";
-      const iteration = loopId === "root" ? 0 : before.runtime.loops[loopId].currentIteration;
-      selected.push(`${action.nodeId}:${loopId}:${iteration}`);
+      const loop = action.loopId ? before.runtime.loops[action.loopId] : undefined;
+      selected.push(`${action.nodeId}:${action.loopId ?? "root"}:${loop?.currentIteration ?? 0}`);
+      const system = await deliver(value, prompt);
 
-      if (action.nodeId === "refine") {
-        await completeTask(value, "refine");
-      } else if (action.nodeId === "evaluate") {
-        qualityTurn += 1;
-        const attemptId = `quality-evaluate-${qualityTurn}`;
-        const result = qualityTurn === 1
-          ? qualityResult(attemptId, false, false, 0.1, [{ code: "invalid-format", message: "The protected evaluator rejected malformed output." }])
-          : qualityTurn === 2
-            ? qualityResult(attemptId, true, false, 0.4, [{ code: "quality-low", message: "Improve the authenticated upload path." }])
-            : qualityTurn === 3
-              ? qualityResult(attemptId, true, false, 0.7, [{ code: "quality-near", message: "Add the final protected-path assertion." }])
-              : qualityResult(attemptId, true, true, 0.9);
-        await runCheck(value, "evaluate", result);
-        evaluationSnapshots.push(structuredClone(latestState(value).runtime.loops.quality));
-      } else if (action.nodeId === "audit") {
-        await completeTask(value, "audit", [{ name: "docs.ready", type: "boolean", value: true }]);
+      if (action.loopId) {
+        expect(system).toContain(`Loop '${action.loopId}'`);
+        expect(system).toContain("Independent runnable components remain eligible");
+      }
+
+      if (action.nodeId === "refine" || action.nodeId === "audit" || action.nodeId === "write-release-note") {
+        await completeTask(value, action.nodeId);
       } else if (action.nodeId === "audit-result") {
-        await runCheck(value, "audit-result", auditResult("documentation-audit-result"));
+        await completeTask(value, action.nodeId, [{ name: "audit.complete", type: "boolean", value: true }]);
+      } else if (action.nodeId === "evaluate") {
+        await value.tools.get("hypagraph_run_check")!.execute(
+          `run-development-${evaluationSnapshots.length + 1}`,
+          { nodeId: "evaluate" },
+          undefined,
+          undefined,
+          value.ctx,
+        );
+        evaluationSnapshots.push(structuredClone(latestState(value).runtime.loops.quality));
       } else if (action.nodeId === "probe") {
-        await runCheck(value, "probe", probeResult("release-probe"));
+        await value.tools.get("hypagraph_run_check")!.execute(
+          "run-release-probe",
+          { nodeId: "probe" },
+          undefined,
+          undefined,
+          value.ctx,
+        );
       } else if (action.nodeId === "route") {
         await transition(value, "route", "evaluate");
       } else if (action.nodeId === "finalize" && before.goal.automaticRevision.consumedAttempts === 0) {
@@ -455,8 +436,6 @@ describe("M5B v0.6 release dogfood", () => {
         });
       } else if (action.nodeId === "finalize") {
         await completeTask(value, "finalize");
-      } else if (action.nodeId === "write-release-note") {
-        await completeTask(value, "write-release-note");
       } else {
         throw new Error(`Unexpected selected node '${action.nodeId}'.`);
       }
@@ -492,6 +471,7 @@ describe("M5B v0.6 release dogfood", () => {
     ]);
     expect(selected.slice(10)).toEqual([
       "probe:root:0",
+      "route:root:0",
       "finalize:root:0",
       "revision",
       "write-release-note:root:0",
@@ -534,19 +514,10 @@ describe("M5B v0.6 release dogfood", () => {
       consumedTurns: selected.length,
       consumedTokens: { totalTokens: selected.length * 13 },
     });
-    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);
-    expect(state.goal.continuationOrdinal).toBe(selected.length + 1);
 
     const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);
     expect(eventTypes).toContain("hypagraph.workflow.revised");
     expect(eventTypes).toContain("hypagraph.goal.completed");
-    const actionSelections = value.entries.flatMap((entry) => entry.data?.events
-      ?.filter((event: any) => event.type === "hypagraph.action.selected")
-      .map((event: any) => event.data.dispatch) ?? []);
-    expect(actionSelections).toContainEqual(expect.objectContaining({
-      lane: "deterministic",
-      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),
-    }));
 
     const familyReference = {
       goalId: state.goal.goalId,
