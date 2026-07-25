@@ -1,4 +1,17 @@
-import type { EvaluationKind, EvaluatorTrustLevel } from "./model.js";
+import type { CheckDefinition, EvaluationKind, EvaluatorTrustLevel } from "./model.js";
+
+/**
+ * Report whether a check hides its evaluator detail.
+ *
+ * A protected evaluator must not expose its command, report path, raw report,
+ * standard output, standard error, or failure reason. Each presentation surface
+ * uses this rule, including the live check output and the M6B history views.
+ */
+export function protectsEvaluatorOutput(definition: CheckDefinition | undefined): boolean {
+  return definition?.kind === "metric-report"
+    && definition.evaluation !== undefined
+    && definition.evaluation.feedback.exposeRawReport !== true;
+}
 
 export type EvaluationResultClaim =
   | "development-score"

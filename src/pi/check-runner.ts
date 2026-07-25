@@ -5,6 +5,7 @@ import { evaluateCheckStart } from "../domain/check-policy.js";
 import {
   evaluationResultClaim,
   evaluationResultClaimLabel,
+  protectsEvaluatorOutput,
   shortEvaluatorFingerprint,
 } from "../domain/evaluation-presentation.js";
 import type { WorkflowEventStore } from "../persistence/event-store.js";
@@ -66,9 +67,7 @@ export async function runPiCheck(input: PiCheckRunInput): Promise<AutomaticCheck
 }
 
 const formatValue = (value: unknown): string => Array.isArray(value) ? value.join(", ") : String(value);
-export const protectsEvaluatorOutput = (definition: CheckDefinition | undefined): boolean => definition?.kind === "metric-report"
-  && definition.evaluation !== undefined
-  && definition.evaluation.feedback.exposeRawReport !== true;
+export { protectsEvaluatorOutput };
 
 export const formatPiCheckCommand = (definition: CheckDefinition): string => protectsEvaluatorOutput(definition)
   ? "protected evaluator command"
