@@ -124,7 +124,24 @@ A declarative allowlist is a Hypagraph addition. The pattern source applies appr
 7. Route a program which the runtime discovers later through `hypagraph_revise` or the bounded-revision path.
 8. Treat the capability allowlist as a safeguard for the non-weakening revision rules. A revision must not widen it.
 
-## 8. Implementation slices
+## 8. Authoring rules which hold the node-body placement
+
+The decision in section 1 is a boundary, not only a position. Without an authoring rule the boundary moves. An author can write a larger program at each revision until the graph becomes decorative and the control flow is again invisible.
+
+Apply these rules when a workflow declares a code node:
+
+1. Prefer graph structure over program size. If work can be two nodes and one gate, do not make it one program with an `if` statement.
+2. Keep a branch in the graph when the branch changes what runs next. A condition inside a program may select a value. It must not select downstream work.
+3. Keep repetition in a loop region when each pass needs an attempt, evidence, a check, or an evaluation. Use a program loop only for bounded deterministic data work inside one node.
+4. Use parallel calls inside a program only for deterministic input and output. Use graph fan-out when each branch needs its own attempt, evidence, retry, or visibility.
+5. Keep one result contract for each code node. A program which returns a large object with many unrelated facts is usually more than one node.
+6. Do not put semantic work in a program. A program cannot reason. Model work belongs in a task node.
+
+Add a definition-time advisory when a program exceeds a declared size, or when it declares many produced facts. Report the advisory through the existing authoring advisory surface. Do not reject the definition. The advisory identifies a probable modelling error, not an invalid graph.
+
+Add these rules to the bundled skill when the slices in section 9 start.
+
+## 9. Implementation slices
 
 1. Add the `code` node kind, the definition schema, and structural validation.
 2. Add the `CodeExecutor` seam and one in-memory test executor.
@@ -139,7 +156,7 @@ A declarative allowlist is a Hypagraph addition. The pattern source applies appr
 
 Use new event types which mirror the check events. Do not reuse the check event types. Separate types let the M6 history and replay views show a code node correctly.
 
-## 9. Relation to other gaps
+## 10. Relation to other gaps
 
 - N2 deterministic dispatch must land first. A code node needs no model turn, so it belongs in the same deterministic lane as a check and a gate.
 - N5 effect nodes become a code node with an idempotency key and a capability grant for one external surface.
