@@ -31,6 +31,8 @@ export interface TimelineEntry {
   attemptId?: string;
   loopId?: string;
   dispatch?: TimelineDispatch;
+  /** The entry starts a new workflow revision. */
+  revisionBoundary?: boolean;
   /** The entry hides protected evaluator detail. The runtime withheld the data; it did not lose it. */
   redacted: boolean;
 }
@@ -281,6 +283,7 @@ export function projectEventTimeline(events: readonly DomainEvent[]): TimelineEn
       ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }),
       ...(event.loopId === undefined ? {} : { loopId: event.loopId }),
       ...(dispatchId && dispatchLane ? { dispatch: { dispatchId, lane: dispatchLane } } : {}),
+      ...(event.type === "hypagraph.workflow.revised" ? { revisionBoundary: true } : {}),
       redacted,
     });
   }

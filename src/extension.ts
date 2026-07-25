@@ -59,6 +59,7 @@ import {
   renderExplanation,
   renderReplayAtSequence,
 } from "./ui/history-surface.js";
+import { renderRevisionHistory } from "./history/revisions.js";
 
 export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
 
@@ -1257,8 +1258,9 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         return error instanceof Error ? error.message : String(error);
       }
     }
+    if (first === "revisions") return renderRevisionHistory(events, state);
     if (first !== undefined && !isTimelineLane(first)) {
-      return `Usage: /hypagraph history [<sequence> | <lane>] where a lane is workflow, goal, dispatch, node, check, evaluation, fact, route, loop, or unknown.`;
+      return "Usage: /hypagraph history [<sequence> | revisions | <lane>] where a lane is workflow, goal, dispatch, node, check, evaluation, fact, route, loop, or unknown.";
     }
     return renderEventTimeline(events, first === undefined ? {} : { lane: first });
   };
