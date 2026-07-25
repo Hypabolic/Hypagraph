@@ -15,52 +15,9 @@ on:
       - "**"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-dogfood-delta:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/m6a-slice-2-direct-gates'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/m6a-slice-2-direct-gates
-          fetch-depth: 0
-      - name: Apply exact dogfood delta
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f .agent/m6a-dogfood-delta.patch ]; then
-            exit 0
-          fi
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("tests/m5b-v0-6-release-dogfood.test.ts")
-          lines = path.read_text().splitlines(keepends=True)
-
-          route_line = '      "route:root:0",\n'
-          if lines.count(route_line) != 1:
-              raise SystemExit(f"Expected one model-lane route line, found {lines.count(route_line)}.")
-          lines.remove(route_line)
-
-          event_line = '    const eventTypes = value.entries.flatMap((entry) => entry.data?.events?.map((event: any) => event.type) ?? []);\n'
-          if lines.count(event_line) != 1:
-              raise SystemExit(f"Expected one eventTypes insertion point, found {lines.count(event_line)}.")
-          index = lines.index(event_line)
-          insertion = '''    expect(state.goal.schedulerOrdinal).toBe(selected.length + 1);\n    expect(state.goal.continuationOrdinal).toBe(selected.length + 1);\n\n    const actionSelections = value.entries.flatMap((entry) =>\n      entry.data?.events\n        ?.filter((event: any) => event.type === "hypagraph.action.selected")\n        .map((event: any) => event.data.dispatch) ?? []);\n    expect(actionSelections).toContainEqual(expect.objectContaining({\n      lane: "deterministic",\n      action: expect.objectContaining({ kind: "evaluate-ready-gate", nodeId: "route" }),\n    }));\n\n'''.splitlines(keepends=True)
-          lines[index:index] = insertion
-          path.write_text(''.join(lines))
-          PY
-          rm .agent/m6a-dogfood-delta.patch
-          rmdir .agent 2>/dev/null || true
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Update release dogfood for deterministic gates"
-          git push origin HEAD:agent/m6a-slice-2-direct-gates
-
   check:
     name: ${{ matrix.os }} · Node.js ${{ matrix.node-version }}
     runs-on: ${{ matrix.os }}
