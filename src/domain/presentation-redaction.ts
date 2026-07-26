@@ -89,8 +89,24 @@ const collectSecrets = (
   return secrets;
 };
 
+/**
+ * Replace every secret inside one free-text value.
+ *
+ * A surface can compose a sentence around a canonical reason, such as the stop summary of
+ * the goal explanation. Exact-value replacement alone leaves that composed sentence
+ * readable, so the replacement also covers a secret which one larger value contains.
+ */
+const replaceSecrets = (value: string, secrets: ReadonlySet<string>): string => {
+  if (secrets.has(value)) return PROTECTED_DETAIL;
+  let next = value;
+  for (const secret of secrets) {
+    if (next.includes(secret)) next = next.split(secret).join(PROTECTED_DETAIL);
+  }
+  return next;
+};
+
 const deepRedact = (value: unknown, secrets: ReadonlySet<string>): unknown => {
-  if (typeof value === "string") return secrets.has(value) ? PROTECTED_DETAIL : value;
+  if (typeof value === "string") return replaceSecrets(value, secrets);
   if (Array.isArray(value)) return value.map((item) => deepRedact(item, secrets));
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -122,7 +138,7 @@ export function protectedTextPolicy(state: HypagraphState): ProtectedTextPolicy 
     text: (value: string, owner?: { nodeId?: string; loopId?: string }): string => {
       if (owner?.nodeId !== undefined && nodeIds.has(owner.nodeId)) return PROTECTED_DETAIL;
       if (owner?.loopId !== undefined && loopIds.has(owner.loopId)) return PROTECTED_DETAIL;
-      return secrets.has(value) ? PROTECTED_DETAIL : value;
+      return replaceSecrets(value, secrets);
     },
     redact: <T,>(value: T): T => secrets.size === 0 ? value : deepRedact(value, secrets) as T,
   };

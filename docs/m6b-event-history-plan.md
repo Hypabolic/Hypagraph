@@ -135,6 +135,16 @@ The policy keeps every structural field. It replaces free text only, and it repo
 did so. A surface which copies canonical state must publish a named field list, so a later
 canonical field does not reach a reader by default.
 
+The policy must not depend on a classification which the state can leave. A goal which
+stopped is no longer blocked, so `classifyGoalBlockage` reports `not-blocked` while
+`goal.stopReason` still holds the protected text. A rule which reads a per-call flag
+therefore misses that value. The policy reads the definition and the stored state instead,
+so it holds for every status.
+
+The replacement must also cover a secret which one larger value contains. A surface can
+compose a sentence around a canonical reason, such as the stop summary of the goal
+explanation. Exact-value replacement alone leaves that composed sentence readable.
+
 ### 5.5 Project an unknown event type
 
 M7 adds family and executor events. M8 adds workspace and integration events. A stored event with an unknown type must project to a generic timeline entry. It must not throw and must not stop the timeline.

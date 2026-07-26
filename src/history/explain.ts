@@ -5,6 +5,7 @@ import {
   redactProtectedReason,
   redactStopReason,
 } from "../domain/evaluation-presentation.js";
+import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-blockage.js";
 import { selectGoalContinuation } from "../domain/goal-continuation.js";
 import { ACTIVE_ROOT_STATUSES, rootWorkActionIsRunnable } from "../domain/goal-runnable.js";
@@ -148,7 +149,8 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
 
   const kind = nodeKind(node);
   const status = runtime.status;
-  const reason = ((): NotRunnableReason => {
+  const policy = protectedTextPolicy(state);
+  const canonicalReason = ((): NotRunnableReason => {
     if (status === "skipped") return { kind: "skipped-route", ...skippedBy(state, nodeId) };
     if (status === "stale") return { kind: "stale", revision: state.revision };
     if (status === "cancelled") return { kind: "terminal", status };
@@ -220,8 +222,12 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
     return { kind: "terminal", status };
   })();
 
-  const redacted = isProtectedEvaluatorNode(state.definition, nodeId)
-    && (reason.kind === "blocked" || reason.kind === "check-policy");
+  // The policy covers every free-text value which the node reason can repeat, such as the
+  // goal stop reason. A per-reason rule alone misses a value which the node does not own.
+  const reason = policy.redact(canonicalReason);
+  const redacted = (isProtectedEvaluatorNode(state.definition, nodeId)
+      && (reason.kind === "blocked" || reason.kind === "check-policy"))
+    || JSON.stringify(reason) !== JSON.stringify(canonicalReason);
   return { nodeId, status, kind, reason, summary: summarize(nodeId, reason), redacted };
 }
 
@@ -229,7 +235,10 @@ const decisionSummary = (
   state: HypagraphState,
   blockageRedacted: boolean,
 ): { decision: string; summary: string } => {
-  const decision = redactStopReason(selectGoalContinuation(state), blockageRedacted);
+  // The stop reason stays free text after the goal leaves the blocked classification, so
+  // the policy must cover it. The blockage flag alone reports false at that point.
+  const policy = protectedTextPolicy(state);
+  const decision = policy.redact(redactStopReason(selectGoalContinuation(state), blockageRedacted));
   switch (decision.kind) {
     case "continue-active-task":
     case "start-ready-task":

@@ -4,7 +4,9 @@ import type { CheckResult, HypagraphDefinition, HypagraphState } from "../src/do
 import { handleCommand } from "../src/domain/reducer.js";
 import { explainGoal, explainNode } from "../src/history/explain.js";
 import { PROTECTED_REASON } from "../src/domain/evaluation-presentation.js";
+import { PROTECTED_DETAIL } from "../src/domain/presentation-redaction.js";
 import { classifyGoalBlockage } from "../src/domain/goal-blockage.js";
+import { isDispatchableGoalContinuation, selectGoalContinuation } from "../src/domain/goal-continuation.js";
 import { renderExplanation } from "../src/ui/history-surface.js";
 import {
   projectGoalControlSurface,
@@ -16,7 +18,7 @@ import { projectModelVisibleWorkflowSummary } from "../src/pi/model-visible-stat
 import { projectGraphView } from "../src/graph/projection.js";
 import { replayToSequence } from "../src/history/replay.js";
 import { renderReplayAtSequence } from "../src/ui/history-surface.js";
-import { renderWorkflow } from "../src/ui/format.js";
+import { renderWorkflow, workflowSummary } from "../src/ui/format.js";
 
 const protectedSourceForReplay = (): HypagraphDefinition => ({
   title: "Protected evaluator replay",
@@ -707,5 +709,159 @@ describe("M6B goal control presentation projection", () => {
     expect(JSON.stringify(surface)).not.toContain("internal-case-7");
     expect(Object.keys(surface)).not.toContain("futureSecretField");
     expect(JSON.stringify(projectModelVisibleWorkflowSummary(mutated))).not.toContain("futureSecretField");
+  });
+});
+
+describe("M6B protected blocker in a recorded automatic revision", () => {
+  const SENTINEL = "holdout case 'internal-case-7' failed in protected/evaluate.json via --secret-suite";
+
+  const leak = (value: string) => {
+    expect(value).not.toContain("internal-case-7");
+    expect(value).not.toContain("--secret-suite");
+    expect(value).not.toContain("protected/evaluate.json");
+  };
+
+  const protectedRevisionSource = (): HypagraphDefinition => ({
+    title: "Protected evaluator revision",
+    goal: "Hide protected evaluator detail in a recorded revision attempt",
+    nodes: [
+      {
+        id: "evaluate",
+        title: "Evaluate quality",
+        kind: "check",
+        requires: [],
+        acceptance: ["Record the evaluation"],
+        produces: [{ name: "evaluate.score", type: "number", required: false }],
+        check: {
+          kind: "metric-report",
+          command: "protected-evaluator",
+          arguments: ["--secret-suite"],
+          timeoutMs: 30_000,
+          reportPath: "protected/evaluate.json",
+          parser: { name: "metric-json", version: 1 },
+          mappings: [{ source: "score", fact: "evaluate.score", type: "number", required: false }],
+          evaluation: { kind: "holdout", feedback: { mode: "aggregate" } },
+        },
+      },
+      { id: "publish", title: "Publish the result", requires: ["evaluate"], acceptance: ["Record the publication"] },
+    ],
+    loops: [],
+    policy: { mode: "strict", requireEvidence: true },
+  });
+
+  /** Block the protected evaluator, then store the durable automatic revision request. */
+  const requestedRevision = () => {
+    const created = create(protectedRevisionSource(), "protected-revision-workflow");
+    const blocked = apply(created.state, {
+      type: "block-node",
+      nodeId: "evaluate",
+      reason: SENTINEL,
+      blockerKind: "repository-work",
+      commandId: "block-evaluate",
+      at,
+    });
+
+    const selected = selectGoalContinuation(blocked);
+    if (!isDispatchableGoalContinuation(selected) || selected.kind !== "request-revision") {
+      throw new Error(`Unexpected decision: ${selected.kind}`);
+    }
+    const state = apply(blocked, {
+      type: "request-goal-continuation",
+      goalId: selected.goalId,
+      workflowId: selected.workflowId,
+      expectedRevision: selected.revision,
+      expectedSequence: selected.sequence,
+      expectedSnapshotHash: selected.snapshotHash,
+      expectedContinuationOrdinal: selected.continuationOrdinal,
+      sessionGeneration: 1,
+      branchGeneration: 2,
+      action: { kind: "request-revision", blocker: selected.blocker },
+      commandId: "revision-operation",
+      at,
+    });
+    return { created, state };
+  };
+
+  it("keeps the recorded revision blocker canonical, so the identity match is unchanged", () => {
+    const value = requestedRevision();
+    const lastAttempt = value.state.goal?.automaticRevision.lastAttempt;
+
+    // The reducer binds the bounded revision to the exact blocker reason. Canonical state
+    // must hold the unchanged text.
+    expect(lastAttempt).toMatchObject({ outcome: "pending", blocker: { id: "evaluate", reason: SENTINEL } });
+    expect(value.state.goal?.pendingContinuation?.action).toMatchObject({
+      kind: "request-revision",
+      blocker: { reason: SENTINEL },
+    });
+  });
+
+  it("replaces the recorded revision blocker in the model-visible summary", () => {
+    const value = requestedRevision();
+    const summary = projectModelVisibleWorkflowSummary(value.state) as {
+      goalControl?: {
+        automaticRevision: { lastAttempt?: { blocker?: { id: string; reason: string } } };
+        pendingContinuation?: { action: { blocker?: { reason: string } } };
+      };
+    };
+
+    const blocker = summary.goalControl?.automaticRevision.lastAttempt?.blocker;
+    expect(blocker?.reason).toBe(PROTECTED_DETAIL);
+    // The identity fields stay readable, so a reader still knows which node blocks the goal.
+    expect(blocker?.id).toBe("evaluate");
+    expect(summary.goalControl?.pendingContinuation?.action.blocker?.reason).toBe(PROTECTED_DETAIL);
+    leak(JSON.stringify(summary));
+  });
+
+  it("replaces the recorded revision blocker on every other reader surface", () => {
+    const value = requestedRevision();
+
+    leak(JSON.stringify(workflowSummary(value.state)));
+    leak(renderWorkflow(value.state));
+    leak(JSON.stringify(projectHypagoalSurface(value.state)));
+    leak(renderHypagoalStatus(value.state, 110));
+    leak(renderHypagoalLifecycleMessage(value.state));
+    leak(JSON.stringify(projectGraphView(value.state)));
+    leak(JSON.stringify(explainGoal(value.state)));
+    leak(renderExplanation(value.state));
+  });
+
+  it("replaces the recorded revision blocker after the proposal is rejected", () => {
+    const value = requestedRevision();
+    const pending = value.state.goal!.pendingContinuation!;
+    if (pending.action.kind !== "request-revision") throw new Error("Expected a revision action.");
+    const proposal = structuredClone(value.state.definition);
+    // A changed objective is rejected byte-for-byte, so the attempt records a failure reason.
+    proposal.goal += " ";
+
+    const rejected = apply(value.state, {
+      type: "apply-goal-revision",
+      goalId: value.state.goal!.goalId,
+      workflowId: value.state.workflowId,
+      expectedRevision: value.state.revision,
+      expectedSequence: value.state.sequence,
+      expectedSnapshotHash: value.state.snapshotHash,
+      revisionOperationId: pending.operationId,
+      continuationOperationId: pending.operationId,
+      continuationOrdinal: pending.ordinal,
+      requestSequence: pending.requestSequence,
+      sessionGeneration: pending.sessionGeneration,
+      branchGeneration: pending.branchGeneration,
+      blocker: pending.action.blocker,
+      definition: proposal,
+      commandId: "apply-revision",
+      at,
+    });
+
+    expect(rejected.goal?.automaticRevision.lastAttempt).toMatchObject({
+      outcome: "rejected",
+      outcomeCode: "automatic_revision_objective_changed",
+      blocker: { reason: SENTINEL },
+    });
+
+    leak(JSON.stringify(projectModelVisibleWorkflowSummary(rejected)));
+    leak(JSON.stringify(workflowSummary(rejected)));
+    leak(renderWorkflow(rejected));
+    leak(renderHypagoalStatus(rejected, 110));
+    leak(JSON.stringify(projectGraphView(rejected)));
   });
 });
