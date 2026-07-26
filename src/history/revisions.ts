@@ -1,4 +1,5 @@
 import type { DomainEvent, HypagraphState } from "../domain/model.js";
+import { applyEvent } from "../domain/projection.js";
 
 export interface RevisionSegment {
   revision: number;
@@ -65,25 +66,46 @@ export function projectStaleResults(
   state: HypagraphState,
   events: readonly DomainEvent[],
 ): StaleResult[] {
-  const invalidated = events
-    .filter((event) => event.type === "hypagraph.node.invalidated"
-      && event.revision === state.revision
-      && event.nodeId !== undefined)
-    .map((event) => event.nodeId!);
+  const invalidations = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== "hypagraph.node.invalidated") continue;
+    if (event.revision !== state.revision || event.nodeId === undefined) continue;
+    if (!invalidations.has(event.nodeId)) invalidations.set(event.nodeId, event.sequence);
+  }
+  if (invalidations.size === 0) return [];
+
+  // The discarded result belongs to the state before the invalidation. A node which runs
+  // again after the revision must not report its new attempt as the discarded one.
+  const beforeCache = new Map<number, HypagraphState>();
+  const stateBefore = (sequence: number): HypagraphState | undefined => {
+    const cached = beforeCache.get(sequence);
+    if (cached) return cached;
+    let replayed: HypagraphState | undefined;
+    for (const event of events) {
+      if (event.sequence >= sequence) break;
+      replayed = applyEvent(replayed, event);
+    }
+    if (replayed) beforeCache.set(sequence, replayed);
+    return replayed;
+  };
+
   const values: StaleResult[] = [];
-  for (const nodeId of [...new Set(invalidated)].sort()) {
+  for (const nodeId of [...invalidations.keys()].sort()) {
     const node = state.definition.nodes.find((item) => item.id === nodeId);
     const runtime = state.runtime.nodes[nodeId];
     if (!node || !runtime) continue;
-    const lastAttemptId = runtime.currentAttemptId;
-    const lastCheckStatus = lastAttemptId ? runtime.attempts[lastAttemptId]?.checkResult?.status : undefined;
+    const before = stateBefore(invalidations.get(nodeId)!)?.runtime.nodes[nodeId];
+    const lastAttemptId = before?.currentAttemptId;
+    const lastCheckStatus = lastAttemptId ? before?.attempts[lastAttemptId]?.checkResult?.status : undefined;
+    const attemptCount = before?.attemptCount ?? 0;
     values.push({
       nodeId,
       kind: node.kind ?? "task",
       revision: state.revision,
+      // The status is the status now. The attempt data is the data before the revision.
       status: runtime.status,
-      attemptCount: runtime.attemptCount,
-      discardedResult: runtime.attemptCount > 0,
+      attemptCount,
+      discardedResult: attemptCount > 0,
       ...(lastAttemptId === undefined ? {} : { lastAttemptId }),
       ...(lastCheckStatus === undefined ? {} : { lastCheckStatus }),
     });

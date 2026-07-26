@@ -7,11 +7,44 @@ import { PROTECTED_REASON } from "../src/domain/evaluation-presentation.js";
 import { classifyGoalBlockage } from "../src/domain/goal-blockage.js";
 import { renderExplanation } from "../src/ui/history-surface.js";
 import {
+  projectGoalControlSurface,
   projectHypagoalSurface,
   renderHypagoalLifecycleMessage,
   renderHypagoalStatus,
 } from "../src/ui/hypagoal-surface.js";
 import { projectModelVisibleWorkflowSummary } from "../src/pi/model-visible-state.js";
+import { projectGraphView } from "../src/graph/projection.js";
+import { replayToSequence } from "../src/history/replay.js";
+import { renderReplayAtSequence } from "../src/ui/history-surface.js";
+import { renderWorkflow } from "../src/ui/format.js";
+
+const protectedSourceForReplay = (): HypagraphDefinition => ({
+  title: "Protected evaluator replay",
+  goal: "Hide protected evaluator detail in replay",
+  nodes: [
+    {
+      id: "evaluate",
+      title: "Evaluate quality",
+      kind: "check",
+      requires: [],
+      acceptance: [],
+      produces: [{ name: "evaluate.score", type: "number", required: false }],
+      check: {
+        kind: "metric-report",
+        command: "protected-evaluator",
+        arguments: ["--secret-suite"],
+        timeoutMs: 30_000,
+        reportPath: "protected/evaluate.json",
+        parser: { name: "metric-json", version: 1 },
+        mappings: [{ source: "score", fact: "evaluate.score", type: "number", required: false }],
+        evaluation: { kind: "holdout", feedback: { mode: "aggregate" } },
+      },
+    },
+    { id: "publish", title: "Publish the result", requires: ["evaluate"], acceptance: [] },
+  ],
+  loops: [],
+  policy: { mode: "guided", requireEvidence: false },
+});
 
 const at = "2026-07-25T19:00:00.000Z";
 
@@ -514,5 +547,165 @@ describe("M6B protected evaluator redaction in explanations", () => {
       expect(value).not.toContain("protected/evaluate.json");
       expect(value).not.toContain("protected-stdout");
     }
+  });
+});
+
+describe("M6B pending check dependency explanation", () => {
+  it("reports the unsatisfied dependency of a pending check, not a check-policy code", () => {
+    const created = create();
+    // 'tests' requires 'plan', which has not run.
+    expect(created.state.runtime.nodes.tests?.status).toBe("pending");
+
+    const explanation = explainNode(created.state, "tests");
+    expect(explanation.reason).toEqual({
+      kind: "dependency",
+      blockedBy: [{ nodeId: "plan", status: "ready" }],
+    });
+    expect(explanation.summary).toBe("Node 'tests' waits for its dependencies: 'plan' is ready.");
+  });
+
+  it("still reports the check-policy code once the dependency is satisfied", () => {
+    const created = create();
+    let state = completeTask(created.state, "plan", "plan-1");
+    state = runCheck(state, "tests", "tests-1", "failed");
+
+    const explanation = explainNode(state, "tests");
+    expect(explanation.reason).toMatchObject({ kind: "check-policy", code: "check_retry_not_allowed" });
+  });
+
+  it("reports a ready check as runnable", () => {
+    const created = create();
+    const state = completeTask(created.state, "plan", "plan-1");
+    expect(state.runtime.nodes.tests?.status).toBe("ready");
+    expect(explainNode(state, "tests").reason).toEqual({ kind: "runnable", action: "run-ready-check" });
+  });
+});
+
+describe("M6B protected redaction through replay and the loop surface", () => {
+  const SENTINEL = "holdout case 'internal-case-7' failed in protected/evaluate.json via --secret-suite";
+
+  const leak = (value: string) => {
+    expect(value).not.toContain("internal-case-7");
+    expect(value).not.toContain("--secret-suite");
+    expect(value).not.toContain("protected/evaluate.json");
+  };
+
+  const protectedLoopSource = (): HypagraphDefinition => ({
+    title: "Protected loop blockage",
+    goal: "Hide protected loop detail",
+    nodes: [
+      { id: "refine", title: "Refine", requires: ["evaluate"], acceptance: [] },
+      {
+        id: "evaluate",
+        title: "Evaluate quality",
+        kind: "check",
+        requires: ["refine"],
+        acceptance: [],
+        produces: [{ name: "evaluate.accepted", type: "boolean", required: true }],
+        check: {
+          kind: "metric-report",
+          command: "protected-evaluator",
+          arguments: ["--secret-suite"],
+          timeoutMs: 30_000,
+          reportPath: "protected/evaluate.json",
+          parser: { name: "metric-json", version: 1 },
+          mappings: [{ source: "accepted", fact: "evaluate.accepted", type: "boolean", required: true }],
+          evaluation: { kind: "holdout", feedback: { mode: "aggregate" } },
+        },
+      },
+    ],
+    loops: [{
+      id: "quality",
+      nodes: ["refine", "evaluate"],
+      entry: "refine",
+      evaluateAfter: "evaluate",
+      feedbackEdges: [{ from: "evaluate", to: "refine" }],
+      successWhen: {
+        kind: "compare",
+        left: { kind: "fact", name: "evaluate.accepted" },
+        operator: "eq",
+        right: { kind: "literal", value: true },
+      },
+      maxIterations: 2,
+      failurePolicy: "block-dependants",
+    }],
+    policy: { mode: "guided", requireEvidence: false },
+  });
+
+  it("does not leak a protected blockage through a replayed sequence", () => {
+    const created = create(protectedSourceForReplay(), "replay-protected-workflow");
+    const events = [...created.events];
+    const blocked = handleCommand(created.state, {
+      type: "block-node",
+      nodeId: "evaluate",
+      reason: SENTINEL,
+      blockerKind: "repository-work",
+      commandId: "block-evaluate",
+      at,
+    });
+    if (!blocked.ok) throw new Error(JSON.stringify(blocked.diagnostics));
+    events.push(...blocked.events);
+
+    // The replay surface renders a historical state through the same live projection.
+    for (const event of events) {
+      const replay = replayToSequence(events, event.sequence);
+      leak(renderWorkflow(replay.state));
+      leak(JSON.stringify(projectGraphView(replay.state)));
+      leak(JSON.stringify(projectModelVisibleWorkflowSummary(replay.state)));
+    }
+    leak(renderReplayAtSequence(events, blocked.state, blocked.state.sequence));
+  });
+
+  it("does not leak a protected loop blocked reason through the model-visible summary", () => {
+    const created = create(protectedLoopSource(), "protected-loop-workflow");
+    const state = created.state;
+    // Inject the canonical loop blocker text which the block-dependants policy would store.
+    const mutated: HypagraphState = structuredClone(state);
+    mutated.runtime.loops.quality = {
+      ...mutated.runtime.loops.quality!,
+      status: "blocked",
+      blockedReason: SENTINEL,
+    };
+
+    leak(JSON.stringify(projectModelVisibleWorkflowSummary(mutated)));
+    leak(JSON.stringify(projectHypagoalSurface(mutated)));
+    leak(renderWorkflow(mutated));
+    leak(JSON.stringify(projectGraphView(mutated)));
+  });
+});
+
+describe("M6B goal control presentation projection", () => {
+  it("publishes a named field list, so a later canonical field does not leak by default", () => {
+    const created = create();
+    const surface = projectGoalControlSurface(created.state)!;
+
+    // Every published key is named by the projection. A new canonical field is absent
+    // until this list adds it.
+    expect(Object.keys(surface).sort()).toEqual([
+      "actionDispatch",
+      "automaticRevision",
+      "budget",
+      "continuationOrdinal",
+      "goalId",
+      "schedulerOrdinal",
+      "startedAt",
+      "status",
+      "updatedAt",
+      "workflowId",
+    ]);
+    expect(surface.goalId).toBe("explain-goal");
+    expect(surface.status).toBe("active");
+  });
+
+  it("does not publish an unknown canonical field", () => {
+    const created = create();
+    const mutated: HypagraphState = structuredClone(created.state);
+    // Simulate a canonical field which a later milestone adds.
+    (mutated.goal as unknown as Record<string, unknown>).futureSecretField = "internal-case-7";
+
+    const surface = projectGoalControlSurface(mutated)!;
+    expect(JSON.stringify(surface)).not.toContain("internal-case-7");
+    expect(Object.keys(surface)).not.toContain("futureSecretField");
+    expect(JSON.stringify(projectModelVisibleWorkflowSummary(mutated))).not.toContain("futureSecretField");
   });
 });

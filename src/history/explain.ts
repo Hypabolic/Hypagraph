@@ -9,7 +9,7 @@ import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-
 import { selectGoalContinuation } from "../domain/goal-continuation.js";
 import { ACTIVE_ROOT_STATUSES, rootWorkActionIsRunnable } from "../domain/goal-runnable.js";
 import type { GoalWorkContinuationAction, HypagraphState, NodeDefinition } from "../domain/model.js";
-import { dependenciesAreSatisfied, dependencyStatuses } from "../domain/readiness.js";
+import { dependenciesAreSatisfied, dependencyStatuses, feedbackEdgeKeys } from "../domain/readiness.js";
 
 export type NotRunnableReason =
   | { kind: "runnable"; action: GoalWorkContinuationAction["kind"] }
@@ -56,6 +56,19 @@ const skippedBy = (state: HypagraphState, nodeId: string): { gateNodeId?: string
     if (reachable.includes(nodeId)) return { gateNodeId, outcomeId: route.outcomeId };
   }
   return {};
+};
+
+const unsatisfiedDependencies = (
+  state: HypagraphState,
+  node: NodeDefinition,
+): Array<{ nodeId: string; status: string }> => {
+  if (dependenciesAreSatisfied(state, node.id)) return [];
+  const statuses = dependencyStatuses(state, node.id) ?? [];
+  const feedback = feedbackEdgeKeys(state);
+  const required = node.requires.filter((source) => !feedback.has(`${source}\u0000${node.id}`));
+  return required
+    .map((source, index) => ({ nodeId: source, status: statuses[index] ?? "missing" }))
+    .filter((item) => item.status !== "succeeded" && item.status !== "skipped");
 };
 
 const activeElsewhere = (state: HypagraphState, nodeId: string): string | undefined =>
@@ -167,20 +180,23 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
     const active = activeElsewhere(state, nodeId);
     if (active) return { kind: "active-elsewhere", nodeId: active };
 
+    // Structural gating comes first. Check retry eligibility is relevant only once the
+    // node is otherwise eligible, so a pending check reports its dependencies and not
+    // the check-policy code which describes a node that is simply not ready yet.
+    if (status !== "ready" && status !== "failed") {
+      const unsatisfied = unsatisfiedDependencies(state, node);
+      if (unsatisfied.length > 0) return { kind: "dependency", blockedBy: unsatisfied };
+      return { kind: "terminal", status };
+    }
+
     if (kind === "check" && node.check) {
+      const unsatisfied = unsatisfiedDependencies(state, node);
+      if (unsatisfied.length > 0) return { kind: "dependency", blockedBy: unsatisfied };
       const eligibility = evaluateCheckStart(runtime, node.check, `explain-${state.sequence}-${nodeId}`, state.updatedAt);
       if (!eligibility.ok) {
         return { kind: "check-policy", code: eligibility.diagnostic.code, message: eligibility.diagnostic.message };
       }
-    } else if (status !== "ready") {
-      if (!dependenciesAreSatisfied(state, nodeId)) {
-        const statuses = dependencyStatuses(state, nodeId) ?? [];
-        const required = node.requires.filter((_, index) => statuses[index] !== undefined);
-        const blockedBy = required
-          .map((required, index) => ({ nodeId: required, status: statuses[index] ?? "missing" }))
-          .filter((item) => item.status !== "succeeded" && item.status !== "skipped");
-        if (blockedBy.length > 0) return { kind: "dependency", blockedBy };
-      }
+    } else if (status === "failed") {
       return { kind: "terminal", status };
     }
 

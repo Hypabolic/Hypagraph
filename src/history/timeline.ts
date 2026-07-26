@@ -1,5 +1,6 @@
 import type { DispatchLane } from "../domain/action-dispatch.js";
 import { protectsEvaluatorOutput } from "../domain/evaluation-presentation.js";
+import { PROTECTED_DETAIL } from "../domain/presentation-redaction.js";
 import type { DomainEvent, HypagraphDefinition } from "../domain/model.js";
 
 export type TimelineLane =
@@ -88,6 +89,8 @@ interface SummaryContext {
   event: DomainEvent;
   redacted: boolean;
   dispatchLane: DispatchLane | undefined;
+  /** Replace one free-text value which belongs to, or repeats, protected evaluator detail. */
+  safe: (value: string) => string;
 }
 
 const checkSummary = ({ event, redacted }: SummaryContext): string | undefined => {
@@ -108,14 +111,14 @@ const checkSummary = ({ event, redacted }: SummaryContext): string | undefined =
   }
 };
 
-const nodeSummary = ({ event, redacted }: SummaryContext): string | undefined => {
+const nodeSummary = ({ event, redacted, safe }: SummaryContext): string | undefined => {
   const data = event.data;
   switch (event.type) {
     case "hypagraph.node.ready": return `Node '${event.nodeId}' became ready.`;
     case "hypagraph.node.skipped": return `Node '${event.nodeId}' was skipped.`;
     case "hypagraph.node.invalidated": return `Node '${event.nodeId}' became stale after a revision.`;
     case "hypagraph.node.blocked":
-      return `Node '${event.nodeId}' was blocked as ${String(data.blockerKind ?? "unknown")}: ${text(data.reason) ?? "no reason was given"}.`;
+      return `Node '${event.nodeId}' was blocked as ${String(data.blockerKind ?? "unknown")}: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.node.unblocked": return `Node '${event.nodeId}' was unblocked.`;
     case "hypagraph.attempt.started": return `Attempt ${event.attemptId} started on node '${event.nodeId}'.`;
     case "hypagraph.attempt.result-submitted":
@@ -150,17 +153,17 @@ const loopSummary = ({ event }: SummaryContext): string | undefined => {
   }
 };
 
-const goalSummary = ({ event }: SummaryContext): string | undefined => {
+const goalSummary = ({ event, safe }: SummaryContext): string | undefined => {
   const data = event.data;
   switch (event.type) {
     case "hypagraph.goal.started": return "The goal started.";
-    case "hypagraph.goal.paused": return `The goal paused through ${String(data.cause ?? "explicit")}: ${text(data.reason) ?? "no reason was given"}.`;
+    case "hypagraph.goal.paused": return `The goal paused through ${String(data.cause ?? "explicit")}: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.goal.resumed": return "The goal resumed.";
-    case "hypagraph.goal.blocked": return `The goal blocked: ${text(data.reason) ?? "no reason was given"}.`;
+    case "hypagraph.goal.blocked": return `The goal blocked: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.goal.completed": return "The goal completed.";
-    case "hypagraph.goal.failed": return `The goal failed: ${text(data.reason) ?? "no reason was given"}.`;
-    case "hypagraph.goal.cancelled": return `The goal was cancelled: ${text(data.reason) ?? "no reason was given"}.`;
-    case "hypagraph.goal.budget-limited": return `The goal stopped on its budget: ${text(data.reason) ?? "no reason was given"}.`;
+    case "hypagraph.goal.failed": return `The goal failed: ${safe(text(data.reason) ?? "no reason was given")}.`;
+    case "hypagraph.goal.cancelled": return `The goal was cancelled: ${safe(text(data.reason) ?? "no reason was given")}.`;
+    case "hypagraph.goal.budget-limited": return `The goal stopped on its budget: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.goal.revision-requested": return "The goal requested one bounded revision.";
     case "hypagraph.goal.revision-rejected": return `The bounded revision was rejected: ${String(data.outcomeCode ?? "unknown")}.`;
     case "hypagraph.goal.revision-abandoned": return `The bounded revision was abandoned: ${String(data.outcomeCode ?? "unknown")}.`;
@@ -169,7 +172,7 @@ const goalSummary = ({ event }: SummaryContext): string | undefined => {
   }
 };
 
-const dispatchSummary = ({ event, dispatchLane }: SummaryContext): string | undefined => {
+const dispatchSummary = ({ event, dispatchLane, safe }: SummaryContext): string | undefined => {
   const data = event.data;
   const lane = dispatchLane ?? "model";
   switch (event.type) {
@@ -180,13 +183,13 @@ const dispatchSummary = ({ event, dispatchLane }: SummaryContext): string | unde
     case "hypagraph.action.dispatched": return `The ${lane} lane dispatched the selected action.`;
     case "hypagraph.action.completed": return `The ${lane} lane completed the dispatched action.`;
     case "hypagraph.action.failed":
-      return `The ${lane} lane failed the dispatched action: ${text(data.reason) ?? "no reason was given"}.`;
+      return `The ${lane} lane failed the dispatched action: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.action.interrupted":
-      return `The ${lane} lane interrupted the dispatched action: ${text(data.reason) ?? "no reason was given"}.`;
+      return `The ${lane} lane interrupted the dispatched action: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.goal.continuation-requested":
       return `The model lane selected ${actionLabel(data.action)} at ordinal ${String(data.ordinal)}.`;
     case "hypagraph.goal.continuation-abandoned":
-      return `The model lane abandoned its action: ${text(data.reason) ?? "no reason was given"}.`;
+      return `The model lane abandoned its action: ${safe(text(data.reason) ?? "no reason was given")}.`;
     case "hypagraph.goal.turn-recorded": {
       const usage = data.usage as { totalTokens?: number } | undefined;
       return `The model lane charged one turn and ${String(usage?.totalTokens ?? 0)} tokens.`;
@@ -225,6 +228,13 @@ const summarize = (context: SummaryContext): string =>
   ?? dispatchSummary(context)
   ?? otherSummary(context);
 
+/** Report whether an event carries free text which repeats a protected secret. */
+const secretInSummary = (event: DomainEvent, secrets: ReadonlySet<string>): boolean => {
+  if (secrets.size === 0) return false;
+  const value = event.data.reason;
+  return typeof value === "string" && secrets.has(value);
+};
+
 const definitionOf = (event: DomainEvent): HypagraphDefinition | undefined => {
   if (event.type !== "hypagraph.workflow.defined" && event.type !== "hypagraph.workflow.revised") return undefined;
   const definition = event.data.definition;
@@ -250,6 +260,9 @@ const protectedNodeIds = (definition: HypagraphDefinition | undefined): Set<stri
 export function projectEventTimeline(events: readonly DomainEvent[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const dispatchLanes = new Map<string, DispatchLane>();
+  // Free text which a protected evaluator produced. A later goal or dispatch event can
+  // repeat it, and those events carry no node, so ownership alone cannot protect them.
+  const secrets = new Set<string>();
   let protectedNodes = new Set<string>();
 
   for (const event of events) {
@@ -271,6 +284,13 @@ export function projectEventTimeline(events: readonly DomainEvent[]): TimelineEn
       : MODEL_LANE_TYPES.has(event.type) ? "model" as const : undefined;
 
     const redacted = event.nodeId !== undefined && protectedNodes.has(event.nodeId);
+    if (redacted) {
+      const result = event.data.result as { error?: unknown; stdoutRef?: unknown; stderrRef?: unknown } | undefined;
+      for (const value of [event.data.reason, result?.error, result?.stdoutRef, result?.stderrRef]) {
+        if (typeof value === "string" && value.trim().length > 0) secrets.add(value);
+      }
+    }
+    const safe = (value: string): string => redacted || secrets.has(value) ? PROTECTED_DETAIL : value;
     entries.push({
       sequence: event.sequence,
       eventId: event.eventId,
@@ -278,13 +298,13 @@ export function projectEventTimeline(events: readonly DomainEvent[]): TimelineEn
       timestamp: event.timestamp,
       revision: event.revision,
       lane: laneOf(event.type),
-      summary: summarize({ event, redacted, dispatchLane }),
+      summary: summarize({ event, redacted, dispatchLane, safe }),
       ...(event.nodeId === undefined ? {} : { nodeId: event.nodeId }),
       ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }),
       ...(event.loopId === undefined ? {} : { loopId: event.loopId }),
       ...(dispatchId && dispatchLane ? { dispatch: { dispatchId, lane: dispatchLane } } : {}),
       ...(event.type === "hypagraph.workflow.revised" ? { revisionBoundary: true } : {}),
-      redacted,
+      redacted: redacted || secretInSummary(event, secrets),
     });
   }
 

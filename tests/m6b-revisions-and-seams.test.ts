@@ -159,8 +159,10 @@ describe("M6B Slice 6 revisions, stale results, and future seams", () => {
         revision: 2,
         status: "ready",
         attemptCount: 1,
-        // The invalidation clears the current-attempt pointer and keeps the attempt count.
         discardedResult: true,
+        // The attempt identity comes from the state before the invalidation, which is
+        // where the discarded result lives. The invalidation clears the live pointer.
+        lastAttemptId: "plan-1",
       },
     ]);
 
@@ -170,6 +172,59 @@ describe("M6B Slice 6 revisions, stale results, and future seams", () => {
     expect(invalidated.every((entry) => entry.revision === 2 && entry.lane === "node")).toBe(true);
     expect(invalidated.find((entry) => entry.nodeId === "plan")?.summary)
       .toBe("Node 'plan' became stale after a revision.");
+  });
+
+  it("does not claim a post-revision result was discarded", () => {
+    const created = create(definition(), "post-revision-result-workflow");
+    const events: DomainEvent[] = [...created.events];
+    // 'build' has no result before the revision, because 'plan' never ran.
+    let state = apply(created.state, events, {
+      type: "revise",
+      definition: (() => {
+        const changed = definition();
+        changed.nodes[1]!.acceptance = ["Record the revised acceptance"];
+        return changed;
+      })(),
+      commandId: "revise-build",
+      at,
+    });
+    expect(projectRevisionHistory(events).at(-1)?.invalidatedNodeIds).toContain("build");
+
+    // Run both nodes after the revision. The new results are valid, not discarded.
+    state = completeTask(state, events, "plan");
+    state = completeTask(state, events, "build");
+
+    const stale = projectStaleResults(state, events);
+    const build = stale.find((item) => item.nodeId === "build")!;
+    expect(build.status).toBe("succeeded");
+    expect(build.attemptCount).toBe(0);
+    expect(build.discardedResult).toBe(false);
+    expect(build.lastAttemptId).toBeUndefined();
+  });
+
+  it("reports the pre-revision attempt when an invalidated node runs again", () => {
+    const created = create(definition(), "rerun-after-revision-workflow");
+    const events: DomainEvent[] = [...created.events];
+    let state = completeTask(created.state, events, "plan");
+    expect(state.runtime.nodes.plan?.attemptCount).toBe(1);
+
+    const changed = definition();
+    changed.nodes[0]!.acceptance = ["Record the revised acceptance"];
+    state = apply(state, events, { type: "revise", definition: changed, commandId: "revise-plan", at });
+
+    // Run 'plan' again after the revision. Its second attempt is the live result.
+    state = apply(state, events, { type: "start-node", nodeId: "plan", attemptId: "plan-2", commandId: "start-plan-2", at });
+    state = apply(state, events, { type: "submit-result", nodeId: "plan", attemptId: "plan-2", evidence: [], commandId: "submit-plan-2", at });
+    state = apply(state, events, { type: "begin-verification", nodeId: "plan", attemptId: "plan-2", commandId: "begin-plan-2", at });
+    state = apply(state, events, { type: "complete-verification", nodeId: "plan", attemptId: "plan-2", passed: true, commandId: "verify-plan-2", at });
+
+    expect(state.runtime.nodes.plan?.currentAttemptId).toBe("plan-2");
+    const plan = projectStaleResults(state, events).find((item) => item.nodeId === "plan")!;
+    // The discarded result is the first attempt, not the attempt which ran afterwards.
+    expect(plan.lastAttemptId).toBe("plan-1");
+    expect(plan.attemptCount).toBe(1);
+    expect(plan.discardedResult).toBe(true);
+    expect(plan.status).toBe("succeeded");
   });
 
   it("reports an invalidated loop at its revision", () => {

@@ -116,6 +116,25 @@ A history view must apply the existing redaction. A protected evaluator command,
 
 The timeline entry must record `redacted` when it hides evaluator detail, so the user knows that the runtime withheld data and did not lose it.
 
+### 5.4.1 Use one presentation protection policy
+
+Canonical state keeps the exact free text which a protected evaluator produced, because
+`blockerIdentityMatches` binds the bounded automatic revision to it. A presentation surface
+must replace that text.
+
+`classifyGoalBlockage` copies a stored node blocker reason into the blocker identity, so the
+text travels far beyond the node. One policy therefore serves every surface:
+
+- the live status surface;
+- the model-visible workflow summary;
+- the graph model, which the live pane and the replay pane share;
+- the event timeline;
+- the node and goal explanations.
+
+The policy keeps every structural field. It replaces free text only, and it reports that it
+did so. A surface which copies canonical state must publish a named field list, so a later
+canonical field does not reach a reader by default.
+
 ### 5.5 Project an unknown event type
 
 M7 adds family and executor events. M8 adds workspace and integration events. A stored event with an unknown type must project to a generic timeline entry. It must not throw and must not stop the timeline.
@@ -278,6 +297,11 @@ Scope:
 
 Rule 5.7 holds. The schema version stays 6, and M6B adds no event type and no
 stored field.
+
+Review of PR #85 found one protected-evaluator leak in the explanation surface and, on a
+deeper pass, the same leak in three surfaces which are older than M6B. Section 5.4.1 gives
+the rule which now covers every surface. `src/domain/presentation-redaction.ts` holds the
+policy.
 
 One implementation decision was recorded during Slice 6. A revision returns an
 invalidated node to `ready` when its dependencies allow it, and keeps the node

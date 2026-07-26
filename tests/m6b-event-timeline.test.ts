@@ -439,3 +439,116 @@ describe("M6B Slice 1 event timeline projection", () => {
     expect(filterTimelineByLane(entries, "loop")).toEqual([]);
   });
 });
+
+describe("M6B timeline redaction of every free-text field", () => {
+  const SENTINEL = "holdout case 'internal-case-7' failed in protected/evaluate.json via --secret-suite";
+
+  const leak = (value: string) => {
+    expect(value).not.toContain("internal-case-7");
+    expect(value).not.toContain("--secret-suite");
+    expect(value).not.toContain("protected/evaluate.json");
+  };
+
+  it("redacts a protected node-blocked reason and the goal reason which repeats it", () => {
+    const created = create(protectedDefinition(), "timeline-blocked-workflow");
+    const blocked = handleCommand(created.state, {
+      type: "block-node",
+      nodeId: "evaluate",
+      reason: SENTINEL,
+      blockerKind: "repository-work",
+      commandId: "block-evaluate",
+      at,
+    });
+    if (!blocked.ok) throw new Error(JSON.stringify(blocked.diagnostics));
+
+    const events = [...created.events, ...blocked.events];
+    const entries = projectEventTimeline(events);
+    const rendered = entries.map((entry) => entry.summary).join("\n");
+    leak(rendered);
+
+    const nodeBlocked = entryFor(entries, "hypagraph.node.blocked");
+    expect(nodeBlocked.redacted).toBe(true);
+    expect(nodeBlocked.summary).toContain("The evaluator is protected.");
+
+    // A goal event carries no node, so it inherits protection from the repeated text.
+    const goalBlocked = entries.find((entry) => entry.type === "hypagraph.goal.blocked");
+    if (goalBlocked) {
+      expect(goalBlocked.summary).not.toContain("internal-case-7");
+      expect(goalBlocked.redacted).toBe(true);
+    }
+  });
+
+  it("redacts a protected failed and interrupted action reason", () => {
+    const created = create(protectedDefinition(), "timeline-action-workflow");
+    const base = created.events[0]!;
+    const dispatch = {
+      dispatchId: "protected-dispatch",
+      action: { kind: "run-ready-check", nodeId: "evaluate" },
+      lane: "deterministic",
+      selectedSequence: created.state.sequence,
+      selectedSnapshotHash: created.state.snapshotHash,
+      schedulerOrdinal: 1,
+    };
+    const actionEvents: DomainEvent[] = [
+      { type: "hypagraph.action.selected", data: { dispatch } },
+      { type: "hypagraph.action.dispatched", data: { dispatchId: "protected-dispatch" } },
+      { type: "hypagraph.action.failed", data: { dispatchId: "protected-dispatch", reason: SENTINEL } },
+      { type: "hypagraph.action.interrupted", data: { dispatchId: "protected-dispatch", reason: SENTINEL } },
+    ].map((item, index) => ({
+      ...base,
+      eventId: `action-${index}`,
+      sequence: created.state.sequence + index + 1,
+      nodeId: "evaluate",
+      type: item.type as DomainEvent["type"],
+      data: item.data,
+    }));
+
+    const entries = projectEventTimeline([...created.events, ...actionEvents]);
+    const rendered = entries.map((entry) => entry.summary).join("\n");
+    leak(rendered);
+
+    for (const type of ["hypagraph.action.failed", "hypagraph.action.interrupted"]) {
+      const entry = entryFor(entries, type);
+      expect(entry.redacted).toBe(true);
+      expect(entry.summary).toContain("The evaluator is protected.");
+      expect(entry.dispatch?.lane).toBe("deterministic");
+    }
+  });
+
+  it("keeps an unprotected action reason readable", () => {
+    const created = create();
+    const base = created.events[0]!;
+    const events: DomainEvent[] = [
+      {
+        ...base,
+        eventId: "unprotected-selected",
+        sequence: created.state.sequence + 1,
+        nodeId: "tests",
+        type: "hypagraph.action.selected" as DomainEvent["type"],
+        data: {
+          dispatch: {
+            dispatchId: "plain-dispatch",
+            action: { kind: "run-ready-check", nodeId: "tests" },
+            lane: "deterministic",
+            selectedSequence: created.state.sequence,
+            selectedSnapshotHash: created.state.snapshotHash,
+            schedulerOrdinal: 1,
+          },
+        },
+      },
+      {
+        ...base,
+        eventId: "unprotected-failed",
+        sequence: created.state.sequence + 2,
+        nodeId: "tests",
+        type: "hypagraph.action.failed" as DomainEvent["type"],
+        data: { dispatchId: "plain-dispatch", reason: "The command exited with code 2." },
+      },
+    ];
+
+    const entries = projectEventTimeline([...created.events, ...events]);
+    const failed = entryFor(entries, "hypagraph.action.failed");
+    expect(failed.redacted).toBe(false);
+    expect(failed.summary).toContain("The command exited with code 2.");
+  });
+});
