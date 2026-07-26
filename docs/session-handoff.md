@@ -104,7 +104,9 @@ Suggested pull request title:
 
 ### Next milestone: M6B event history, replay, and debugger UI
 
-M6B follows M6A. Do not start M6B first. M6A changes the dispatch event model, and M6B renders that model. The M6B slices are in `docs/execution-roadmap.md` section 8.
+M6B follows M6A. Do not start M6B first. M6A changes the dispatch event model, and M6B renders that model.
+
+`docs/execution-roadmap.md` section 8 gives the M6B objective and acceptance criteria. It does not give slices. The seven M6B slices are in `docs/m6b-event-history-plan.md`.
 
 ## 5. Release evidence
 

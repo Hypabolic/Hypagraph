@@ -1,5 +1,8 @@
 import type { DispatchLane } from "../domain/action-dispatch.js";
+import { redactStopReason } from "../domain/evaluation-presentation.js";
+import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 import { classifyGoalBlockage, type GoalBlockageDecision } from "../domain/goal-blockage.js";
+
 import { selectGoalContinuation, type GoalContinuationDecision } from "../domain/goal-continuation.js";
 import type { GoalContinuationAction, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
@@ -73,6 +76,8 @@ export interface HypagoalSurface {
   loops: LoopSurfaceSummary[];
   stopCode?: string;
   controls: string[];
+  /** The surface replaced protected evaluator detail with a stable public reason. */
+  blockageRedacted: boolean;
 }
 
 const ACTIVE_NODE_STATUSES = new Set(["starting", "running", "awaiting_evidence", "verifying"]);
@@ -169,9 +174,23 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
   if (!goal) return undefined;
   const activeNodeId = state.definition.nodes.find((node) => ACTIVE_NODE_STATUSES.has(state.runtime.nodes[node.id]?.status ?? ""))?.id;
   const ready = readyNodeIds(state);
-  const blockage = classifyGoalBlockage(state);
+  // The canonical blocker reason can repeat protected evaluator detail. The canonical
+  // identity keeps the exact text, because the automatic revision binds to it.
+  // One protection policy drives the live view, the replay view, and the model-visible view.
+  const policy = protectedTextPolicy(state);
+  const canonicalBlockage = classifyGoalBlockage(state);
+  // A blocker identifies a node or a loop. A loop which holds a protected evaluator
+  // carries the same protection.
+  const blockageRedacted = canonicalBlockage.kind !== "not-blocked"
+    && (policy.isProtectedNode(canonicalBlockage.blocker.id)
+      || policy.isProtectedLoop(canonicalBlockage.blocker.id));
+  // The blocker keeps every structural field. Only its free text is replaced.
+  const blockage = policy.redact(canonicalBlockage);
+  const redactReason = (value: string): string => policy.text(value);
   const pendingAction = goal.pendingContinuation?.action;
-  const next = pendingAction ? actionLabel(pendingAction) : decisionLabel(selectGoalContinuation(state));
+  const next = pendingAction
+    ? actionLabel(pendingAction)
+    : decisionLabel(policy.redact(redactStopReason(selectGoalContinuation(state), blockageRedacted)));
   const lastAttempt = goal.automaticRevision.lastAttempt;
   const loops = loopSurfaceSummaries(state);
   const code = stopCode(state, blockage, loops);
@@ -187,7 +206,7 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       id: goal.goalId,
       status: goal.status,
       ...(goal.pauseCause === undefined ? {} : { pauseCause: goal.pauseCause }),
-      ...(goal.stopReason === undefined ? {} : { stopReason: goal.stopReason }),
+      ...(goal.stopReason === undefined ? {} : { stopReason: redactReason(goal.stopReason) }),
     },
     action: {
       ...(activeNodeId === undefined ? {} : { activeNodeId }),
@@ -207,11 +226,12 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       pending: goal.pendingContinuation?.action.kind === "request-revision" || lastAttempt?.outcome === "pending",
       ...(lastAttempt?.outcome === undefined ? {} : { lastOutcome: lastAttempt.outcome }),
       ...(lastAttempt?.outcomeCode === undefined ? {} : { lastOutcomeCode: lastAttempt.outcomeCode }),
-      ...(lastAttempt?.reason === undefined ? {} : { lastReason: lastAttempt.reason }),
+      ...(lastAttempt?.reason === undefined ? {} : { lastReason: redactReason(lastAttempt.reason) }),
     },
-    loops,
+    loops: policy.redact(loops),
     ...(code === undefined ? {} : { stopCode: code }),
     controls: controls(state),
+    blockageRedacted,
   };
 }
 
@@ -322,4 +342,53 @@ export function renderHypagoalLifecycleMessage(state: HypagraphState): string {
   if (!surface) return "There is no active Hypagoal.";
   const stop = surface.stopCode ? ` Stop: ${surface.stopCode}${surface.goal.stopReason ? ` — ${surface.goal.stopReason}` : ""}.` : "";
   return `Hypagoal ${surface.goal.status}; workflow ${surface.workflow.phase}; next ${surface.action.next}; model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}; scheduled actions ${surface.dispatch.scheduledActions}; revision ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}.${stop}`;
+}
+
+/** The presentation view of goal control. Canonical runtime state is not a safe model. */
+export interface GoalControlSurface {
+  goalId: string;
+  workflowId: string;
+  status: NonNullable<HypagraphState["goal"]>["status"];
+  pauseCause?: NonNullable<HypagraphState["goal"]>["pauseCause"];
+  stopReason?: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  continuationOrdinal: number;
+  schedulerOrdinal?: number;
+  budget: NonNullable<HypagraphState["goal"]>["budget"];
+  automaticRevision: NonNullable<HypagraphState["goal"]>["automaticRevision"];
+  pendingContinuation?: NonNullable<HypagraphState["goal"]>["pendingContinuation"];
+  actionDispatch?: NonNullable<HypagraphState["goal"]>["actionDispatch"];
+}
+
+/**
+ * Project goal control for a reader.
+ *
+ * The projection names each published field, so a later canonical field does not reach a
+ * reader until this list adds it. The protection policy then replaces every protected
+ * free-text value inside the published fields.
+ */
+export function projectGoalControlSurface(state: HypagraphState): GoalControlSurface | undefined {
+  const goal = state.goal;
+  if (!goal) return undefined;
+  const policy = protectedTextPolicy(state);
+  return policy.redact({
+    goalId: goal.goalId,
+    workflowId: goal.workflowId,
+    status: goal.status,
+    ...(goal.pauseCause === undefined ? {} : { pauseCause: goal.pauseCause }),
+    ...(goal.stopReason === undefined ? {} : { stopReason: goal.stopReason }),
+    startedAt: goal.startedAt,
+    updatedAt: goal.updatedAt,
+    ...(goal.completedAt === undefined ? {} : { completedAt: goal.completedAt }),
+    continuationOrdinal: goal.continuationOrdinal,
+    ...(goal.schedulerOrdinal === undefined ? {} : { schedulerOrdinal: goal.schedulerOrdinal }),
+    budget: structuredClone(goal.budget),
+    automaticRevision: structuredClone(goal.automaticRevision),
+    ...(goal.pendingContinuation === undefined
+      ? {}
+      : { pendingContinuation: structuredClone(goal.pendingContinuation) }),
+    ...(goal.actionDispatch === undefined ? {} : { actionDispatch: structuredClone(goal.actionDispatch) }),
+  });
 }

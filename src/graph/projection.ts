@@ -10,6 +10,7 @@ import type {
   WorkflowPhase,
 } from "../domain/model.js";
 import { evaluationBudgetStatus } from "../domain/evaluation-policy.js";
+import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 import { classifyGoalBlockage } from "../domain/goal-blockage.js";
 
 export type GraphEdgeKind = "dependency" | "route" | "feedback";
@@ -375,7 +376,9 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
   const readyNodeIds = nodes.filter((node) => node.ready).map((node) => node.id);
   const activeNodeId = nodes.find((node) => node.active)?.id;
   const evaluationBudget = evaluationBudgetStatus(state);
-  const blockage = state.goal ? classifyGoalBlockage(state) : undefined;
+  // The graph model feeds the live pane and the replay pane. Both apply one policy.
+  const policy = protectedTextPolicy(state);
+  const blockage = state.goal ? policy.redact(classifyGoalBlockage(state)) : undefined;
   const goal = state.goal === undefined
     ? undefined
     : {
@@ -383,7 +386,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         goalId: state.goal.goalId,
         status: state.goal.status,
         ...(state.goal.pauseCause === undefined ? {} : { pauseCause: state.goal.pauseCause }),
-        ...(state.goal.stopReason === undefined ? {} : { stopReason: state.goal.stopReason }),
+        ...(state.goal.stopReason === undefined ? {} : { stopReason: policy.text(state.goal.stopReason) }),
         budget: {
           turns: {
             consumed: state.goal.budget.consumedTurns,

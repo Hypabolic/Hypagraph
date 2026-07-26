@@ -3,7 +3,8 @@ import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
 import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
-import { projectHypagoalSurface } from "./hypagoal-surface.js";
+import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
+import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 
 const activeNodeId = (state: HypagraphState): string | null => state.definition.nodes.find((node) => {
   const status = state.runtime.nodes[node.id]?.status;
@@ -18,6 +19,7 @@ export function formatDiagnostics(diagnostics: readonly Diagnostic[]): string {
 
 export function workflowSummary(state: HypagraphState): Record<string, unknown> {
   const counts: Record<string, number> = {};
+  const policy = protectedTextPolicy(state);
   const hypagoal = projectHypagoalSurface(state);
   for (const runtime of Object.values(state.runtime.nodes)) counts[runtime.status] = (counts[runtime.status] ?? 0) + 1;
   return {
@@ -31,9 +33,11 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     active: activeNodeId(state),
     ready: readyNodeIds(state),
     attempts: Object.fromEntries(Object.entries(state.runtime.nodes).map(([nodeId, runtime]) => [nodeId, runtime.attemptCount])),
-    loops: loopSurfaceSummaries(state),
-    ...(state.goal === undefined ? {} : { goalControl: structuredClone(state.goal) }),
-    ...(hypagoal === undefined ? {} : { hypagoal: structuredClone(hypagoal) }),
+    loops: policy.redact(loopSurfaceSummaries(state)),
+    // Canonical runtime state is not a safe presentation model. Publish a named goal
+    // control projection, so a later canonical field does not reach a reader by default.
+    ...(state.goal === undefined ? {} : { goalControl: projectGoalControlSurface(state) }),
+    ...(hypagoal === undefined ? {} : { hypagoal: policy.redact(structuredClone(hypagoal)) }),
     evaluationAuthoringAdvisories: assessEvaluationAuthoring(state.definition),
     snapshotHash: state.snapshotHash,
   };
@@ -42,19 +46,20 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
 export function renderWorkflow(state: HypagraphState): string {
   const summary = workflowSummary(state);
   const hypagoal = projectHypagoalSurface(state);
+  const policy = protectedTextPolicy(state);
   const lines = [
     `${state.definition.title} - ${state.phase} (revision ${state.revision}, event ${state.sequence})`,
     `Goal: ${state.definition.goal}`,
     `Active: ${String(summary.active ?? "none")}`,
     `Ready: ${(summary.ready as string[]).join(", ") || "none"}`,
     ...(state.goal === undefined || hypagoal === undefined ? [] : [
-      `Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.pauseCause ? ` [${state.goal.pauseCause}]` : ""}${state.goal.stopReason ? ` (${state.goal.stopReason})` : ""}`,
+      `Goal control: ${state.goal.goalId} - ${state.goal.status}${state.goal.pauseCause ? ` [${state.goal.pauseCause}]` : ""}${state.goal.stopReason ? ` (${policy.text(state.goal.stopReason)})` : ""}`,
       `Goal next: ${hypagoal.action.next}`,
       `Goal budget: model turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "unlimited"}; tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "unlimited"}`,
       `Scheduled actions: ${hypagoal.dispatch.scheduledActions}`,
       `Turn accounting: ${hypagoal.dispatch.turnAccounting}`,
       `Automatic revision: ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}${state.goal.automaticRevision.lastAttempt ? ` - ${state.goal.automaticRevision.lastAttempt.outcome}${state.goal.automaticRevision.lastAttempt.outcomeCode ? ` (${state.goal.automaticRevision.lastAttempt.outcomeCode})` : ""}` : ""}`,
-      ...(hypagoal.stopCode ? [`Goal stop: ${hypagoal.stopCode}${state.goal.stopReason ? ` - ${state.goal.stopReason}` : ""}`] : []),
+      ...(hypagoal.stopCode ? [`Goal stop: ${hypagoal.stopCode}${state.goal.stopReason ? ` - ${policy.text(state.goal.stopReason)}` : ""}`] : []),
     ]),
   ];
   if (state.definition.loops.length > 0) {
