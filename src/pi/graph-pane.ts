@@ -9,12 +9,29 @@ import {
   type OverlayOptions,
   type TUI,
 } from "@earendil-works/pi-tui";
-import type { HypagraphState } from "../domain/model.js";
+import type { DomainEvent, HypagraphState } from "../domain/model.js";
 import { layoutGraph, type GraphLayout, type GraphLayoutNode } from "../graph/layout.js";
 import { graphLayoutKey, projectGraphView, type GraphViewModel, type GraphViewNode } from "../graph/projection.js";
 import { renderGraphScene, sanitizeTerminalText } from "../graph/renderer.js";
+import { compareReplayWithLive, replayToSequence } from "../history/replay.js";
+import type { TimelineEntry } from "../history/timeline.js";
 
 export type GraphDensity = "compact" | "normal" | "spacious";
+
+/** The replay mode of the pane. The pane renders stored history and changes no canonical state. */
+export interface ReplayPaneState {
+  sequence: number;
+  firstSequence: number;
+  liveSequence: number;
+  entry: TimelineEntry;
+  differenceLines: string[];
+}
+
+export interface ReplayPaneControls {
+  step(delta: number): void;
+  enter(): void;
+  clear(): void;
+}
 
 const MIN_SIDE_WIDTH = 48;
 const MAX_SIDE_WIDTH = 96;
@@ -41,6 +58,7 @@ const frameLine = (theme: Theme, left: string, fill: string, right: string, widt
 
 export class PiGraphPaneComponent implements Component, Focusable {
   focused = false;
+  private replay: ReplayPaneState | undefined;
   private selectedNodeId: string | undefined;
   private viewportX = 0;
   private viewportY = 0;
@@ -58,8 +76,13 @@ export class PiGraphPaneComponent implements Component, Focusable {
     private view: GraphViewModel,
     private layout: GraphLayout,
     private density: GraphDensity,
+    private readonly replayControls: ReplayPaneControls,
   ) {
     this.selectedNodeId = firstSelection(view);
+  }
+
+  get replayState(): ReplayPaneState | undefined {
+    return this.replay;
   }
 
   get terminalWidth(): number {
@@ -74,10 +97,11 @@ export class PiGraphPaneComponent implements Component, Focusable {
     return this.density;
   }
 
-  update(view: GraphViewModel, layout: GraphLayout, density: GraphDensity): void {
+  update(view: GraphViewModel, layout: GraphLayout, density: GraphDensity, replay?: ReplayPaneState): void {
     this.view = view;
     this.layout = layout;
     this.density = density;
+    this.replay = replay;
     if (!this.selectedNodeId || !view.nodes.some((node) => node.id === this.selectedNodeId)) {
       this.selectedNodeId = firstSelection(view);
     }
@@ -118,6 +142,23 @@ export class PiGraphPaneComponent implements Component, Focusable {
       this.invalidate();
       return;
     }
+    if (data === "," || data === "<") {
+      this.replayControls.step(-1);
+      return;
+    }
+    if (data === "." || data === ">") {
+      this.replayControls.step(1);
+      return;
+    }
+    if (data === "t") {
+      if (this.replay) this.replayControls.clear();
+      else this.replayControls.enter();
+      return;
+    }
+    if (data === "L") {
+      this.replayControls.clear();
+      return;
+    }
     if (data === "+" || data === "=") {
       this.changeDensity(1);
       return;
@@ -138,7 +179,8 @@ export class PiGraphPaneComponent implements Component, Focusable {
     const availableHeight = Math.max(8, Math.min(this.terminalHeight - 2, Math.floor(this.terminalHeight * 0.9)));
     const detailLines = this.showDetails ? this.renderDetails(innerWidth) : [];
     const goalLines = this.renderGoalSummary(innerWidth);
-    const chromeRows = 4 + goalLines.length + detailLines.length;
+    const replayLines = this.renderReplaySummary(innerWidth);
+    const chromeRows = 4 + goalLines.length + detailLines.length + replayLines.length;
     const graphHeight = Math.max(4, availableHeight - chromeRows);
     this.graphWidth = innerWidth;
     this.graphHeight = graphHeight;
@@ -163,13 +205,16 @@ export class PiGraphPaneComponent implements Component, Focusable {
 
     const selected = selectedNode(this.view, this.selectedNodeId);
     const header = `${this.view.phase} · r${this.view.revision} · e${this.view.sequence}`;
-    const lines = [frameLine(this.theme, "╭", "─", "╮", paneWidth, `Hypagraph · ${this.view.title}`), row(` ${header}`)];
+    const title = this.replay ? `Hypagraph replay · ${this.view.title}` : `Hypagraph · ${this.view.title}`;
+    const lines = [frameLine(this.theme, "╭", "─", "╮", paneWidth, title), row(` ${header}`)];
+    for (const line of replayLines) lines.push(row(line));
     for (const line of goalLines) lines.push(row(line));
     for (const line of graphLines) lines.push(row(line));
     for (const line of detailLines) lines.push(row(line));
     const focusText = this.focused ? "navigation" : "passive";
-    lines.push(row(` ${selected?.id ?? "no node"} · ${focusText} · ${this.density}`));
-    lines.push(row(" arrows/hjkl move · Enter details · Home active · r ready · +/- density · Esc release · q close"));
+    const mode = this.replay ? `replay e${this.replay.sequence}/${this.replay.liveSequence}` : "live";
+    lines.push(row(` ${selected?.id ?? "no node"} · ${focusText} · ${this.density} · ${mode}`));
+    lines.push(row(" arrows/hjkl move · Enter details · Home active · r ready · ,/. replay step · t replay · L live · +/- density · Esc release · q close"));
     lines.push(frameLine(this.theme, "╰", "─", "╯", paneWidth));
     return lines;
   }
@@ -228,6 +273,18 @@ export class PiGraphPaneComponent implements Component, Focusable {
     }
   }
 
+  private renderReplaySummary(width: number): string[] {
+    const replay = this.replay;
+    if (!replay) return [];
+    const lines = [
+      ` REPLAY event ${replay.sequence} of ${replay.liveSequence} · ${replay.entry.type}${replay.entry.redacted ? " · protected" : ""}`,
+      ` ${sanitizeTerminalText(replay.entry.summary)}`,
+      ...replay.differenceLines.map((line) => ` ${sanitizeTerminalText(line)}`),
+      " Replay reads stored events only. It changes no canonical state.",
+    ];
+    return lines.map((line) => truncateToWidth(line, width, "…", true));
+  }
+
   private renderGoalSummary(width: number): string[] {
     const goal = this.view.goal;
     if (!goal) return [];
@@ -274,9 +331,17 @@ export class GraphPaneController {
   private handle: OverlayHandle | undefined;
   private openPromise: Promise<void> | undefined;
   private density: GraphDensity = "normal";
+  private replaySequence: number | undefined;
+
+  /** The controller reads the stored event stream for replay. It never stores an event. */
+  constructor(private readonly readEvents: () => readonly DomainEvent[] = () => []) {}
 
   get isOpen(): boolean {
     return this.openPromise !== undefined;
+  }
+
+  get replaySequenceForTest(): number | undefined {
+    return this.replaySequence;
   }
 
   update(state: HypagraphState | undefined): void {
@@ -285,17 +350,83 @@ export class GraphPaneController {
       this.view = undefined;
       this.layout = undefined;
       this.layoutKey = undefined;
+      this.replaySequence = undefined;
       this.component?.finish();
       return;
     }
-    const view = projectGraphView(state);
+    this.refresh();
+  }
+
+  /** Render one stored event. The pane keeps live state unchanged. */
+  setReplaySequence(sequence: number | undefined): void {
+    this.replaySequence = sequence;
+    if (this.state) this.refresh();
+  }
+
+  private replayView(): { state: HypagraphState; replay: ReplayPaneState } | undefined {
+    const live = this.state;
+    const sequence = this.replaySequence;
+    if (!live || sequence === undefined) return undefined;
+    const events = this.readEvents();
+    if (events.length === 0) return undefined;
+    try {
+      const replay = replayToSequence(events, sequence);
+      const comparison = compareReplayWithLive(replay.state, live);
+      const differenceLines = comparison.identical
+        ? ["No canonical difference from live state."]
+        : [
+          `Difference: ${comparison.nodes.length} nodes, ${comparison.routes.length} routes, ${comparison.loops.length} loops`,
+          `Turns charged after this event: ${comparison.consumedTurnsDelta}; scheduled actions: ${comparison.scheduledActionsDelta}`,
+        ];
+      return {
+        state: replay.state,
+        replay: {
+          sequence: replay.sequence,
+          firstSequence: events[0]!.sequence,
+          liveSequence: live.sequence,
+          entry: replay.entry,
+          differenceLines,
+        },
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private refresh(): void {
+    const live = this.state;
+    if (!live) return;
+    const replayed = this.replayView();
+    const rendered = replayed?.state ?? live;
+    const view = projectGraphView(rendered);
     const nextKey = graphLayoutKey(view);
     if (!this.layout || this.layoutKey !== nextKey) {
       this.layout = layoutGraph(view, { density: this.density, ...(this.layout === undefined ? {} : { previous: this.layout }) });
       this.layoutKey = nextKey;
     }
     this.view = view;
-    this.component?.update(view, this.layout, this.density);
+    this.component?.update(view, this.layout, this.density, replayed?.replay);
+  }
+
+  private replayControls(): ReplayPaneControls {
+    return {
+      step: (delta: number) => {
+        const events = this.readEvents();
+        const live = this.state;
+        if (!live || events.length === 0) return;
+        const first = events[0]!.sequence;
+        const current = this.replaySequence ?? live.sequence;
+        const next = Math.min(live.sequence, Math.max(first, current + delta));
+        this.setReplaySequence(next === live.sequence ? undefined : next);
+      },
+      enter: () => {
+        const events = this.readEvents();
+        const live = this.state;
+        if (!live || events.length === 0) return;
+        this.setReplaySequence(Math.max(events[0]!.sequence, live.sequence - 1));
+      },
+      clear: () => this.setReplaySequence(undefined),
+    };
   }
 
   open(ctx: ExtensionContext): void {
@@ -327,6 +458,7 @@ export class GraphPaneController {
           initialView,
           initialLayout,
           this.density,
+          this.replayControls(),
         );
         this.component = component;
         return component;

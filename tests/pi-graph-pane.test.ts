@@ -61,6 +61,7 @@ describe("Pi graph pane component", () => {
       view,
       layout,
       "normal",
+      { step: vi.fn(), enter: vi.fn(), clear: vi.fn() },
     );
 
     const lines = component.render(60);
@@ -87,6 +88,7 @@ describe("Pi graph pane component", () => {
       view,
       layoutGraph(view),
       "normal",
+      { step: vi.fn(), enter: vi.fn(), clear: vi.fn() },
     );
 
     component.handleInput("\u001b");
@@ -103,6 +105,7 @@ describe("Pi graph pane component", () => {
       view,
       layoutGraph(view),
       "normal",
+      { step: vi.fn(), enter: vi.fn(), clear: vi.fn() },
     );
 
     const wide = component.render(72);
