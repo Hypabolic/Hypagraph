@@ -77,6 +77,7 @@ export interface HypagoalReadyWork {
   tasks: string[];
   checks: string[];
   gates: string[];
+  interactions: string[];
   loopEntries: string[];
 }
 
@@ -87,6 +88,7 @@ export function hypagoalReadyWork(state: HypagraphState): HypagoalReadyWork {
     tasks: ready.filter((node) => (node.kind ?? "task") === "task").map((node) => node.id),
     checks: ready.filter((node) => node.kind === "check").map((node) => node.id),
     gates: ready.filter((node) => node.kind === "gate").map((node) => node.id),
+    interactions: ready.filter((node) => node.kind === "interaction").map((node) => node.id),
     loopEntries: ready.filter((node) => loopEntries.has(node.id)).map((node) => node.id),
   };
 }
@@ -113,6 +115,7 @@ export function renderHypagoalCreated(
     `Ready tasks: ${list(ready.tasks)}`,
     `Ready checks: ${list(ready.checks)}`,
     `Ready gates: ${list(ready.gates)}`,
+    `Ready interactions: ${list(ready.interactions)}`,
     `Ready loop entries: ${list(ready.loopEntries)}`,
     `Authoring advisories: ${advisories === "none" ? advisories : `\n  - ${advisories}`}`,
     "The graph-backed goal is durable. Autonomous continuation has not started.",

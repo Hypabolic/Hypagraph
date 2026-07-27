@@ -1082,7 +1082,11 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         if (params.action === "start") {
           const node = state.definition.nodes.find((item) => item.id === nodeId);
           if ((node?.kind ?? "task") === "check") throw new Error(`Use hypagraph_run_check for check node '${nodeId}'.`);
-          commands.push({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
+          if ((node?.kind ?? "task") === "interaction") {
+            commands.push({ type: "request-interaction", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
+          } else {
+            commands.push({ type: "start-node", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId, at });
+          }
         } else if (params.action === "evaluate") commands.push({ type: "evaluate-gate", nodeId, commandId: randomUUID(), correlationId, at });
         else if (params.action === "publish") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
@@ -1349,6 +1353,41 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       } else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "active") {
         const active = state ? activeExecutions.list(state.workflowId) : [];
         ctx.ui.notify(active.length > 0 ? active.map((entry) => `${entry.nodeId} (${entry.attemptId})`).join("\n") : "There is no active check.", "info");
+      } else if (words[0]?.toLowerCase() === "answer") {
+        if (!state) {
+          ctx.ui.notify("There is no active Hypagraph.", "info");
+          return;
+        }
+        const nodeId = words[1];
+        const responseId = words[2];
+        if (!nodeId || !responseId) {
+          ctx.ui.notify("Usage: /hypagraph answer <nodeId> <responseId> [free text]", "info");
+          return;
+        }
+        const node = state.definition.nodes.find((item) => item.id === nodeId);
+        if ((node?.kind ?? "task") !== "interaction" || !node?.interaction) {
+          ctx.ui.notify(`Node '${nodeId}' is not an interaction.`, "warning");
+          return;
+        }
+        const runtime = state.runtime.nodes[nodeId];
+        const attemptId = runtime?.currentAttemptId;
+        if (!attemptId || runtime?.status !== "awaiting_response") {
+          ctx.ui.notify(`Interaction '${nodeId}' is not awaiting a response.`, "warning");
+          return;
+        }
+        const freeText = words.slice(3).join(" ").trim();
+        ensureNoActiveExecution();
+        await runCommands([{
+          type: "answer-interaction",
+          nodeId,
+          attemptId,
+          responseId,
+          ...(freeText ? { freeText } : {}),
+          commandId: randomUUID(),
+          at: new Date().toISOString(),
+        }]);
+        updateUi(state, ctx, graphPane);
+        ctx.ui.notify(renderWorkflow(state!), "info");
       } else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
     },
   });

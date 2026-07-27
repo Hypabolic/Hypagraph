@@ -399,6 +399,35 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.status = "awaiting_evidence";
       }
       break;
+    case "hypagraph.interaction.requested":
+      if (node && event.attemptId) {
+        startAttempt(node, event.attemptId, event.timestamp, event.data);
+        node.status = "awaiting_response";
+      }
+      break;
+    case "hypagraph.interaction.presented":
+      // Slice 2 stores presentation observation. Slice 1 keeps the node awaiting a response.
+      if (node && node.status === "running") node.status = "awaiting_response";
+      break;
+    case "hypagraph.interaction.answered":
+      if (node && attempt) {
+        const evidence = Array.isArray(event.data.evidence)
+          ? structuredClone(event.data.evidence as AttemptRuntime["evidence"])
+          : [];
+        attempt.status = "submitted";
+        attempt.submittedAt = event.timestamp;
+        attempt.evidence = evidence;
+        node.evidence = evidence;
+        node.status = "awaiting_evidence";
+      }
+      break;
+    case "hypagraph.interaction.expired":
+      if (node && attempt) {
+        attempt.status = "failed";
+        attempt.completedAt = event.timestamp;
+        node.status = "failed";
+      }
+      break;
     case "hypagraph.fact.published":
       if (event.nodeId && event.attemptId) {
         const fact = event.data.fact as Omit<FactRecord, "eventId" | "sequence">;

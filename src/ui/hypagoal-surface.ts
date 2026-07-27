@@ -93,6 +93,7 @@ const actionLabel = (action: GoalContinuationAction): string => {
   if (action.kind === "continue-active-task") return `continue task '${action.nodeId}'${loop}`;
   if (action.kind === "start-ready-task") return `start task '${action.nodeId}'${loop}`;
   if (action.kind === "run-ready-check") return `run check '${action.nodeId}'${loop}`;
+  if (action.kind === "request-ready-interaction") return `request interaction '${action.nodeId}'${loop}`;
   return `evaluate gate '${action.nodeId}'${loop}`;
 };
 
@@ -102,6 +103,7 @@ const decisionLabel = (decision: GoalContinuationDecision): string => {
   if (decision.kind === "stop-completed") return "none; the canonical workflow completed";
   if (decision.kind === "stop-paused") return `none; paused: ${decision.reason}`;
   if (decision.kind === "stop-blocked") return `none; blocked: ${decision.reason}`;
+  if (decision.kind === "stop-waiting-response") return `none; waiting for a user response: ${decision.reason}`;
   if (decision.kind === "stop-failed") return `none; failed: ${decision.reason}`;
   if (decision.kind === "stop-cancelled") return `none; cancelled: ${decision.reason}`;
   if (decision.kind === "stop-budget-limited") return `none; budget limited: ${decision.reason}`;

@@ -179,9 +179,12 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
   }).map((contract) => contract.name);
 };
 
-const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) =>
-  ACTIVE_ATTEMPT_STATUSES.has(item.status)
-  || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying"));
+const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
+  // An unanswered interaction waits without holding exclusive active-attempt ownership.
+  if (item.status === "awaiting_response") return false;
+  return ACTIVE_ATTEMPT_STATUSES.has(item.status)
+    || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying");
+});
 
 const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
   if (result.attemptId !== attemptId) return reject("stale_check_result", "The check result does not match the current attempt.");
@@ -547,12 +550,104 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       const kind = definitionNode.kind ?? "task";
       if (kind === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
       if (kind === "check") return reject("check_start_required", "Start a check with the check execution command.");
+      if (kind === "interaction") return reject("interaction_request_required", "Request an interaction with the interaction request command.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
       if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
       const prepared = prepareLoopStart(next, events, command, command.nodeId);
       if ("ok" in prepared) return prepared;
       next = prepared.state;
       next = append(next, events, command, { type: "hypagraph.attempt.started", nodeId: command.nodeId, attemptId: command.attemptId, data: { ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }), ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }) } });
+      break;
+    }
+    case "request-interaction": {
+      if ((definitionNode.kind ?? "task") !== "interaction" || !definitionNode.interaction) return reject("node_not_interaction", `Node '${command.nodeId}' is not an interaction.`);
+      if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
+      if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
+      const prepared = prepareLoopStart(next, events, command, command.nodeId);
+      if ("ok" in prepared) return prepared;
+      next = prepared.state;
+      next = append(next, events, command, {
+        type: "hypagraph.interaction.requested",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          question: definitionNode.interaction.question,
+          presentation: structuredClone(definitionNode.interaction.presentation),
+          responseIds: definitionNode.interaction.responses.map((response) => response.id),
+          ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }),
+          ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }),
+        },
+      });
+      break;
+    }
+    case "answer-interaction": {
+      if ((definitionNode.kind ?? "task") !== "interaction" || !definitionNode.interaction) return reject("node_not_interaction", `Node '${command.nodeId}' is not an interaction.`);
+      if (node.status !== "awaiting_response" || node.currentAttemptId !== command.attemptId) {
+        return reject("interaction_not_awaiting", `Interaction '${command.nodeId}' is not awaiting a response for this attempt.`);
+      }
+      const response = definitionNode.interaction.responses.find((item) => item.id === command.responseId);
+      if (!response) return reject("unknown_interaction_response", `Interaction '${command.nodeId}' has no response '${command.responseId}'.`, "responseId");
+      if (command.freeText !== undefined) {
+        if (!definitionNode.interaction.freeText) return reject("interaction_free_text_not_allowed", `Interaction '${command.nodeId}' does not accept free text.`);
+        const bytes = Buffer.byteLength(command.freeText, "utf8");
+        if (bytes > definitionNode.interaction.freeText.maxBytes) {
+          return reject("interaction_free_text_too_large", `Free text exceeds the maximum of ${definitionNode.interaction.freeText.maxBytes} bytes.`);
+        }
+      }
+      const attempt = node.attempts[command.attemptId]!;
+      const evidence = structuredClone(command.evidence ?? []);
+      if (command.freeText !== undefined) {
+        evidence.push({
+          ref: `interaction:${command.nodeId}:${command.attemptId}:free-text`,
+          kind: "note",
+          summary: command.freeText,
+        });
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.interaction.answered",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          responseId: response.id,
+          ...(command.freeText === undefined ? {} : { freeTextBytes: Buffer.byteLength(command.freeText, "utf8") }),
+          evidence: structuredClone(evidence),
+        },
+      });
+      for (const input of response.publish) {
+        const fact: PublishedFact = {
+          name: input.name,
+          type: input.type,
+          value: structuredClone(input.value),
+          producerNodeId: command.nodeId,
+          attemptId: command.attemptId,
+          revision: state.revision,
+          evidence: structuredClone(input.evidence ?? evidence),
+          ...(attempt.loopId === undefined ? {} : { loopId: attempt.loopId }),
+          ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
+        };
+        const validated = validatePublishedFact(fact, {
+          contracts: definitionNode.produces ?? [],
+          currentRevision: state.revision,
+          currentAttemptId: command.attemptId,
+        });
+        if (!validated.ok) return reject(validated.code, validated.message, `facts.${input.name}`);
+        next = append(next, events, command, {
+          type: "hypagraph.fact.published",
+          nodeId: command.nodeId,
+          attemptId: command.attemptId,
+          data: { fact: structuredClone(validated.fact) },
+        });
+      }
+      const missing = requiredFactsArePresent(next, command.nodeId, command.attemptId);
+      if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
+      next = append(next, events, command, {
+        type: "hypagraph.verification.passed",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: { reason: `Interaction response '${response.id}' was accepted.` },
+      });
+      next = appendReadyEvents(next, events, command);
+      next = appendCompletionIfNeeded(next, events, command);
       break;
     }
     case "start-check": {

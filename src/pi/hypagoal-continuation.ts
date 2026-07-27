@@ -39,6 +39,7 @@ const actionLabel = (action: GoalDispatchableContinuation): string => {
     case "start-ready-task": return `start ready task '${action.nodeId}'`;
     case "run-ready-check": return `run ready check '${action.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate ready gate '${action.nodeId}'`;
+    case "request-ready-interaction": return `request ready interaction '${action.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${action.blocker.kind} '${action.blocker.id}'`;
   }
 };
@@ -154,6 +155,7 @@ export function continuationSystemPrompt(pending: PendingGoalContinuation, state
   if (action.kind === "continue-active-task") common.push(`Continue only task '${action.nodeId}'. Publish declared facts, submit evidence, and use a separate verification action. Do not start another node.`);
   else if (action.kind === "start-ready-task") common.push(`Start task '${action.nodeId}' with hypagraph_transition before repository changes. Work only in its declared scope. Then publish facts, submit evidence, and verify it.`);
   else if (action.kind === "run-ready-check") common.push(`Run check '${action.nodeId}' with hypagraph_run_check. Do not start it with hypagraph_transition.`);
+  else if (action.kind === "request-ready-interaction") common.push(`Request interaction '${action.nodeId}' through the interaction request path. Do not invent a user answer. Wait for a typed response through the product surface.`);
   else common.push(`Evaluate gate '${action.nodeId}' with the evaluate action of hypagraph_transition. Do not use model judgement to select the route.`);
   common.push("Do not revise the graph, replace the root, or mark the goal complete unless canonical state requires a separate supported action.");
   return common.join("\n");

@@ -148,16 +148,52 @@ const checkSchema = Type.Union([
   gitAssertionCheckSchema,
 ]);
 
+const interactionResponseSchema = Type.Object({
+  id: Type.String(),
+  label: Type.String(),
+  publish: Type.Array(Type.Object({
+    name: Type.String(),
+    type: factTypeSchema,
+    value: factValueSchema,
+    evidence: Type.Optional(Type.Array(Type.Object({
+      ref: Type.String(),
+      kind: Type.Optional(Type.Union([
+        Type.Literal("tool"),
+        Type.Literal("command"),
+        Type.Literal("file"),
+        Type.Literal("approval"),
+        Type.Literal("note"),
+      ])),
+      summary: Type.Optional(Type.String()),
+      visibility: Type.Optional(Type.Union([Type.Literal("public"), Type.Literal("protected")])),
+    }))),
+  }), { minItems: 1 }),
+});
+const interactionSchema = Type.Object({
+  kind: Type.Literal("interaction"),
+  version: Type.Literal(1),
+  presentation: Type.Object({
+    class: StringEnum(["deterministic", "semantic"] as const),
+    kind: Type.Literal("none"),
+  }),
+  question: Type.String(),
+  responses: Type.Array(interactionResponseSchema, { minItems: 1 }),
+  freeText: Type.Optional(Type.Object({
+    prompt: Type.String(),
+    maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
+  })),
+});
 const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
   title: Type.String(),
   description: Type.Optional(Type.String()),
-  kind: Type.Optional(StringEnum(["task", "gate", "check"] as const)),
+  kind: Type.Optional(StringEnum(["task", "gate", "check", "interaction"] as const)),
   requires: Type.Optional(Type.Array(Type.String())),
   acceptance: Type.Optional(Type.Array(Type.String())),
   produces: Type.Optional(Type.Array(factContractSchema)),
   gate: Type.Optional(gateSchema),
   check: Type.Optional(checkSchema),
+  interaction: Type.Optional(interactionSchema),
   scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
 });
 
@@ -318,6 +354,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                   ...(node.check.maxReportBytes === undefined ? {} : { maxReportBytes: node.check.maxReportBytes }),
                 },
       }),
+      ...(node.interaction === undefined ? {} : { interaction: structuredClone(node.interaction) }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
     loops: (input.loops ?? []).map((loop) => ({

@@ -61,7 +61,8 @@ export type GoalWorkContinuationActionKind =
   | "continue-active-task"
   | "start-ready-task"
   | "run-ready-check"
-  | "evaluate-ready-gate";
+  | "evaluate-ready-gate"
+  | "request-ready-interaction";
 
 export type GoalBlockerKind =
   | "blocked-node"
@@ -152,6 +153,7 @@ export type NodeStatus =
   | "starting"
   | "running"
   | "awaiting_evidence"
+  | "awaiting_response"
   | "verifying"
   | "succeeded"
   | "failed"
@@ -161,7 +163,29 @@ export type NodeStatus =
   | "stale";
 export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
-export type NodeKind = "task" | "gate" | "check";
+export type NodeKind = "task" | "gate" | "check" | "interaction";
+export type InteractionPresentationClass = "deterministic" | "semantic";
+
+export interface InteractionPresentation {
+  class: InteractionPresentationClass;
+  /** Slice 1 supports only the none presentation effect. Later slices add artifact and command effects. */
+  kind: "none";
+}
+
+export interface InteractionResponseOption {
+  id: string;
+  label: string;
+  publish: FactInput[];
+}
+
+export interface InteractionDefinition {
+  kind: "interaction";
+  version: 1;
+  presentation: InteractionPresentation;
+  question: string;
+  responses: InteractionResponseOption[];
+  freeText?: { prompt: string; maxBytes: number };
+}
 
 export type EvidenceVisibility = "public" | "protected";
 
@@ -389,6 +413,7 @@ export interface NodeDefinition {
   produces?: FactContract[];
   gate?: GateDefinition;
   check?: CheckDefinition;
+  interaction?: InteractionDefinition;
   scope?: { paths: string[] };
 }
 
@@ -610,6 +635,10 @@ export type EventType =
   | "hypagraph.check.started"
   | "hypagraph.evaluation.started"
   | "hypagraph.check.result-recorded"
+  | "hypagraph.interaction.requested"
+  | "hypagraph.interaction.presented"
+  | "hypagraph.interaction.answered"
+  | "hypagraph.interaction.expired"
   | "hypagraph.fact.published"
   | "hypagraph.route.selected"
   | "hypagraph.verification.started"
@@ -657,6 +686,8 @@ export type HypagraphCommand =
   | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "start-check"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
+  | (CommandBase & { type: "request-interaction"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "answer-interaction"; nodeId: string; attemptId: string; responseId: string; freeText?: string; evidence?: EvidenceReference[] })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })

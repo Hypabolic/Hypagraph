@@ -9,6 +9,7 @@ export type TimelineLane =
   | "dispatch"
   | "node"
   | "check"
+  | "interaction"
   | "evaluation"
   | "fact"
   | "route"
@@ -50,6 +51,7 @@ const laneOf = (type: string): TimelineLane => {
   if (type.startsWith("hypagraph.workflow.")) return "workflow";
   if (type.startsWith("hypagraph.goal.")) return "goal";
   if (type.startsWith("hypagraph.check.")) return "check";
+  if (type.startsWith("hypagraph.interaction.")) return "interaction";
   if (type.startsWith("hypagraph.evaluation.")) return "evaluation";
   if (type === "hypagraph.fact.published") return "fact";
   if (type === "hypagraph.route.selected") return "route";
@@ -80,6 +82,7 @@ const actionLabel = (action: unknown): string => {
     case "start-ready-task": return `start task '${value.nodeId}'`;
     case "run-ready-check": return `run check '${value.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate gate '${value.nodeId}'`;
+    case "request-ready-interaction": return `request interaction '${value.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${value.blocker?.kind} '${value.blocker?.id}'`;
     default: return "an unknown action";
   }
@@ -107,6 +110,21 @@ const checkSummary = ({ event, redacted }: SummaryContext): string | undefined =
       const exit = result?.exitCode === undefined ? "" : `, exit code ${result.exitCode}`;
       return `Check '${event.nodeId}' recorded a '${status}' result${exit}.`;
     }
+    default: return undefined;
+  }
+};
+
+const interactionSummary = ({ event }: SummaryContext): string | undefined => {
+  const data = event.data;
+  switch (event.type) {
+    case "hypagraph.interaction.requested":
+      return `Interaction '${event.nodeId}' requested an answer.`;
+    case "hypagraph.interaction.presented":
+      return `Interaction '${event.nodeId}' presented its question.`;
+    case "hypagraph.interaction.answered":
+      return `Interaction '${event.nodeId}' received response '${String(data.responseId ?? "unknown")}'.`;
+    case "hypagraph.interaction.expired":
+      return `Interaction '${event.nodeId}' expired before an answer.`;
     default: return undefined;
   }
 };
@@ -222,6 +240,7 @@ const otherSummary = ({ event, redacted }: SummaryContext): string => {
 
 const summarize = (context: SummaryContext): string =>
   checkSummary(context)
+  ?? interactionSummary(context)
   ?? nodeSummary(context)
   ?? loopSummary(context)
   ?? goalSummary(context)
