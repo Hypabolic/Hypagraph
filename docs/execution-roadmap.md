@@ -1,10 +1,11 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Updated: 2026-07-25
-- Current milestone: M6A deterministic dispatch lane
-- Current implementation baseline: `0d1375a5f19a311528d5c774b66f0239a48164bb`
-- Current release: `v0.6`
+- Updated: 2026-07-27
+- Current milestone: M6.1 interaction and approval nodes
+- Current implementation baseline: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
+- Current release candidate: `v0.7`
+- Current published release: `v0.6`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
@@ -215,8 +216,8 @@ All repository text must follow `AGENTS.md`.
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
 | M5B | v0.6 | Root Hypagoal autonomous controller | Complete; released as v0.6 |
-| M6A | v0.7 | Deterministic dispatch lane | Active |
-| M6B | v0.7 | Event history, replay, and debugger UI | Planned |
+| M6A | v0.7 | Deterministic dispatch lane | Complete |
+| M6B | v0.7 | Event history, replay, and debugger UI | Complete |
 | M6.1 | v0.8 | Interaction and approval nodes | Planned |
 | M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Planned |
 | M6.3 | v0.10 | External effects and reconciliation | Planned |
@@ -507,6 +508,9 @@ All M5B acceptance criteria are satisfied in v0.6.
 
 ## 7. M6A - Deterministic dispatch lane
 
+- Status: complete
+- Evidence: `docs/m6a-dogfood.md`, `docs/m6a-deterministic-dispatch-plan.md`
+
 ### Objective
 
 Run every canonical action which needs no reasoning without a model turn.
@@ -545,6 +549,9 @@ The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
 - Replay reproduces the same canonical state and the same stop decision.
 
 ## 8. M6B - Event history, replay, and debugger UI
+
+- Status: complete
+- Evidence: `docs/m6b-dogfood.md`, `docs/m6b-event-history-plan.md`, `docs/v0.7-release-notes.md`
 
 ### Objective
 
@@ -975,10 +982,9 @@ Hypagraph can release version 1.0 when:
 
 ## 18. Immediate next work
 
-1. Implement the M6A generic action-dispatch event model. It replaces the earlier choice between a continuation-completion event and no continuation event. `docs/m6a-deterministic-dispatch-plan.md` section 4 gives the contract.
-2. Implement M6A Slice 1 and Slice 2. These give a directly dispatched gate and a directly dispatched check.
-3. State in the product surface that consumed turns count model turns only.
-4. Complete M6A before M6B, so that the history views render the final event model.
-5. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
-6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
-7. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.
+1. Publish the `v0.7` tag and GitHub release after the M6B dogfood suite is on `main`.
+2. Close stale tracking issues for completed milestones when their evidence is accepted.
+3. Start M6.1 interaction and approval nodes. `docs/m6-1-interaction-node-plan.md` gives the plan.
+4. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
+5. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
+6. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.

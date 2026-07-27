@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.7.0 - 2026-07-25
+## v0.7.0 - 2026-07-27
 
-M6A adds the deterministic dispatch lane. A canonical action which needs no reasoning runs without a model turn.
+M6A adds the deterministic dispatch lane. M6B makes the stored event stream inspectable.
 
 ### Added
 
@@ -13,7 +13,15 @@ M6A adds the deterministic dispatch lane. A canonical action which needs no reas
 - direct deterministic execution of a ready check through the existing durable check lifecycle;
 - an explicit maximum of 64 consecutive deterministic dispatches in one controller pass;
 - scheduled action count, charged model-turn count, and the turn-accounting rule in `/hypagoal status`, in the lifecycle message, and in the model-visible workflow view;
-- interrupted-dispatch recovery on reload, so a lost deterministic dispatch cannot block a later selection.
+- interrupted-dispatch recovery on reload, so a lost deterministic dispatch cannot block a later selection;
+- a typed event timeline with lane classification, paging, and a lane filter;
+- replay of canonical state to any stored sequence, with a comparison against live state;
+- canonical explanations for why a node or a goal is not runnable;
+- `/hypagraph history`, `/hypagraph history <sequence>`, `/hypagraph history <lane>`, `/hypagraph history revisions`, and `/hypagraph explain`;
+- history and explain views on `hypagraph_read`;
+- a replay mode of the graph pane;
+- revision segments, discarded-result reporting, and a projection seam for future family, executor, workspace, and integration namespaces;
+- one presentation redaction policy for protected evaluator detail across every surface.
 
 ### Changed
 
@@ -27,16 +35,18 @@ M6A adds the deterministic dispatch lane. A canonical action which needs no reas
 - the durable check order: store the check start, run the bounded external effect, store the result and evidence, publish declared facts, then store verification and the loop decision;
 - cancellation, retry, backoff, artifacts, recovery, evaluation budgets, and protected evaluator redaction;
 - round-robin fairness across independent components;
-- `hypagraph_run_check` and the evaluate action of `hypagraph_transition`, so a user or a model can still run a check or a gate explicitly.
+- `hypagraph_run_check` and the evaluate action of `hypagraph_transition`, so a user or a model can still run a check or a gate explicitly;
+- M6B adds no schema version, no event type, and no stored field. It projects and presents the existing stream.
 
 ### Release evidence
 
 - one dogfood objective with a bounded two-iteration repair region, two checks, two gates, and four tasks costs 4 model turns instead of 9;
 - the loop continuation product path costs 6 model turns instead of 10;
 - the v0.6 release product path costs 10 model turns instead of 15;
-- each path produces the same canonical result, the same routes, the same stop decision, and the same replayed state.
+- each path produces the same canonical result, the same routes, the same stop decision, and the same replayed state;
+- one inspectable dogfood path with tasks, checks, gates, one iteration region, and one automatic revision completes through 100 stored events, charges 7 model turns, and exposes the timeline, three replay points, a blocked-node explanation, a skipped-route explanation, and two revision segments.
 
-See `docs/m6a-dogfood.md` and `docs/m6a-deterministic-dispatch-plan.md`.
+See `docs/m6a-dogfood.md`, `docs/m6b-dogfood.md`, `docs/m6a-deterministic-dispatch-plan.md`, `docs/m6b-event-history-plan.md`, and `docs/v0.7-release-notes.md`.
 
 ## v0.6.0 - 2026-07-24
 

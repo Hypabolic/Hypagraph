@@ -135,6 +135,12 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | `/hypagraph graph close` | Close the graph pane. |
 | `/hypagraph check active` | Show the active deterministic check. |
 | `/hypagraph check cancel [node-id]` | Cancel an active check. |
+| `/hypagraph history` | Show the most recent page of the event timeline. |
+| `/hypagraph history <sequence>` | Replay canonical state to one stored sequence and compare it with live state. |
+| `/hypagraph history <lane>` | Show one timeline lane. A lane is workflow, goal, dispatch, node, check, evaluation, fact, route, loop, or unknown. |
+| `/hypagraph history revisions` | Show revision segments and discarded results. |
+| `/hypagraph explain` | Explain the goal decision and every node. |
+| `/hypagraph explain <node-id>` | Explain why one node is or is not runnable. |
 
 Graph pane controls:
 
@@ -339,11 +345,17 @@ Implemented:
 - direct deterministic dispatch of a ready gate and a ready check, without a model turn;
 - an explicit maximum for consecutive deterministic dispatches in one controller pass;
 - turn accounting which counts model turns only, and a product surface which says so;
-- interrupted-dispatch recovery on reload, so a lost dispatch cannot block a later selection.
+- interrupted-dispatch recovery on reload, so a lost dispatch cannot block a later selection;
+- a typed event timeline with lane classification, paging, and a lane filter;
+- replay of canonical state to any stored sequence, with a comparison against live state;
+- canonical explanations for why a node or a goal is not runnable;
+- `/hypagraph history`, `/hypagraph explain`, and the matching `hypagraph_read` views;
+- a replay mode of the graph pane;
+- revision segments, discarded-result reporting, and a projection seam for later family and executor namespaces;
+- integrated v0.7 dogfood for deterministic dispatch and inspectable history.
 
 Next:
 
-- event-history, replay, and debugger UI;
 - interaction and approval nodes, so that the graph can return to the user for a typed decision;
 - code nodes which run a definition-time program in a sandbox;
 - external effects with explicit requested, observed, and indeterminate states and restart reconciliation;
@@ -377,3 +389,8 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 - [M3.1 deterministic parser adapters](docs/m3-1-parser-adapters-plan.md)
 - [M4 bounded iteration plan](docs/m4-vertical-slice-plan.md)
 - [v0.5 dogfood record](docs/v0.5-dogfood.md)
+- [M6A deterministic dispatch plan](docs/m6a-deterministic-dispatch-plan.md)
+- [M6A dogfood record](docs/m6a-dogfood.md)
+- [M6B event history plan](docs/m6b-event-history-plan.md)
+- [M6B dogfood record](docs/m6b-dogfood.md)
+- [v0.7 release notes](docs/v0.7-release-notes.md)
