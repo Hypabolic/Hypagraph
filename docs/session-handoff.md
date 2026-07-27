@@ -4,6 +4,7 @@
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
 - Implementation baseline before this slice: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
+- Slice 7 candidate commit: `a89dce344ebb21b1cd999ecd98c7388cff3c4da7`
 - Published release: `v0.6`
 - Release candidate: `v0.7`
 - Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
