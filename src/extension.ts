@@ -18,7 +18,11 @@ import {
   replacementConfirmationFor,
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
-import { isDispatchableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
+import {
+  continuationActionIsRunnable,
+  isDispatchableGoalContinuation,
+  selectGoalContinuation,
+} from "./domain/goal-continuation.js";
 import {
   applyCommandsAndCommit,
   commitCreatedWorkflow,
@@ -311,7 +315,42 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (result.ok) {
       state = result.value.state;
       events.push(...result.value.events);
+      return;
     }
+    // Keep the durable request visible. A later recovery path must clear it.
+  };
+
+  /**
+   * Close a durable model-lane continuation whose selected action is no longer runnable.
+   *
+   * Live Pi can complete the selected task while the model-lane turn is never closed.
+   * The durable request then remains and blocks every later selection, including
+   * deterministic checks and gates. Recover only when the selected action is no longer
+   * runnable, so an undelivered but still-valid queue is not closed early.
+   */
+  const recoverOrphanedModelContinuation = async (
+    ctx: ExtensionContext,
+    reason: string,
+  ): Promise<boolean> => {
+    const canonical = state?.goal?.pendingContinuation;
+    if (!state?.goal || !canonical) return false;
+    if (deliveredContinuation) return false;
+    if (continuationActionIsRunnable(state, canonical.action)) return false;
+    // Drop undelivered in-memory bookkeeping. The durable request is closed next.
+    pendingContinuation = undefined;
+    await abandonPendingContinuation(reason);
+    if (state.goal?.pendingContinuation) {
+      ctx.ui.notify(
+        `Hypagoal could not close the orphaned model-lane continuation '${canonical.operationId}'.`,
+        "warning",
+      );
+      return false;
+    }
+    ctx.ui.notify(
+      `Hypagoal closed an orphaned model-lane continuation and will select the next action.`,
+      "warning",
+    );
+    return true;
   };
 
   const dispatchDeterministicCheck = async (
@@ -617,6 +656,12 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         ctx.ui.notify(`Hypagoal continuation '${delivered.operationId}' made no canonical progress. Automatic continuation stopped.`, "warning");
         return;
       }
+    } else {
+      // A durable request without delivery bookkeeping blocks later selection.
+      await recoverOrphanedModelContinuation(
+        ctx,
+        "The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action.",
+      );
     }
     await queueGoalContinuation(ctx);
   });

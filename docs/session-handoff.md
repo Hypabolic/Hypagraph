@@ -5,6 +5,7 @@
 - Canonical branch: `main`
 - Implementation baseline before this slice: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
 - Slice 7 candidate commit: `a89dce344ebb21b1cd999ecd98c7388cff3c4da7`
+- Live Pi dogfood evidence: `docs/dogfood-evidence/m6b-live/` and `docs/m6b-dogfood.md`
 - Published release: `v0.6`
 - Release candidate: `v0.7`
 - Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
@@ -95,10 +96,13 @@ Let the graph return to the user for a decision, and let a typed answer control 
 
 - M6A dogfood: `docs/m6a-dogfood.md`
 - M6B dogfood: `docs/m6b-dogfood.md`
+- Live Pi evidence: `docs/dogfood-evidence/m6b-live/`
 - Release notes: `docs/v0.7-release-notes.md`
 - M6A plan status: complete
 - M6B plan status: complete
-- Suite: 109 test files and 582 tests
+- Live Pi dogfood completed a task and a deterministic check end to end
+- Orphan model-lane continuation recovery is covered by `tests/hypagoal-continuation-pi.test.ts`
+- Suite: 109 test files and 583 tests
 
 ## 7. Deferred product direction
 

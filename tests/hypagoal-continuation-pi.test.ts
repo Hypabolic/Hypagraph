@@ -502,4 +502,36 @@ describe("Hypagoal Pi continuation", () => {
     expect(continuationPrompts(value)).toHaveLength(1);
     expect(value.notify).toHaveBeenCalledWith(expect.stringContaining("made no canonical progress"), "warning");
   });
+
+  it("closes an orphaned model-lane continuation after the selected task succeeds", async () => {
+    const value = harness();
+    await createRoot(value);
+    await agentEnd(value);
+    expect(continuationPrompts(value)[0]).toContain("start ready task 'implement'");
+
+    // Live Pi stuck shape: the selected task finishes while the model-lane turn is
+    // never closed. The durable request still names that task, so later selection
+    // is blocked until recovery closes it.
+    await completeTask(value, "implement", [{ name: "route.use-primary", type: "boolean", value: true }]);
+    let latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.runtime.nodes.implement.status).toBe("succeeded");
+    expect(latest.goal.pendingContinuation).toMatchObject({
+      action: { kind: "start-ready-task", nodeId: "implement" },
+    });
+
+    value.sendUserMessage.mockClear();
+    value.notify.mockClear();
+    await agentEnd(value);
+    expect(value.notify).toHaveBeenCalledWith(
+      expect.stringContaining("closed an orphaned model-lane continuation"),
+      "warning",
+    );
+    expect(continuationPrompts(value)).toHaveLength(1);
+    expect(continuationPrompts(value)[0]).toContain("start ready task 'document'");
+    latest = value.entries.filter((entry) => entry.customType === HYPAGRAPH_EVENT_BATCH_TYPE).at(-1)?.data.snapshot;
+    expect(latest.goal.pendingContinuation).toMatchObject({
+      action: { kind: "start-ready-task", nodeId: "document" },
+    });
+    expect(latest.goal.status).toBe("active");
+  });
 });

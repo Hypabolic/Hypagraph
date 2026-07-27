@@ -44,9 +44,11 @@ M6A adds the deterministic dispatch lane. M6B makes the stored event stream insp
 - the loop continuation product path costs 6 model turns instead of 10;
 - the v0.6 release product path costs 10 model turns instead of 15;
 - each path produces the same canonical result, the same routes, the same stop decision, and the same replayed state;
-- one inspectable dogfood path with tasks, checks, gates, one iteration region, and one automatic revision completes through 100 stored events, charges 7 model turns, and exposes the timeline, three replay points, a blocked-node explanation, a skipped-route explanation, and two revision segments.
+- one inspectable dogfood path with tasks, checks, gates, one iteration region, and one automatic revision completes through 100 stored events, charges 7 model turns, and exposes the timeline, three replay points, a blocked-node explanation, a skipped-route explanation, and two revision segments;
+- one live Pi RPC dogfood with `xai-auth/grok-4.5` authors a task and a command check, writes `result.txt`, recovers an orphaned model-lane continuation, dispatches the check in the deterministic lane, completes the goal, and inspects history, dispatch, revisions, explain, and replay surfaces;
+- the controller closes a durable model-lane continuation when the selected action is no longer runnable and no delivered turn bookkeeping exists, so a ready check cannot stay blocked forever.
 
-See `docs/m6a-dogfood.md`, `docs/m6b-dogfood.md`, `docs/m6a-deterministic-dispatch-plan.md`, `docs/m6b-event-history-plan.md`, and `docs/v0.7-release-notes.md`.
+See `docs/m6a-dogfood.md`, `docs/m6b-dogfood.md`, `docs/dogfood-evidence/m6b-live/`, `docs/m6a-deterministic-dispatch-plan.md`, `docs/m6b-event-history-plan.md`, and `docs/v0.7-release-notes.md`.
 
 ## v0.6.0 - 2026-07-24
 
