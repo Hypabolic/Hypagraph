@@ -30,6 +30,11 @@ const actionForReadyNode = (
   if (kind === "check" && node.check && checkCanStartWithoutWaiting(runtime, node.check)) {
     return { kind: "run-ready-check", nodeId: node.id, ...(loopId ? { loopId } : {}) };
   }
+  // A ready interaction is requested by the controller or product surface.
+  // While awaiting_response, the node is intentionally not runnable.
+  if (kind === "interaction" && runtime.status === "ready" && node.interaction) {
+    return { kind: "request-ready-interaction", nodeId: node.id, ...(loopId ? { loopId } : {}) };
+  }
   return undefined;
 };
 
@@ -58,5 +63,8 @@ export function rootWorkActionIsRunnable(state: HypagraphState, action: GoalWork
   if (action.kind === "continue-active-task") return kind === "task" && ACTIVE_ROOT_STATUSES.has(runtime.status);
   if (action.kind === "start-ready-task") return kind === "task" && runtime.status === "ready";
   if (action.kind === "evaluate-ready-gate") return kind === "gate" && runtime.status === "ready";
+  if (action.kind === "request-ready-interaction") {
+    return kind === "interaction" && !!node.interaction && runtime.status === "ready";
+  }
   return kind === "check" && !!node.check && checkCanStartWithoutWaiting(runtime, node.check);
 }

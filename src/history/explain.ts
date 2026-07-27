@@ -215,7 +215,9 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
       ? { kind: "run-ready-check", nodeId }
       : kind === "gate"
         ? { kind: "evaluate-ready-gate", nodeId }
-        : { kind: "start-ready-task", nodeId };
+        : kind === "interaction"
+          ? { kind: "request-ready-interaction", nodeId }
+          : { kind: "start-ready-task", nodeId };
     const loopId = state.definition.loops.find((item) => item.nodes.includes(nodeId))?.id;
     const withLoop = { ...action, ...(loopId ? { loopId } : {}) } as GoalWorkContinuationAction;
     if (rootWorkActionIsRunnable(state, withLoop)) return { kind: "runnable", action: action.kind };
@@ -244,6 +246,7 @@ const decisionSummary = (
     case "start-ready-task":
     case "run-ready-check":
     case "evaluate-ready-gate":
+    case "request-ready-interaction":
       return {
         decision: decision.kind,
         summary: `The scheduler selects '${decision.kind}' for node '${decision.nodeId}'.`,

@@ -7,11 +7,13 @@ import type {
   FileAssertionCheckDefinition,
   GitAssertionCheckDefinition,
   HypagraphDefinition,
+  InteractionDefinition,
   LegacyLoopPredicate,
   LoopDefinition,
   MetricReportCheckDefinition,
   NodeDefinition,
 } from "./model.js";
+import { isFactValueOfType } from "./facts.js";
 import { canonicalProtectedPath } from "./integrity-policy.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
@@ -376,6 +378,59 @@ const validateMetricReport = (node: NodeDefinition, check: MetricReportCheckDefi
   return diagnostics;
 };
 
+const validateInteraction = (node: NodeDefinition, location: string): Diagnostic[] => {
+  if (!node.interaction) {
+    return [{ code: "interaction_definition_required", message: `Interaction node '${node.id}' requires an interaction definition.`, location: `${location}.interaction` }];
+  }
+  const interaction = node.interaction;
+  const interactionLocation = `${location}.interaction`;
+  const diagnostics: Diagnostic[] = [];
+  if (interaction.kind !== "interaction") diagnostics.push({ code: "invalid_interaction_kind", message: `Interaction node '${node.id}' must set interaction.kind to 'interaction'.`, location: `${interactionLocation}.kind` });
+  if (interaction.version !== 1) diagnostics.push({ code: "invalid_interaction_version", message: `Interaction node '${node.id}' must use interaction version 1.`, location: `${interactionLocation}.version` });
+  if (!interaction.question?.trim()) diagnostics.push({ code: "interaction_question_required", message: `Interaction node '${node.id}' requires a question.`, location: `${interactionLocation}.question` });
+  if (!interaction.presentation || (interaction.presentation.class !== "deterministic" && interaction.presentation.class !== "semantic")) {
+    diagnostics.push({ code: "interaction_presentation_required", message: `Interaction node '${node.id}' requires a presentation class.`, location: `${interactionLocation}.presentation` });
+  } else if (interaction.presentation.class === "semantic") {
+    diagnostics.push({ code: "semantic_presentation_requires_m7", message: `Interaction node '${node.id}' declares semantic presentation. Semantic presentation requires the M7 model executor.`, location: `${interactionLocation}.presentation.class` });
+  } else if (interaction.presentation.kind !== "none") {
+    diagnostics.push({ code: "unsupported_interaction_presentation", message: `Interaction node '${node.id}' supports only presentation kind 'none' in this milestone slice.`, location: `${interactionLocation}.presentation.kind` });
+  }
+  if (!Array.isArray(interaction.responses) || interaction.responses.length === 0) {
+    diagnostics.push({ code: "interaction_responses_required", message: `Interaction node '${node.id}' requires at least one response option.`, location: `${interactionLocation}.responses` });
+    return diagnostics;
+  }
+  const responseIds = new Set<string>();
+  const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
+  interaction.responses.forEach((response, index) => {
+    const responseLocation = `${interactionLocation}.responses[${index}]`;
+    if (!ID_PATTERN.test(response.id)) diagnostics.push({ code: "invalid_interaction_response_id", message: `Response ID '${response.id}' is not valid.`, location: `${responseLocation}.id` });
+    if (responseIds.has(response.id)) diagnostics.push({ code: "duplicate_interaction_response_id", message: `Response ID '${response.id}' occurs more than one time.`, location: `${responseLocation}.id` });
+    responseIds.add(response.id);
+    if (!response.label?.trim()) diagnostics.push({ code: "interaction_response_label_required", message: `Response '${response.id}' requires a label.`, location: `${responseLocation}.label` });
+    if (!Array.isArray(response.publish) || response.publish.length === 0) {
+      diagnostics.push({ code: "interaction_response_publish_required", message: `Response '${response.id}' must publish at least one fact.`, location: `${responseLocation}.publish` });
+      return;
+    }
+    const published = new Set<string>();
+    response.publish.forEach((fact, factIndex) => {
+      const factLocation = `${responseLocation}.publish[${factIndex}]`;
+      if (published.has(fact.name)) diagnostics.push({ code: "duplicate_interaction_response_fact", message: `Response '${response.id}' publishes fact '${fact.name}' more than one time.`, location: factLocation });
+      published.add(fact.name);
+      const contractType = contracts.get(fact.name);
+      if (!contractType) diagnostics.push({ code: "interaction_fact_not_declared", message: `Response '${response.id}' publishes undeclared fact '${fact.name}'.`, location: `${factLocation}.name` });
+      else if (contractType !== fact.type) diagnostics.push({ code: "interaction_fact_type_mismatch", message: `Response fact '${fact.name}' must have type '${contractType}'.`, location: factLocation });
+      else if (!isFactValueOfType(fact.type, fact.value)) diagnostics.push({ code: "interaction_fact_value_invalid", message: `Response fact '${fact.name}' has an invalid value for type '${fact.type}'.`, location: factLocation });
+    });
+  });
+  if (interaction.freeText) {
+    if (!interaction.freeText.prompt?.trim()) diagnostics.push({ code: "interaction_free_text_prompt_required", message: `Interaction free text requires a prompt.`, location: `${interactionLocation}.freeText.prompt` });
+    if (!Number.isInteger(interaction.freeText.maxBytes) || interaction.freeText.maxBytes < 1 || interaction.freeText.maxBytes > MAX_ASSERTION_BYTES) {
+      diagnostics.push({ code: "invalid_interaction_free_text_limit", message: `Interaction free text maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`, location: `${interactionLocation}.freeText.maxBytes` });
+    }
+  }
+  return diagnostics;
+};
+
 const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
   const check = node.check;
@@ -500,9 +555,16 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     const kind = node.kind ?? "task";
     if (kind !== "gate" && node.gate) diagnostics.push({ code: "non_gate_has_gate", message: `Node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
     if (kind !== "check" && node.check) diagnostics.push({ code: "non_check_has_check", message: `Node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
+    if (kind !== "interaction" && node.interaction) diagnostics.push({ code: "non_interaction_has_interaction", message: `Node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
     if (kind === "check") {
       if (node.gate) diagnostics.push({ code: "check_has_gate", message: `Check node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+      if (node.interaction) diagnostics.push({ code: "check_has_interaction", message: `Check node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
       diagnostics.push(...validateCheck(node, location));
+    }
+    if (kind === "interaction") {
+      if (node.gate) diagnostics.push({ code: "interaction_has_gate", message: `Interaction node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+      if (node.check) diagnostics.push({ code: "interaction_has_check", message: `Interaction node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
+      diagnostics.push(...validateInteraction(node, location));
     }
     if (kind === "gate") {
       if (!node.gate) { diagnostics.push({ code: "gate_definition_required", message: `Gate node '${node.id}' requires a gate definition.`, location: `${location}.gate` }); return; }

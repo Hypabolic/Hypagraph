@@ -25,6 +25,7 @@ export type GoalContinuationDecision =
   | (GoalContinuationStateIdentity & { kind: "stop-completed" })
   | (GoalContinuationStateIdentity & { kind: "stop-paused"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-blocked"; reason: string })
+  | (GoalContinuationStateIdentity & { kind: "stop-waiting-response"; reason: string; nodeIds: string[] })
   | (GoalContinuationStateIdentity & { kind: "stop-failed"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-cancelled"; reason: string })
   | (GoalContinuationStateIdentity & { kind: "stop-budget-limited"; reason: string })
@@ -93,6 +94,18 @@ export function selectGoalContinuation(state: HypagraphState): GoalContinuationD
   if (state.phase !== "running") return { ...identity, kind: "invariant-error", reason: `The active goal does not match workflow phase '${state.phase}'.` };
   const candidates = enumerateGoalContinuationCandidates(state);
   if (candidates.length === 0) {
+    const waitingNodeIds = state.definition.nodes
+      .filter((node) => state.runtime.nodes[node.id]?.status === "awaiting_response")
+      .map((node) => node.id)
+      .sort();
+    if (waitingNodeIds.length > 0) {
+      return {
+        ...identity,
+        kind: "stop-waiting-response",
+        nodeIds: waitingNodeIds,
+        reason: `Waiting for a user response on: ${waitingNodeIds.join(", ")}.`,
+      };
+    }
     const revision = revisionDecision(state, identity);
     return revision ? { ...identity, ...revision } : { ...identity, kind: "invariant-error", reason: "The active goal has no runnable continuation action." };
   }
@@ -124,7 +137,8 @@ export function isRunnableGoalContinuation(decision: GoalContinuationDecision): 
   return decision.kind === "continue-active-task"
     || decision.kind === "start-ready-task"
     || decision.kind === "run-ready-check"
-    || decision.kind === "evaluate-ready-gate";
+    || decision.kind === "evaluate-ready-gate"
+    || decision.kind === "request-ready-interaction";
 }
 
 export function isDispatchableGoalContinuation(decision: GoalContinuationDecision): decision is GoalDispatchableContinuation {

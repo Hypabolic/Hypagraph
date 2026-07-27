@@ -1,0 +1,117 @@
+
+===== final (seq 83, completed, revision 2) =====
+M6B lint repair, release note, and documentation verify - completed (revision 2, event 83)
+Goal: Repair the failing lint rule, prepare the release note, and verify the released documentation. Follow README required graph shape. Use dotted fact names lint.passed and documentation.passed. Include loop lint-repair over repair-lint and lint. Include gates route and publish-gate.
+Active: none
+Ready: none
+Goal control: goal-3248b54c-5e90-472b-8909-05d7bf7343b7 - completed (The canonical workflow completed.)
+Goal next: start task 'publish'
+Goal budget: model turns 0/unlimited; tokens 0/unlimited
+Scheduled actions: 10
+Turn accounting: Consumed turns count model turns only. A deterministic action, such as a ready check or a ready gate, consumes no turn. A turn-budget stop ends automatic continuation in every lane.
+Automatic revision: 1/1 - applied
+Goal stop: goal_completed - The canonical workflow completed.
+Loops:
+- lint-repair: succeeded | iteration 1/3 | evaluate lint | feedback lint->repair-lint | policy fail-workflow | component component:documentation | outcome succeeded | workflow releases-dependants | exit success
+Nodes:
+- repair-lint: succeeded - Repair the lint rule (attempts 1, iteration 1)
+- lint: succeeded - Run the lint check (attempts 1, iteration 1)
+- route: succeeded - Select the release route (attempts 0)
+- prepare-note: succeeded - Prepare the release note sources (attempts 1)
+- release-note: succeeded - Write the release note (attempts 2)
+- investigate: skipped - Investigate the rejected lint result (attempts 0)
+- documentation: succeeded - Verify the released documentation (attempts 1)
+- publish-gate: succeeded - Confirm the publish route (attempts 0)
+- publish: succeeded - Publish the release (attempts 1)
+- revise-documentation: skipped - Revise the documentation (attempts 0)
+
+layout 190x14; nodes=10; edges=11
+                                                                                                                                                                                              
+╭┄loop lint-repair [1/3] fail-workflow compo┄╮                                                                                                                                                
+┆ ┌────────────────┐      ┌────────────────┐ ┆    ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐  
+┆ │✓ repair-lint   │      │✓ lint          │ ┆    │✓ route         │      │– investigate   │      │✓ release-note  │      │✓ documentation │      │✓ publish-gate  │      │✓ publish       │  
+┆ │Repair the lint…│──────│Run the lint ch…│─┼────│Select the rele…│┼┼┼┼┼┼│Investigate the…│━━┼┼┼┼│Write the relea…│──────│Verify the rele…│──────│Confirm the pub…│┼┼┼━━━│Publish the rel…│  
+┆ └────────────────┘      └────────────────┘ ┆    └────────────────┘  │   └────────────────┘  │   └────────────────┘      └────────────────┘      └────────────────┘  ┆   └────────────────┘  
+┆          ║                       ║         ┆                        │                       │                                                                       ┆                       
+╰┄┄┄┄┄┄┄┄┄┄┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┄┄┄┄┄┄┄┄┄╯                        │                       │                                                                       ┆                       
+                                                                      │   ┌────────────────┐  │                                                                       ┆   ┌────────────────┐  
+                                                                      │   │✓ prepare-note  │  │                                                                       ┆   │– revise-docume…│  
+                                                                      ┼───│Prepare the rel…│──┼                                                                       ┼┄┄┄│Revise the docu…│  
+                                                                          └────────────────┘                                                                              └────────────────┘  
+
+===== after loop success / release-note ready (seq 27) =====
+M6B lint repair, release note, and documentation verify - running (revision 1, event 27)
+Goal: Repair the failing lint rule, prepare the release note, and verify the released documentation. Follow README required graph shape. Use dotted fact names lint.passed and documentation.passed. Include loop lint-repair over repair-lint and lint. Include gates route and publish-gate.
+Active: none
+Ready: release-note
+Goal control: goal-3248b54c-5e90-472b-8909-05d7bf7343b7 - active
+Goal next: start task 'release-note'
+Goal budget: model turns 0/unlimited; tokens 0/unlimited
+Scheduled actions: 3
+Turn accounting: Consumed turns count model turns only. A deterministic action, such as a ready check or a ready gate, consumes no turn. A turn-budget stop ends automatic continuation in every lane.
+Automatic revision: 0/1
+Loops:
+- lint-repair: succeeded | iteration 1/3 | evaluate lint | feedback lint->repair-lint | policy fail-workflow | component component:documentation | outcome succeeded | workflow releases-dependants | exit success
+Nodes:
+- repair-lint: succeeded - Repair the lint rule (attempts 1, iteration 1)
+- lint: succeeded - Run the lint check (attempts 1, iteration 1)
+- route: succeeded - Select the release route (attempts 0)
+- release-note: ready - Write the release note (attempts 0)
+- investigate: skipped - Investigate the rejected lint result (attempts 0)
+- documentation: pending - Verify the released documentation (attempts 0)
+- publish-gate: pending - Confirm the publish route (attempts 0)
+- publish: pending - Publish the release (attempts 0)
+- revise-documentation: pending - Revise the documentation (attempts 0)
+
+layout 166x14; nodes=9; edges=9
+                                                                                                                                                                                    
+╭┄loop lint-repair [1/3] fail-workflow compo┄╮                                                                                                                                      
+┆ ┌────────────────┐      ┌────────────────┐ ┆    ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐                
+┆ │✓ repair-lint   │      │✓ lint          │ ┆    │✓ route         │      │– investigate   │      │○ documentation │      │○ publish-gate  │      │○ publish       │                
+┆ │Repair the lint…│──────│Run the lint ch…│─┼────│Select the rele…│┼┼┼┄┄┄│Investigate the…│  ┼───│Verify the rele…│──────│Confirm the pub…│──┼───│Publish the rel…│                
+┆ └────────────────┘      └────────────────┘ ┆    └────────────────┘  ┃   └────────────────┘  │   └────────────────┘      └────────────────┘  │   └────────────────┘                
+┆          ║                       ║         ┆                        ┃                       │                                               │                                     
+╰┄┄┄┄┄┄┄┄┄┄┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┄┄┄┄┄┄┄┄┄╯                        ┃                       │                                               │                                     
+                                                                      ┃   ╔════════════════╗  │                                               │   ┌────────────────┐                
+                                                                      ┃   ║◇ release-note  ║  │                                               │   │○ revise-docume…│                
+                                                                      ┼━━━║Write the relea…║──┼                                               ┼───│Revise the docu…│                
+                                                                          ╚════════════════╝                                                      └────────────────┘                
+
+===== after revision applied (seq 47) =====
+M6B lint repair, release note, and documentation verify - running (revision 2, event 47)
+Goal: Repair the failing lint rule, prepare the release note, and verify the released documentation. Follow README required graph shape. Use dotted fact names lint.passed and documentation.passed. Include loop lint-repair over repair-lint and lint. Include gates route and publish-gate.
+Active: none
+Ready: prepare-note
+Goal control: goal-3248b54c-5e90-472b-8909-05d7bf7343b7 - active
+Goal next: start task 'prepare-note'
+Goal budget: model turns 0/unlimited; tokens 0/unlimited
+Scheduled actions: 5
+Turn accounting: Consumed turns count model turns only. A deterministic action, such as a ready check or a ready gate, consumes no turn. A turn-budget stop ends automatic continuation in every lane.
+Automatic revision: 1/1 - applied
+Loops:
+- lint-repair: succeeded | iteration 1/3 | evaluate lint | feedback lint->repair-lint | policy fail-workflow | component component:documentation | outcome succeeded | workflow releases-dependants | exit success
+Nodes:
+- repair-lint: succeeded - Repair the lint rule (attempts 1, iteration 1)
+- lint: succeeded - Run the lint check (attempts 1, iteration 1)
+- route: succeeded - Select the release route (attempts 0)
+- prepare-note: ready - Prepare the release note sources (attempts 0)
+- release-note: stale - Write the release note (attempts 1)
+- investigate: skipped - Investigate the rejected lint result (attempts 0)
+- documentation: stale - Verify the released documentation (attempts 0)
+- publish-gate: stale - Confirm the publish route (attempts 0)
+- publish: stale - Publish the release (attempts 0)
+- revise-documentation: stale - Revise the documentation (attempts 0)
+
+layout 190x14; nodes=10; edges=11
+                                                                                                                                                                                              
+╭┄loop lint-repair [1/3] fail-workflow compo┄╮                                                                                                                                                
+┆ ┌────────────────┐      ┌────────────────┐ ┆    ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐      ┌────────────────┐  
+┆ │✓ repair-lint   │      │✓ lint          │ ┆    │✓ route         │      │– investigate   │      │! release-note  │      │! documentation │      │! publish-gate  │      │! publish       │  
+┆ │Repair the lint…│──────│Run the lint ch…│─┼────│Select the rele…│┼┼┼┼┼┼│Investigate the…│━━┼┼┼┼│Write the relea…│──────│Verify the rele…│──────│Confirm the pub…│──┼───│Publish the rel…│  
+┆ └────────────────┘      └────────────────┘ ┆    └────────────────┘  │   └────────────────┘  │   └────────────────┘      └────────────────┘      └────────────────┘  │   └────────────────┘  
+┆          ║                       ║         ┆                        │                       │                                                                       │                       
+╰┄┄┄┄┄┄┄┄┄┄┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┼┄┄┄┄┄┄┄┄┄╯                        │                       │                                                                       │                       
+                                                                      │   ╔════════════════╗  │                                                                       │   ┌────────────────┐  
+                                                                      │   ║◇ prepare-note  ║  │                                                                       │   │! revise-docume…│  
+                                                                      ┼───║Prepare the rel…║──┼                                                                       ┼───│Revise the docu…│  
+                                                                          ╚════════════════╝                                                                              └────────────────┘  

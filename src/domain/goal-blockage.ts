@@ -65,9 +65,17 @@ export function classifyGoalBlockage(state: HypagraphState): GoalBlockageDecisio
   if (state.definition.nodes.some((node) => ACTIVE_ROOT_STATUSES.has(state.runtime.nodes[node.id]?.status ?? "pending"))) {
     return { kind: "not-blocked" };
   }
-  const unsafeAttempt = state.definition.nodes.find((node) => Object.values(state.runtime.nodes[node.id]?.attempts ?? {}).some(
-    (attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying",
-  ));
+  // An unanswered interaction is wait-local. It is not a blockage and not an unsafe active attempt.
+  if (state.definition.nodes.some((node) => state.runtime.nodes[node.id]?.status === "awaiting_response")) {
+    return { kind: "not-blocked" };
+  }
+  const unsafeAttempt = state.definition.nodes.find((node) => {
+    const runtime = state.runtime.nodes[node.id];
+    if (!runtime || runtime.status === "awaiting_response") return false;
+    return Object.values(runtime.attempts).some(
+      (attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying",
+    );
+  });
   if (unsafeAttempt) {
     const blocker = identity(state, "terminal-policy", `active-attempt:${unsafeAttempt.id}`, `Node '${unsafeAttempt.id}' retains an active attempt or check which cannot be safely invalidated.`);
     return { kind: "revision-not-allowed", blocker, reason: blocker.reason };
