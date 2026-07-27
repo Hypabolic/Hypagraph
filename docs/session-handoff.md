@@ -1,14 +1,17 @@
-# Session handoff: v0.6 released to M6A
+# Session handoff: v0.7 candidate after M6A and M6B
 
-- Handoff date: 2026-07-24
+- Handoff date: 2026-07-27
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Release baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
-- Release: `v0.6`
-- Release pull request: #77 — Dogfood and release Hypagoal v0.6
-- Completed milestone: M5B root Hypagoal autonomous controller
-- Current milestone: M6A deterministic dispatch lane. The former M6 is now M6B event history, replay, and debugger UI. See `docs/execution-roadmap.md`.
-- Hypagoal tracking issue: #25
+- Implementation baseline before this slice: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
+- Slice 7 candidate commit: `a89dce344ebb21b1cd999ecd98c7388cff3c4da7`
+- Live Pi dogfood evidence: `docs/dogfood-evidence/m6b-live/`, `docs/dogfood-evidence/m6b-live-loop-revision/`, and `docs/m6b-dogfood.md`
+- Published release: `v0.6`
+- Release candidate: `v0.7`
+- Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
+- Current milestone: M6.1 interaction and approval nodes
+- M6A plan: `docs/m6a-deterministic-dispatch-plan.md`
+- M6B plan: `docs/m6b-event-history-plan.md`
 
 ## 1. Read first
 
@@ -18,38 +21,41 @@ Read these files in order:
 2. `docs/session-handoff.md`;
 3. `docs/execution-roadmap.md`;
 4. `docs/product-spec.md`;
-5. `docs/hypagoal-vertical-slice-plan.md`;
-6. `docs/v0.6-dogfood.md`;
-7. `docs/event-sourcing-and-replay.md` if it exists;
-8. `docs/goal-family-and-concurrent-execution-plan.md`;
-9. issue #25 for the completed M5B record.
+5. `docs/m6a-dogfood.md`;
+6. `docs/m6b-dogfood.md`;
+7. `docs/v0.7-release-notes.md`;
+8. `docs/m6-1-interaction-node-plan.md`;
+9. `docs/goal-family-and-concurrent-execution-plan.md`.
 
-## 2. Released state
+## 2. Released and candidate state
 
-M5A and M5B are complete and released as v0.6.
+M5A and M5B remain released as published `v0.6`.
 
-The release contains:
+M6A and M6B are complete in code and documentation for the `v0.7` release candidate.
 
-- trusted evaluation contracts;
-- one workflow-local root Hypagoal lifecycle;
-- atomic `/hypagoal` creation from ordinary prose;
-- graph-aware automatic continuation;
-- exact turn and normalized token budgets;
-- reload, branch-change, and invalid-usage pause;
-- loop-aware and trusted-evaluation-aware continuation;
-- deterministic canonical blocker classification;
-- one bounded non-weakening automatic workflow revision;
-- `/hypagoal` status, pause, resume, cancel, and graph controls;
-- compact lifecycle messages and explicit typed stop reasons;
-- complete integrated release dogfood.
+M6A provides:
 
-Final release-candidate CI #1111 and exact-main publication gate CI #1114 pass 95 test files and 461 tests on Ubuntu, macOS, and Windows with Node.js 22 and 24.
+- a generic action-dispatch model with deterministic, model, and executor lanes;
+- direct deterministic evaluation of a ready gate;
+- direct deterministic execution of a ready check;
+- model-turn accounting only;
+- interrupted-dispatch recovery on reload.
 
-Tag and GitHub release `v0.6` point to `90a2885bb8f46d61cedd803897ca4d32246bcb44`.
+M6B provides:
+
+- a typed event timeline with lane classification, paging, and filters;
+- replay to any stored sequence with a live comparison;
+- canonical node and goal explanations;
+- `/hypagraph history`, `/hypagraph explain`, and matching `hypagraph_read` views;
+- graph-pane replay mode;
+- revision segments, discarded results, and future-namespace projection seams;
+- one presentation redaction policy for protected evaluator detail.
+
+The suite after M6B Slice 7 is 109 test files and 582 tests.
 
 ## 3. Preserved invariants
 
-Do not weaken these invariants during M6A and M6B:
+Do not weaken these invariants during M6.1 and later work:
 
 - canonical state changes only through the controller and reducers;
 - workflow state remains authoritative for goal completion;
@@ -60,70 +66,50 @@ Do not weaken these invariants during M6A and M6B:
 - restore and replay do not repeat external effects;
 - protected evaluator internals remain outside model-visible output;
 - independent branches and bounded regions keep independent lifecycle state;
-- the v0.6 root can later become a one-member goal family without rewriting workflow events.
+- the root can later become a one-member goal family without rewriting workflow events;
+- M6B adds no schema version, no event type, and no stored field.
 
-## 4. Current target: M6A deterministic dispatch
+## 4. Immediate release work for v0.7
+
+1. Land the M6B Slice 7 dogfood and release documentation on `main`.
+2. Publish the `v0.7` tag and GitHub release from the accepted main commit.
+3. Close stale issues for completed milestones when the release evidence is accepted.
+
+## 5. Current target: M6.1 interaction and approval nodes
 
 ### Objective
 
-Run every canonical action which needs no reasoning without a model turn.
+Let the graph return to the user for a decision, and let a typed answer control the next work.
 
-A check runs through `runPiCheck`, which is a function of state, executor, and store. A gate is one `evaluate-gate` reducer command. Both currently cost one charged model turn, because the controller delivers every selected action as a Pi follow-up.
+### Plan
 
-The detailed plan is in `docs/m6a-deterministic-dispatch-plan.md`.
+`docs/m6-1-interaction-node-plan.md`
 
-### Vertical slices
+### Mandatory rules
 
-1. Add the generic action-dispatch event model with the deterministic, model, and executor lanes. Replace the continuation lifecycle with the model lane. Reject unsupported stored schema versions. This slice changes no execution behaviour.
-2. Dispatch a ready gate in the deterministic lane. Add the consecutive-dispatch maximum.
-3. Dispatch a ready check in the deterministic lane through the existing durable lifecycle.
-4. Update accounting, budgets, and the product surface, so that consumed turns describe model turns only.
-5. Confirm reload, restore, and replay.
-6. Dogfood, record the measured turn reduction, and release v0.7.
+- An interaction node does not stop an independent runnable component.
+- The answer is typed and durable.
+- The model cannot invent an answer as a completion claim.
+- Replay and restore must not re-prompt for a stored answer.
 
-### Slice 1 recommendation
+## 6. Release evidence for the candidate
 
-Start with the event model, not with dispatch. Behaviour must not change in Slice 1, and every existing current-schema test must still pass.
+- M6A dogfood: `docs/m6a-dogfood.md`
+- M6B dogfood: `docs/m6b-dogfood.md`
+- Live Pi evidence: `docs/dogfood-evidence/m6b-live/`
+- Release notes: `docs/v0.7-release-notes.md`
+- M6A plan status: complete
+- M6B plan status: complete
+- Live Pi dogfood completed a short task and check path end to end
+- Live Pi dogfood completed a loop, gate, automatic-revision, and publish path end to end
+- Orphan model-lane continuation recovery is covered by `tests/hypagoal-continuation-pi.test.ts`
+- Block-while-running and durable revision submit recovery are covered by revision tests
+- Suite: 109 test files and 585 tests
 
-Suggested branch:
+## 7. Deferred product direction
 
-`agent/m6a-slice-1-action-dispatch-model`
+The following work remains accepted but deferred beyond M6.1:
 
-Suggested pull request title:
-
-`Add generic action dispatch event model`
-
-### Slice 1 constraints
-
-- The reducer stays pure.
-- Do not add migration code for unused pre-adoption schemas.
-- Reject unsupported stored schema versions with a clear error.
-- Exactly-once turn accounting holds for the model lane.
-- Round-robin fairness across independent components does not change.
-- Replay produces the same state and the same stop decision.
-
-### Next milestone: M6B event history, replay, and debugger UI
-
-M6B follows M6A. Do not start M6B first. M6A changes the dispatch event model, and M6B renders that model.
-
-`docs/execution-roadmap.md` section 8 gives the M6B objective and acceptance criteria. It does not give slices. The seven M6B slices are in `docs/m6b-event-history-plan.md`.
-
-## 5. Release evidence
-
-- Integrated dogfood: `docs/v0.6-dogfood.md`.
-- Release notes: `docs/v0.6-release-notes.md`.
-- Implementation PR: #77.
-- Release baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`.
-- Candidate CI: #1111.
-- Exact-main publication gate: #1114.
-- Suite: 95 test files and 461 tests.
-- Release: https://github.com/Hypabolic/Hypagraph/releases/tag/v0.6
-
-## 6. Deferred product direction
-
-The following work remains accepted but deferred beyond M6B:
-
-- interaction and approval nodes;
 - code nodes and the sandbox executor adapter;
 - external effects and reconciliation;
 - goal-family persistence;

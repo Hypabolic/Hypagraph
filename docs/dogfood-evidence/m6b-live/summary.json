@@ -1,0 +1,122 @@
+{
+  "objective": "Create result.txt with the exact text m6b-dogfood and verify that file with a deterministic command check.",
+  "workspace": "/tmp/hypagraph-m6b-live-dogfood/workspace",
+  "sessionDir": "/tmp/hypagraph-m6b-live-dogfood/session",
+  "logPath": "/tmp/hypagraph-m6b-live-dogfood/logs/rpc-1785137490693.jsonl",
+  "notifications": [
+    {
+      "message": "Hypagoal closed an orphaned model-lane continuation and will select the next action.",
+      "notifyType": "warning",
+      "at": "2026-07-27T07:32:27.455Z"
+    },
+    {
+      "message": "Hypagoal completed; workflow completed; next none; the canonical workflow completed; model turns 0/unlimited; tokens 0/unlimited; scheduled actions 2; revision 0/1. Stop: goal_completed — The canonical workflow completed..",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:27.469Z"
+    },
+    {
+      "message": "Hypagoal status\nObjective: Create result.txt with the exact text m6b-dogfood and verify that file with a\n           deterministic command check. Use dotted lower-case fact names such as result.created and\n           result.verified. Keep one task and one command check only.\nWorkflow: 8b8873ea-a4cd-41d0-a3a8-475d03bf2e2f | phase completed | revision 1 | event 21\nGoal: goal-d72c3bb2-352a-4802-8f0b-b8c279124626 | status completed\nCurrent action: none\nNext action: none; the canonical workflow completed\nReady work: none\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 2; charged model turns 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready\n                 check or a ready gate, consumes no turn. A turn-budget stop ends automatic\n                 continuation in every lane.\nLast action: deterministic lane; completed; ordinal 2; run check 'verify-result'\nAutomatic revision: 0/1; remaining 1\nBlockage: revision not allowed; terminal-policy 'goal-completed': The canonical workflow completed.\nStop goal_completed: The canonical workflow completed.\nControls: /hypagoal status | /hypagoal graph",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:33.587Z"
+    },
+    {
+      "message": "Hypagraph event timeline: 20 of 21 entries, sequence 2 to 21.\nMarker: M model lane, D deterministic lane, X executor lane, P protected evaluator.\n    2   r1 node       Node 'create-result' became ready.\n    3   r1 goal       The goal started.\n    4 M r1 dispatch   The model lane selected start task 'create-result' at ordinal 1.\n    5   r1 node       Attempt 37caa0c1-b0ce-47c8-a906-dd2210dae5c0 started on node 'create-result'.\n    6   r1 fact       Node 'create-result' published fact 'result.created' as true.\n    7   r1 node       Node 'create-result' submitted a result with 1 evidence references.\n    8   r1 node       Verification started on node 'create-result'.\n    9   r1 node       Node 'create-result' passed verification.\n   10   r1 node       Node 'verify-result' became ready.\n   11 M r1 dispatch   The model lane abandoned its action: The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action..\n   12 D r1 dispatch   The scheduler selected run check 'verify-result' in the deterministic lane at ordinal 2.\n   13 D r1 dispatch   The deterministic lane dispatched the selected action.\n   14   r1 check      Check 'verify-result' started a command attempt.\n   15   r1 fact       Node 'verify-result' published fact 'result.verified' as true.\n   16   r1 check      Check 'verify-result' recorded a 'passed' result, exit code 0.\n   17   r1 node       Verification started on node 'verify-result'.\n   18   r1 node       Node 'verify-result' passed verification.\n   19   r1 workflow   The workflow completed.\n   20   r1 goal       The goal completed.\n   21 D r1 dispatch   The deterministic lane completed the dispatched action.",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:35.104Z"
+    },
+    {
+      "message": "Hypagraph event timeline in lane 'dispatch': 5 of 5 entries, sequence 4 to 21.\nMarker: M model lane, D deterministic lane, X executor lane, P protected evaluator.\n    4 M r1 dispatch   The model lane selected start task 'create-result' at ordinal 1.\n   11 M r1 dispatch   The model lane abandoned its action: The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action..\n   12 D r1 dispatch   The scheduler selected run check 'verify-result' in the deterministic lane at ordinal 2.\n   13 D r1 dispatch   The deterministic lane dispatched the selected action.\n   21 D r1 dispatch   The deterministic lane completed the dispatched action.",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:36.630Z"
+    },
+    {
+      "message": "Hypagraph revision history: 1 revisions through sequence 21.\n- revision 1: sequence 1 to current; 21 events\nDiscarded results: none.\nStale nodes: none.",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:38.147Z"
+    },
+    {
+      "message": "Goal: completed\nDecision: stop-completed\nThe canonical workflow completed.\nRunnable nodes: none\nNodes:\n- create-result: succeeded; Node 'create-result' reached the terminal status 'succeeded'.\n- verify-result: succeeded; Node 'verify-result' reached the terminal status 'succeeded'.",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:39.668Z"
+    },
+    {
+      "message": "Hypagraph replay at sequence 3 of 21.\nEvent: hypagraph.goal.started\nSummary: The goal started.\n\nCreate and verify result.txt - running (revision 1, event 3)\nGoal: Create result.txt with the exact text m6b-dogfood and verify that file with a deterministic command check. Use dotted lower-case fact names such as result.created and result.verified. Keep one task and one command check only.\nActive: none\nReady: create-result\nGoal control: goal-d72c3bb2-352a-4802-8f0b-b8c279124626 - active\nGoal next: start task 'create-result'\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready check or a ready gate, consumes no turn. A turn-budget stop ends automatic continuation in every lane.\nAutomatic revision: 0/1\nNodes:\n- create-result: ready - Create result.txt (attempts 0)\n- verify-result: pending - Verify result.txt with command check (attempts 0)\n\nDifference from live sequence 21:\n- workflow phase running became completed\n- goal status active became completed\n- node create-result: ready became succeeded\n- node verify-result: pending became succeeded\n- facts published after this event: result.created, result.verified\n- charged model turns increased by 0\n- scheduled actions increased by 2\n\nReplay reads stored events only. It runs no check and calls no executor.",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:41.192Z"
+    },
+    {
+      "message": "Hypagoal status\nObjective: Create result.txt with the exact text m6b-dogfood and verify that file with a\n           deterministic command check. Use dotted lower-case fact names such as result.created and\n           result.verified. Keep one task and one command check only.\nWorkflow: 8b8873ea-a4cd-41d0-a3a8-475d03bf2e2f | phase completed | revision 1 | event 21\nGoal: goal-d72c3bb2-352a-4802-8f0b-b8c279124626 | status completed\nCurrent action: none\nNext action: none; the canonical workflow completed\nReady work: none\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 2; charged model turns 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready\n                 check or a ready gate, consumes no turn. A turn-budget stop ends automatic\n                 continuation in every lane.\nLast action: deterministic lane; completed; ordinal 2; run check 'verify-result'\nAutomatic revision: 0/1; remaining 1\nBlockage: revision not allowed; terminal-policy 'goal-completed': The canonical workflow completed.\nStop goal_completed: The canonical workflow completed.\nControls: /hypagoal status | /hypagoal graph",
+      "notifyType": "info",
+      "at": "2026-07-27T07:32:42.711Z"
+    }
+  ],
+  "statuses": {
+    "hypagraph": "HG completed: 0 ready",
+    "crossbar-scan": "",
+    "crossbar-loaded": "",
+    "xai-usage": "",
+    "hypagraph-check": ""
+  },
+  "widgets": {
+    "hypagraph": [
+      "Hypagraph: Create and verify result.txt [completed] | Goal completed (goal_completed)",
+      "Active: none | Ready: none | Budget turns 0/∞, tokens 0/∞ | Revision 0/1"
+    ]
+  },
+  "toolCalls": [
+    {
+      "name": "unknown",
+      "at": 1785137499225
+    },
+    {
+      "name": "unknown",
+      "at": 1785137507323
+    },
+    {
+      "name": "unknown",
+      "at": 1785137516691
+    },
+    {
+      "name": "unknown",
+      "at": 1785137525689
+    },
+    {
+      "name": "unknown",
+      "at": 1785137531421
+    },
+    {
+      "name": "unknown",
+      "at": 1785137534148
+    },
+    {
+      "name": "unknown",
+      "at": 1785137536661
+    },
+    {
+      "name": "unknown",
+      "at": 1785137539101
+    },
+    {
+      "name": "unknown",
+      "at": 1785137541506
+    },
+    {
+      "name": "unknown",
+      "at": 1785137543963
+    }
+  ],
+  "errors": [
+    {
+      "type": "extension_error",
+      "extensionPath": "command:hypagoal",
+      "event": "command",
+      "error": "There is no active Hypagoal to inspect."
+    }
+  ],
+  "assistantTail": [
+    "Hypagoal created successfully.\n\n- **Workflow ID:** `8b8873ea-a4cd-41d0-a3a8-475d03bf2e2f`\n- **Goal ID:** `goal-d72c3bb2-352a-4802-8f0b-b8c279124626`\n- **Nodes:** `create-result` (task) → `verify-result` (command check via `grep -Fx`)\n- **Facts:** `result.created`, `result.verified`\n- **Ready:** `create-result`\n\nNo autonomous continuation was started.",
+    "`create-result` is complete.\n\n- Wrote `result.txt` with exact text `m6b-dogfood` (11 bytes, no trailing newline)\n- Published `result.created=true`, submitted, and verified the task\n- Node status: **succeeded**\n- Next ready node: `verify-result` (command check) — not started; selected action was only the task start"
+  ],
+  "resultFileExists": true,
+  "resultFileContent": "m6b-dogfood"
+}

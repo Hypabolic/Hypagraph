@@ -1,0 +1,100 @@
+{
+  "sessionFile": "2026-07-27T07-31-31-830Z_019fa27c-6f76-741e-b951-7deea7546368.jsonl",
+  "phase": "completed",
+  "sequence": 21,
+  "revision": 1,
+  "goalStatus": "completed",
+  "consumedTurns": 0,
+  "schedulerOrdinal": 2,
+  "nodes": {
+    "create-result": "succeeded",
+    "verify-result": "succeeded"
+  },
+  "facts": [
+    "result.created",
+    "result.verified"
+  ],
+  "eventTypes": [
+    "hypagraph.workflow.defined",
+    "hypagraph.node.ready",
+    "hypagraph.goal.started",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.fact.published",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.workflow.completed",
+    "hypagraph.goal.completed",
+    "hypagraph.action.completed"
+  ],
+  "dispatchLaneEvents": [
+    {
+      "sequence": 4,
+      "type": "hypagraph.goal.continuation-requested",
+      "summary": {
+        "goalId": "goal-d72c3bb2-352a-4802-8f0b-b8c279124626",
+        "operationId": "hypagoal-continuation:0ff0be1d-adc9-45a0-afc3-7107e01cf423",
+        "ordinal": 1,
+        "action": {
+          "kind": "start-ready-task",
+          "nodeId": "create-result"
+        },
+        "selectedRevision": 1,
+        "selectedSequence": 3,
+        "selectedSnapshotHash": "e97b7f3ca396d80cf950d9a18631e973d734cdfe67289873b6bc611b56eac1e0",
+        "sessionGeneration": 1,
+        "branchGeneration": 0
+      }
+    },
+    {
+      "sequence": 11,
+      "type": "hypagraph.goal.continuation-abandoned",
+      "summary": {
+        "goalId": "goal-d72c3bb2-352a-4802-8f0b-b8c279124626",
+        "operationId": "hypagoal-continuation:0ff0be1d-adc9-45a0-afc3-7107e01cf423",
+        "reason": "The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action."
+      }
+    },
+    {
+      "sequence": 12,
+      "type": "hypagraph.action.selected",
+      "summary": {
+        "dispatch": {
+          "dispatchId": "hypagoal-dispatch:b816109b-92c7-4f9f-b376-68f1a61dcfaa",
+          "action": {
+            "kind": "run-ready-check",
+            "nodeId": "verify-result"
+          },
+          "lane": "deterministic",
+          "selectedSequence": 11,
+          "selectedSnapshotHash": "39f97d02ef10c813b68927dcff569a3134db36dfdb5d0d7bfbe6b077b0f6ee0b",
+          "schedulerOrdinal": 2
+        }
+      }
+    },
+    {
+      "sequence": 13,
+      "type": "hypagraph.action.dispatched",
+      "summary": {
+        "dispatchId": "hypagoal-dispatch:b816109b-92c7-4f9f-b376-68f1a61dcfaa"
+      }
+    },
+    {
+      "sequence": 21,
+      "type": "hypagraph.action.completed",
+      "summary": {
+        "dispatchId": "hypagoal-dispatch:b816109b-92c7-4f9f-b376-68f1a61dcfaa"
+      }
+    }
+  ]
+}

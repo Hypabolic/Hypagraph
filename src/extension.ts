@@ -18,7 +18,11 @@ import {
   replacementConfirmationFor,
   startRootHypagoal,
 } from "./hypagoal/root-creation.js";
-import { isDispatchableGoalContinuation, selectGoalContinuation } from "./domain/goal-continuation.js";
+import {
+  continuationActionIsRunnable,
+  isDispatchableGoalContinuation,
+  selectGoalContinuation,
+} from "./domain/goal-continuation.js";
 import {
   applyCommandsAndCommit,
   commitCreatedWorkflow,
@@ -311,7 +315,42 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (result.ok) {
       state = result.value.state;
       events.push(...result.value.events);
+      return;
     }
+    // Keep the durable request visible. A later recovery path must clear it.
+  };
+
+  /**
+   * Close a durable model-lane continuation whose selected action is no longer runnable.
+   *
+   * Live Pi can complete the selected task while the model-lane turn is never closed.
+   * The durable request then remains and blocks every later selection, including
+   * deterministic checks and gates. Recover only when the selected action is no longer
+   * runnable, so an undelivered but still-valid queue is not closed early.
+   */
+  const recoverOrphanedModelContinuation = async (
+    ctx: ExtensionContext,
+    reason: string,
+  ): Promise<boolean> => {
+    const canonical = state?.goal?.pendingContinuation;
+    if (!state?.goal || !canonical) return false;
+    if (deliveredContinuation) return false;
+    if (continuationActionIsRunnable(state, canonical.action)) return false;
+    // Drop undelivered in-memory bookkeeping. The durable request is closed next.
+    pendingContinuation = undefined;
+    await abandonPendingContinuation(reason);
+    if (state.goal?.pendingContinuation) {
+      ctx.ui.notify(
+        `Hypagoal could not close the orphaned model-lane continuation '${canonical.operationId}'.`,
+        "warning",
+      );
+      return false;
+    }
+    ctx.ui.notify(
+      `Hypagoal closed an orphaned model-lane continuation and will select the next action.`,
+      "warning",
+    );
+    return true;
   };
 
   const dispatchDeterministicCheck = async (
@@ -617,6 +656,12 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         ctx.ui.notify(`Hypagoal continuation '${delivered.operationId}' made no canonical progress. Automatic continuation stopped.`, "warning");
         return;
       }
+    } else {
+      // A durable request without delivery bookkeeping blocks later selection.
+      await recoverOrphanedModelContinuation(
+        ctx,
+        "The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action.",
+      );
     }
     await queueGoalContinuation(ctx);
   });
@@ -1077,9 +1122,23 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
-      const delivered = deliveredContinuation;
       const canonical = state?.goal?.pendingContinuation;
-      if (!state?.goal || !delivered || delivered.action.kind !== "request-revision" || !canonical) throw new Error("There is no delivered automatic revision request.");
+      const delivered = deliveredContinuation;
+      // Live Pi can lose in-memory delivery bookkeeping while the durable
+      // request-revision continuation remains. Accept that durable request so the
+      // one automatic revision turn can still complete.
+      const revisionRequest = delivered?.action.kind === "request-revision"
+        ? delivered.action
+        : canonical?.action.kind === "request-revision"
+          ? canonical.action
+          : undefined;
+      if (!state?.goal || !canonical || !revisionRequest || revisionRequest.kind !== "request-revision") {
+        throw new Error("There is no delivered automatic revision request.");
+      }
+      if (delivered && delivered.operationId !== canonical.operationId) {
+        throw new Error("There is no delivered automatic revision request.");
+      }
+      const revisionOperationId = delivered?.operationId ?? canonical.operationId;
       revisionProposalHandled = true;
       const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
         type: "apply-goal-revision",
@@ -1088,16 +1147,16 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         expectedRevision: state.revision,
         expectedSequence: state.sequence,
         expectedSnapshotHash: state.snapshotHash,
-        revisionOperationId: delivered.operationId,
+        revisionOperationId,
         continuationOperationId: canonical.operationId,
         continuationOrdinal: canonical.ordinal,
         requestSequence: canonical.requestSequence,
         sessionGeneration: canonical.sessionGeneration,
         branchGeneration: canonical.branchGeneration,
-        blocker: structuredClone(delivered.action.blocker),
+        blocker: structuredClone(revisionRequest.blocker),
         definition: { ...normalizeDefinition(params), goal: params.goal },
         commandId: `apply-goal-revision:${randomUUID()}`,
-        correlationId: delivered.operationId,
+        correlationId: revisionOperationId,
         at: new Date().toISOString(),
       }]);
       if (!result.ok) {
@@ -1133,6 +1192,10 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
+      if (state?.goal?.pendingContinuation?.action.kind === "request-revision"
+        || state?.goal?.automaticRevision.lastAttempt?.outcome === "pending") {
+        throw new Error("An automatic bounded revision is pending. Use hypagoal_submit_revision for that turn.");
+      }
       await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
       updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);

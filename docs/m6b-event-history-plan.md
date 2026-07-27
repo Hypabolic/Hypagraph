@@ -1,6 +1,6 @@
 # M6B event history, replay, and debugger UI vertical-slice plan
 
-- Status: active
+- Status: complete
 - Milestone: M6B
 - Release marker: v0.7
 - Prerequisite: M6A deterministic dispatch lane
@@ -303,7 +303,7 @@ Scope:
 | 4 | History surface | `src/ui/history-surface.ts`, `tests/m6b-history-surface.test.ts` |
 | 5 | Debugger pane | `src/pi/graph-pane.ts`, `tests/m6b-debugger-pane.test.ts` |
 | 6 | Revisions and seams | `src/history/revisions.ts`, `tests/m6b-revisions-and-seams.test.ts` |
-| 7 | Dogfood and release | not started |
+| 7 | Dogfood and release | `tests/m6b-dogfood.test.ts`, live Pi evidence under `docs/dogfood-evidence/`, `docs/m6b-dogfood.md`, `docs/v0.7-release-notes.md` |
 
 Rule 5.7 holds. The schema version stays 6, and M6B adds no event type and no
 stored field.
