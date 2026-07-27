@@ -771,7 +771,37 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if ((verificationPassed || evaluation !== undefined) && next.phase !== "failed") { next = appendReadyEvents(next, events, command); next = appendCompletionIfNeeded(next, events, command); }
       break;
     }
-    case "block-node": { if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`); if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason."); next = append(next, events, command, { type: "hypagraph.node.blocked", nodeId: command.nodeId, data: { reason: command.reason.trim(), blockerKind: command.blockerKind ?? "unknown" } }); break; }
+    case "block-node": {
+      if (!["pending", "ready", "running", "stale", "failed"].includes(node.status)) {
+        return reject("node_not_blockable", `Node '${command.nodeId}' cannot be blocked from '${node.status}'.`);
+      }
+      if (!command.reason.trim()) return reject("block_reason_required", "A blocked node requires a reason.");
+      const blockReason = command.reason.trim();
+      // A block ends active work on the node. Close the open attempt first so the
+      // durable history stays explicit and automatic revision remains eligible.
+      if (node.currentAttemptId) {
+        const attempt = node.attempts[node.currentAttemptId];
+        if (attempt && (attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying")) {
+          const loop = loopForNode(state, command.nodeId);
+          next = append(next, events, command, {
+            type: "hypagraph.attempt.cancelled",
+            nodeId: command.nodeId,
+            attemptId: node.currentAttemptId,
+            ...(loop ? { loopId: loop.id } : {}),
+            data: {
+              reason: `The node was blocked: ${blockReason}`,
+              ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
+            },
+          });
+        }
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.node.blocked",
+        nodeId: command.nodeId,
+        data: { reason: blockReason, blockerKind: command.blockerKind ?? "unknown" },
+      });
+      break;
+    }
     case "unblock-node": { if (node.status !== "blocked") return reject("node_not_blocked", `Node '${command.nodeId}' is not blocked.`); next = append(next, events, command, { type: "hypagraph.node.unblocked", nodeId: command.nodeId }); next = appendReadyEvents(next, events, command); break; }
     case "cancel-attempt": {
       if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_attempt", "The cancellation does not match the current attempt.");

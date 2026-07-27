@@ -1,0 +1,255 @@
+{
+  "sessionFile": "2026-07-27T07-51-29-079Z_019fa28e-b437-74f7-a1dd-8b2755c165d6.jsonl",
+  "phase": "completed",
+  "sequence": 83,
+  "revision": 2,
+  "goalStatus": "completed",
+  "consumedTurns": 0,
+  "schedulerOrdinal": 10,
+  "automaticRevision": {
+    "maximumAttempts": 1,
+    "consumedAttempts": 1,
+    "lastAttempt": {
+      "operationId": "hypagoal-continuation:5deabc89-db33-4f75-b039-2f0159159cc9",
+      "blocker": {
+        "kind": "blocked-node",
+        "id": "release-note",
+        "reason": "A bounded prepare step for the release note is missing.",
+        "sourceRevision": 1,
+        "sourceSequence": 34,
+        "sourceSnapshotHash": "9f8e48d7f0173f84270e234567045e1edcd7db62fb2216f47522f3f95b4bb76c"
+      },
+      "sourceRevision": 1,
+      "sourceSequence": 34,
+      "sourceSnapshotHash": "9f8e48d7f0173f84270e234567045e1edcd7db62fb2216f47522f3f95b4bb76c",
+      "requestSequence": 35,
+      "sessionGeneration": 1,
+      "branchGeneration": 0,
+      "requestedAt": "2026-07-27T07:54:34.408Z",
+      "outcome": "applied",
+      "completedAt": "2026-07-27T07:54:47.350Z",
+      "appliedRevision": 2
+    }
+  },
+  "nodes": {
+    "repair-lint": "succeeded",
+    "lint": "succeeded",
+    "route": "succeeded",
+    "prepare-note": "succeeded",
+    "release-note": "succeeded",
+    "investigate": "skipped",
+    "documentation": "succeeded",
+    "publish-gate": "succeeded",
+    "publish": "succeeded",
+    "revise-documentation": "skipped"
+  },
+  "loops": {
+    "lint-repair": {
+      "status": "succeeded",
+      "iteration": 1,
+      "exitReason": "success"
+    }
+  },
+  "routes": {
+    "route": {
+      "gateNodeId": "route",
+      "outcomeId": "true",
+      "targetNodeIds": [
+        "release-note"
+      ],
+      "factsUsed": [
+        "lint.passed"
+      ],
+      "semanticsVersion": 1,
+      "eventId": "40a33d43c004796b8c4b54165995362ca9bd75bb54e1b0a53a06e22f26c6dcad",
+      "sequence": 25
+    },
+    "publish-gate": {
+      "gateNodeId": "publish-gate",
+      "outcomeId": "true",
+      "targetNodeIds": [
+        "publish"
+      ],
+      "factsUsed": [
+        "documentation.passed"
+      ],
+      "semanticsVersion": 1,
+      "eventId": "84f32a9e89a010c17bce894792a4e129f61920e1aa94d1f829e27507c9f70511",
+      "sequence": 73
+    }
+  },
+  "facts": [
+    "lint.passed",
+    "documentation.passed"
+  ],
+  "definitionNodeIds": [
+    "repair-lint",
+    "lint",
+    "route",
+    "prepare-note",
+    "release-note",
+    "investigate",
+    "documentation",
+    "publish-gate",
+    "publish",
+    "revise-documentation"
+  ],
+  "eventTypes": [
+    "hypagraph.workflow.defined",
+    "hypagraph.node.ready",
+    "hypagraph.goal.started",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.loop.iteration-started",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.loop.evaluated",
+    "hypagraph.loop.completed",
+    "hypagraph.node.ready",
+    "hypagraph.action.completed",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.route.selected",
+    "hypagraph.node.skipped",
+    "hypagraph.node.ready",
+    "hypagraph.action.completed",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.cancelled",
+    "hypagraph.node.blocked",
+    "hypagraph.goal.blocked",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.goal.revision-requested",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.workflow.revised",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.invalidated",
+    "hypagraph.node.ready",
+    "hypagraph.goal.revision-applied",
+    "hypagraph.goal.resumed",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.action.completed",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.route.selected",
+    "hypagraph.node.skipped",
+    "hypagraph.node.ready",
+    "hypagraph.action.completed",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.workflow.completed",
+    "hypagraph.goal.completed"
+  ],
+  "selectedActions": [
+    {
+      "sequence": 12,
+      "lane": "deterministic",
+      "kind": "run-ready-check",
+      "nodeId": "lint"
+    },
+    {
+      "sequence": 23,
+      "lane": "deterministic",
+      "kind": "evaluate-ready-gate",
+      "nodeId": "route"
+    },
+    {
+      "sequence": 62,
+      "lane": "deterministic",
+      "kind": "run-ready-check",
+      "nodeId": "documentation"
+    },
+    {
+      "sequence": 71,
+      "lane": "deterministic",
+      "kind": "evaluate-ready-gate",
+      "nodeId": "publish-gate"
+    }
+  ],
+  "keyEvents": [
+    {
+      "sequence": 20,
+      "type": "hypagraph.loop.completed",
+      "nodeId": null
+    },
+    {
+      "sequence": 25,
+      "type": "hypagraph.route.selected",
+      "nodeId": "route"
+    },
+    {
+      "sequence": 32,
+      "type": "hypagraph.node.blocked",
+      "nodeId": "release-note"
+    },
+    {
+      "sequence": 35,
+      "type": "hypagraph.goal.revision-requested",
+      "nodeId": null
+    },
+    {
+      "sequence": 37,
+      "type": "hypagraph.workflow.revised",
+      "nodeId": null
+    },
+    {
+      "sequence": 45,
+      "type": "hypagraph.goal.revision-applied",
+      "nodeId": null
+    },
+    {
+      "sequence": 73,
+      "type": "hypagraph.route.selected",
+      "nodeId": "publish-gate"
+    },
+    {
+      "sequence": 82,
+      "type": "hypagraph.workflow.completed",
+      "nodeId": null
+    },
+    {
+      "sequence": 83,
+      "type": "hypagraph.goal.completed",
+      "nodeId": null
+    }
+  ]
+}

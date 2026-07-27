@@ -187,6 +187,50 @@ describe("Hypagoal bounded revision Pi smoke", () => {
   });
 
 
+  it("accepts hypagoal_submit_revision from durable pending when delivery bookkeeping is lost", async () => {
+    const value = harness();
+    await create(value);
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await complete(value, "inventory");
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await transition(value, "implement", "block", { reason: "A bounded schema-normalization step is missing.", blockerKind: "repository-work" });
+    await agentEnd(value);
+
+    // Durable request-revision is queued, but the host never delivered the turn.
+    expect(latest(value).goal.pendingContinuation.action.kind).toBe("request-revision");
+    expect(prompts(value).at(-1)).toContain("automatic bounded revision");
+
+    const revised = definition();
+    revised.nodes = [
+      revised.nodes[0]!,
+      { id: "normalize-schema", title: "Normalize the schema", requires: ["inventory"], acceptance: ["Add the bounded missing repository step"], scope: { paths: ["src/**"] } },
+      { ...revised.nodes[1]!, requires: ["inventory", "normalize-schema"] },
+    ];
+    const result = await value.tools.get("hypagoal_submit_revision")!.execute("revise-without-delivery", revised, undefined, undefined, value.ctx);
+    expect(String(result.content[0].text)).toContain("accepted the bounded automatic revision");
+
+    const state = latest(value);
+    expect(state.revision).toBe(2);
+    expect(state.goal.automaticRevision).toMatchObject({ consumedAttempts: 1, lastAttempt: { outcome: "applied" } });
+    expect(state.definition.nodes.some((node: { id: string }) => node.id === "normalize-schema")).toBe(true);
+  });
+
+  it("rejects hypagraph_revise while an automatic revision is pending", async () => {
+    const value = harness();
+    await create(value);
+    await agentEnd(value);
+    await before(value, prompts(value).at(-1)!);
+    await transition(value, "inventory", "block", { reason: "A bounded repository step is missing.", blockerKind: "repository-work" });
+    await agentEnd(value);
+    expect(latest(value).goal.pendingContinuation.action.kind).toBe("request-revision");
+
+    await expect(
+      value.tools.get("hypagraph_revise")!.execute("manual-revise", definition(), undefined, undefined, value.ctx),
+    ).rejects.toThrow(/automatic bounded revision is pending/i);
+  });
+
   it("charges one interrupted delivered revision turn and exhausts the allowance", async () => {
     const value = harness();
     await create(value);

@@ -242,7 +242,40 @@ describe("bounded Hypagoal revision", () => {
     expect(stale).toMatchObject({ ok: false });
   });
 
-  it("does not classify a blocked node with an active attempt or check as automatically revisable", () => {
+  it("cancels an open attempt when a running node is blocked, so revision stays eligible", () => {
+    const value = createGoal();
+    value.state = apply(value.state, value.events, {
+      type: "start-node",
+      nodeId: "prepare",
+      attemptId: "prepare-running",
+      commandId: "start-prepare",
+      at,
+    });
+    value.state = apply(value.state, value.events, {
+      type: "block-node",
+      nodeId: "prepare",
+      reason: "A bounded migration step is missing.",
+      blockerKind: "repository-work",
+      commandId: "block-running",
+      at,
+    });
+    expect(value.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "hypagraph.attempt.cancelled",
+      "hypagraph.node.blocked",
+    ]));
+    expect(value.state.runtime.nodes.prepare).toMatchObject({
+      status: "blocked",
+      blockerKind: "repository-work",
+    });
+    expect(value.state.runtime.nodes.prepare!.currentAttemptId).toBeUndefined();
+    expect(value.state.runtime.nodes.prepare!.attempts["prepare-running"]?.status).toBe("cancelled");
+    expect(classifyGoalBlockage(value.state)).toMatchObject({
+      kind: "revision-eligible",
+      blocker: { kind: "blocked-node", id: "prepare" },
+    });
+  });
+
+  it("does not classify a blocked node with a residual active attempt as automatically revisable", () => {
     const value = block(createGoal());
     const unsafe = structuredClone(value.state);
     unsafe.runtime.nodes.prepare!.currentAttemptId = "unsafe-attempt";

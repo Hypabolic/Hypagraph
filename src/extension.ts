@@ -1122,9 +1122,23 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
-      const delivered = deliveredContinuation;
       const canonical = state?.goal?.pendingContinuation;
-      if (!state?.goal || !delivered || delivered.action.kind !== "request-revision" || !canonical) throw new Error("There is no delivered automatic revision request.");
+      const delivered = deliveredContinuation;
+      // Live Pi can lose in-memory delivery bookkeeping while the durable
+      // request-revision continuation remains. Accept that durable request so the
+      // one automatic revision turn can still complete.
+      const revisionRequest = delivered?.action.kind === "request-revision"
+        ? delivered.action
+        : canonical?.action.kind === "request-revision"
+          ? canonical.action
+          : undefined;
+      if (!state?.goal || !canonical || !revisionRequest || revisionRequest.kind !== "request-revision") {
+        throw new Error("There is no delivered automatic revision request.");
+      }
+      if (delivered && delivered.operationId !== canonical.operationId) {
+        throw new Error("There is no delivered automatic revision request.");
+      }
+      const revisionOperationId = delivered?.operationId ?? canonical.operationId;
       revisionProposalHandled = true;
       const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
         type: "apply-goal-revision",
@@ -1133,16 +1147,16 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         expectedRevision: state.revision,
         expectedSequence: state.sequence,
         expectedSnapshotHash: state.snapshotHash,
-        revisionOperationId: delivered.operationId,
+        revisionOperationId,
         continuationOperationId: canonical.operationId,
         continuationOrdinal: canonical.ordinal,
         requestSequence: canonical.requestSequence,
         sessionGeneration: canonical.sessionGeneration,
         branchGeneration: canonical.branchGeneration,
-        blocker: structuredClone(delivered.action.blocker),
+        blocker: structuredClone(revisionRequest.blocker),
         definition: { ...normalizeDefinition(params), goal: params.goal },
         commandId: `apply-goal-revision:${randomUUID()}`,
-        correlationId: delivered.operationId,
+        correlationId: revisionOperationId,
         at: new Date().toISOString(),
       }]);
       if (!result.ok) {
@@ -1178,6 +1192,10 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
     parameters: definitionSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       ensureNoActiveExecution();
+      if (state?.goal?.pendingContinuation?.action.kind === "request-revision"
+        || state?.goal?.automaticRevision.lastAttempt?.outcome === "pending") {
+        throw new Error("An automatic bounded revision is pending. Use hypagoal_submit_revision for that turn.");
+      }
       await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
       updateUi(state, ctx, graphPane);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);

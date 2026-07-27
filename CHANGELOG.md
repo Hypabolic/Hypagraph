@@ -46,9 +46,12 @@ M6A adds the deterministic dispatch lane. M6B makes the stored event stream insp
 - each path produces the same canonical result, the same routes, the same stop decision, and the same replayed state;
 - one inspectable dogfood path with tasks, checks, gates, one iteration region, and one automatic revision completes through 100 stored events, charges 7 model turns, and exposes the timeline, three replay points, a blocked-node explanation, a skipped-route explanation, and two revision segments;
 - one live Pi RPC dogfood with `xai-auth/grok-4.5` authors a task and a command check, writes `result.txt`, recovers an orphaned model-lane continuation, dispatches the check in the deterministic lane, completes the goal, and inspects history, dispatch, revisions, explain, and replay surfaces;
-- the controller closes a durable model-lane continuation when the selected action is no longer runnable and no delivered turn bookkeeping exists, so a ready check cannot stay blocked forever.
+- one live Pi RPC dogfood with loop, two gates, automatic revision, prepare-note insertion, documentation check, publish completion, revision history, loop history, explain, and multi-point replay through 83 events and revision 2;
+- the controller closes a durable model-lane continuation when the selected action is no longer runnable and no delivered turn bookkeeping exists, so a ready check cannot stay blocked forever;
+- blocking a running node cancels its open attempt so automatic revision stays eligible;
+- `hypagoal_submit_revision` accepts a durable request-revision continuation when delivery bookkeeping is lost, and `hypagraph_revise` is rejected while automatic revision is pending.
 
-See `docs/m6a-dogfood.md`, `docs/m6b-dogfood.md`, `docs/dogfood-evidence/m6b-live/`, `docs/m6a-deterministic-dispatch-plan.md`, `docs/m6b-event-history-plan.md`, and `docs/v0.7-release-notes.md`.
+See `docs/m6a-dogfood.md`, `docs/m6b-dogfood.md`, `docs/dogfood-evidence/m6b-live/`, `docs/dogfood-evidence/m6b-live-loop-revision/`, `docs/m6a-deterministic-dispatch-plan.md`, `docs/m6b-event-history-plan.md`, and `docs/v0.7-release-notes.md`.
 
 ## v0.6.0 - 2026-07-24
 

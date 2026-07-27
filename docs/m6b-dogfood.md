@@ -5,11 +5,13 @@
 - Release marker: v0.7
 - Prerequisite: M6A deterministic dispatch lane
 - Plan: `docs/m6b-event-history-plan.md`
-- Live Pi session: real RPC session with `xai-auth/grok-4.5` and the local extension
-- Live evidence: `docs/dogfood-evidence/m6b-live/`
+- Live Pi model: `xai-auth/grok-4.5`
+- Live extension: `./extensions/hypagraph.ts`
+- Live short path: `docs/dogfood-evidence/m6b-live/`
+- Live loop and revision path: `docs/dogfood-evidence/m6b-live-loop-revision/`
 - Automated product-path test: `tests/m6b-dogfood.test.ts`
-- Orphan-continuation recovery test: `tests/hypagoal-continuation-pi.test.ts`
-- Suite after this slice: 109 test files and 583 tests
+- Recovery tests: `tests/hypagoal-continuation-pi.test.ts`, `tests/hypagoal-revision-pi.test.ts`
+- Suite after this slice: 109 test files and 585 tests
 
 ## 1. Purpose
 
@@ -17,77 +19,94 @@ M6B makes execution and decisions inspectable. The runtime already stores an
 append-only event stream and rebuilds the same state from that stream. Before
 M6B the product did not show the stream, move through it, or explain a decision.
 
-This dogfood has two layers:
+This dogfood has three layers:
 
-1. a live Pi session on this machine;
-2. an automated product-path test for revision and loop coverage.
+1. a short live Pi path for task, check, history, and replay;
+2. a live Pi path for loop, gate, automatic revision, and history;
+3. an automated product-path test for regression.
 
-The live session is the product proof. The automated test keeps the larger
-revision path regression-safe.
+The live sessions are the product proof. The automated test keeps the path
+stable under CI.
 
-## 2. Live Pi dogfood
+## 2. Live Pi path A: task and check
 
-### Environment
-
-- host command path: Pi RPC mode;
-- model: `xai-auth/grok-4.5`;
-- extension: `./extensions/hypagraph.ts` from this branch;
-- workspace: temporary empty directory with one README;
-- objective:
+### Objective
 
 > Create result.txt with the exact text m6b-dogfood and verify that file with a
 > deterministic command check.
 
-### Authoring
+### Result
 
-`/hypagoal` started one authoring turn. The model inspected the empty workspace
-and called `hypagoal_start` with:
+| Measurement | Value |
+| --- | --- |
+| Final phase | completed |
+| Final goal status | completed |
+| Sequence | 21 |
+| Scheduled actions | 2 |
+| Nodes | `create-result` succeeded; `verify-result` succeeded |
+| Facts | `result.created`, `result.verified` |
+| Last action | deterministic check `verify-result` |
 
-- one task, `create-result`;
-- one command check, `verify-result`;
-- dotted lower-case facts `result.created` and `result.verified`.
+History, dispatch, explain, and replay surfaces were inspected in the same
+session. Evidence: `docs/dogfood-evidence/m6b-live/`.
 
-The first authoring attempt was rejected once for invalid fact names. A second
-`/hypagoal` authoring turn produced a valid graph.
+## 3. Live Pi path B: loop, gates, and automatic revision
 
-### Execution
+### Objective
 
-The model-lane continuation selected `create-result`. The model wrote
-`result.txt` with exact content `m6b-dogfood`, published `result.created`, and
-verified the task.
+> Repair the failing lint rule, prepare the release note, and verify the
+> released documentation.
 
-Live Pi left the durable model-lane request open after that task succeeded. The
-controller recovered:
+### Seeded workspace
 
-1. it closed the orphaned model-lane continuation;
-2. it selected `run-ready-check` for `verify-result` in the deterministic lane;
-3. the check passed and published `result.verified`;
-4. the workflow and goal completed through canonical state.
+- `src/app.js` contained `TODO_LINT`;
+- `scripts-lint.mjs` failed while that marker remained;
+- README required a lint-repair loop, two gates, and one automatic revision.
 
-Final workspace file:
+### Observed execution
 
-```text
-m6b-dogfood
-```
+1. Authoring created the required graph with loop `lint-repair`.
+2. Task `repair-lint` removed `TODO_LINT`.
+3. Deterministic check `lint` passed and the loop completed through typed success.
+4. Deterministic gate `route` selected `release-note` and skipped `investigate`.
+5. `release-note` was blocked with `repository-work`.
+6. Blocking a running attempt cancelled that attempt, so revision stayed eligible.
+7. Automatic revision applied through `hypagoal_submit_revision` and added
+   `prepare-note`.
+8. After revision, `prepare-note`, `release-note`, deterministic check
+   `documentation`, gate `publish-gate`, and task `publish` completed.
+9. Goal completion was workflow-derived.
 
 ### Measured live result
 
 | Measurement | Value |
 | --- | --- |
-| Final workflow phase | completed |
+| Final phase | completed |
 | Final goal status | completed |
-| Final revision | 1 |
-| Stored event sequences | 21 |
-| Scheduled actions | 2 |
-| Charged model turns | 0 |
-| Last action | deterministic lane; completed; run check `verify-result` |
-| Nodes | `create-result` succeeded; `verify-result` succeeded |
-| Facts | `result.created`, `result.verified` |
+| Final revision | 2 |
+| Stored event sequences | 83 |
+| Scheduled actions | 10 |
+| Automatic revision | 1 applied |
+| Loop `lint-repair` | succeeded at iteration 1 through typed success |
+| Deterministic actions | lint check, route gate, documentation check, publish-gate |
+| Skipped routes | `investigate`, `revise-documentation` |
+| Workspace outputs | `src/app.js` ready; `docs/release-note.md`; `publish.ok` |
 
-Charged model turns are 0 because the model-lane request was abandoned before
-turn accounting closed it. The task work still happened through Hypagraph tools
-during the open agent run. The recovery path is the important product result:
-without it the ready check never dispatched.
+Selected deterministic actions:
+
+1. run-ready-check `lint`;
+2. evaluate-ready-gate `route`;
+3. run-ready-check `documentation`;
+4. evaluate-ready-gate `publish-gate`.
+
+Selected model-lane actions:
+
+1. start-ready-task `repair-lint`;
+2. start-ready-task `release-note` then block;
+3. request-revision;
+4. start-ready-task `prepare-note`;
+5. start-ready-task `release-note`;
+6. start-ready-task `publish`.
 
 ### Live history and debugger surfaces
 
@@ -95,12 +114,14 @@ After completion, the same Pi session inspected:
 
 | Command | Observed result |
 | --- | --- |
-| `/hypagoal status` | phase completed; goal completed; scheduled actions 2; last action deterministic check |
-| `/hypagraph history` | 21-event timeline with model and deterministic dispatch markers |
-| `/hypagraph history dispatch` | model selection, model abandon, deterministic select/dispatch/complete |
-| `/hypagraph history revisions` | one revision segment; no discarded results |
-| `/hypagraph explain` | goal decision `stop-completed`; both nodes succeeded |
-| `/hypagraph history 3` | replay at the goal-started event with difference from live sequence 21 |
+| `/hypagoal status` | phase completed; revision 2; automatic revision applied; loop succeeded |
+| `/hypagraph history` | paged 83-event timeline with model and deterministic markers |
+| `/hypagraph history dispatch` | model and deterministic lanes separated |
+| `/hypagraph history revisions` | two revision segments; discarded `release-note` result reported |
+| `/hypagraph history loop` | loop start, evaluation, and completion entries |
+| `/hypagraph explain` | goal `stop-completed`; skipped-route reasons for investigate paths |
+| `/hypagraph history 3` | early replay before loop work |
+| `/hypagraph history 27` | mid-path replay when `release-note` first became ready |
 
 Replay text included:
 
@@ -108,82 +129,61 @@ Replay text included:
 Replay reads stored events only. It runs no check and calls no executor.
 ```
 
-Timeline dispatch markers included:
+Evidence: `docs/dogfood-evidence/m6b-live-loop-revision/`.
 
-1. model lane selected start task `create-result`;
-2. model lane abandoned the orphaned continuation;
-3. deterministic lane selected run check `verify-result`;
-4. deterministic lane dispatched and completed that check.
+## 4. Product fixes found by live dogfood
 
-### Live recovery fix recorded during dogfood
+### Orphan model-lane continuation
 
-The first live run stuck after the task succeeded. The durable model-lane
-continuation still named `create-result`, so the ready check never dispatched.
+A durable model-lane request can remain after the selected task succeeds, with no
+delivered turn bookkeeping. The controller now closes that request when the
+selected action is no longer runnable and selects the next action.
 
-The controller now recovers when:
+### Block while an attempt is open
 
-- a durable model-lane continuation exists;
-- no delivered turn bookkeeping exists;
-- the selected action is no longer runnable.
+Blocking a running node left the attempt open, so automatic revision was refused.
+`block-node` now cancels the open attempt first. Projection also closes residual
+open attempts on older blocked streams.
 
-Recovery abandons that continuation and selects the next action. Evidence:
+### Automatic revision submit without delivery bookkeeping
 
-- live notification: `Hypagoal closed an orphaned model-lane continuation and will select the next action.`;
-- event 11: `hypagraph.goal.continuation-abandoned`;
-- events 12 to 21: deterministic check dispatch through goal completion;
-- regression test: `closes an orphaned model-lane continuation after the selected task succeeds`.
+Live Pi can lose in-memory delivery bookkeeping while the durable
+request-revision continuation remains. `hypagoal_submit_revision` now accepts
+that durable request. `hypagraph_revise` is rejected while automatic revision is
+pending.
 
-## 3. Automated product-path dogfood
+## 5. Automated product-path dogfood
 
-`tests/m6b-dogfood.test.ts` keeps a larger synthetic path under regression:
+`tests/m6b-dogfood.test.ts` keeps a synthetic loop, gate, blocker, and revision
+path under regression. It completes with revision 2, 100 events, and history
+surface assertions.
 
-- one bounded two-iteration lint-repair region;
-- two command checks and two gates;
-- one recoverable repository blocker;
-- one automatic non-weakening revision that adds `prepare-note`;
-- timeline, three replay points, blocked-node and skipped-route explanations,
-  and revision history.
+## 6. Acceptance mapping
 
-That path completes with:
-
-| Measurement | Value |
+| Acceptance criterion | Live evidence |
 | --- | --- |
-| Final phase | completed |
-| Final revision | 2 |
-| Stored events | 100 |
-| Charged model turns | 7 |
-| Scheduler ordinal | 12 |
-| Loop iterations for `lint-repair` | 2 |
+| Replay to any event produces the correct historical state | path A sequence 3; path B sequences 3 and 27 |
+| Live and replay views use common projection code | both live sessions |
+| The user can identify why a node or a goal is not runnable | explain on completed and skipped nodes |
+| History shows deterministic and model lanes separately | dispatch lane pages in both live sessions |
+| Loop decisions are inspectable | `/hypagraph history loop` in path B |
+| Revision history is inspectable | two revision segments in path B |
+| Replay performs no external effect | replay text and completed final state |
 
-The automated path is not a substitute for the live Pi session. It covers the
-revision and loop shapes that the short live objective does not exercise.
+## 7. Evidence files
 
-## 4. Acceptance mapping
-
-| Acceptance criterion | Live Pi evidence | Automated evidence |
-| --- | --- | --- |
-| Replay to any event produces the correct historical state | `/hypagraph history 3` against sequence 21 | three replayed sequences in `tests/m6b-dogfood.test.ts` |
-| Live and replay views use common projection code | replay surface renders workflow through the live projector | same |
-| The user can identify why a node or a goal is not runnable | `/hypagraph explain` after completion | blocked and skipped-route explanations |
-| Protected evaluator data remains protected | presentation redaction policy remains in force | Slice 3 to 6 tests |
-| Future family and executor namespaces have a defined seam | Slice 6 fixture coverage | `tests/m6b-revisions-and-seams.test.ts` |
-| History shows a directly dispatched M6A action and separates it from a model turn | dispatch lane shows model and deterministic markers | dispatch-lane assertions |
-| Replay performs no check and no external effect | replay text and unchanged completed state | event count and snapshot hash stay fixed |
-| M6B adds no schema version, no event type, and no stored field | schema remains version 6 | schema remains version 6 |
-
-## 5. Evidence files
-
-- live summary notifications: `docs/dogfood-evidence/m6b-live/summary.json`
-- live canonical extract: `docs/dogfood-evidence/m6b-live/canonical.json`
-- live result file: `docs/dogfood-evidence/m6b-live/result.txt`
+- short live path: `docs/dogfood-evidence/m6b-live/`
+- loop and revision live path: `docs/dogfood-evidence/m6b-live-loop-revision/`
 - automated test: `tests/m6b-dogfood.test.ts`
-- orphan recovery test: `tests/hypagoal-continuation-pi.test.ts`
+- orphan recovery: `tests/hypagoal-continuation-pi.test.ts`
+- revision submit recovery: `tests/hypagoal-revision-pi.test.ts`
+- block-while-running: `tests/hypagoal-revision.test.ts`
 
-## 6. Bound evidence
+## 8. Bound evidence
 
-M6B does not change execution bounds. The live and automated paths still depend on:
+M6B does not change execution bounds. The live paths still depend on:
 
-- loop iteration limits where a loop exists;
+- loop iteration limits;
 - the one automatic non-weakening revision allowance;
 - the M6A consecutive-deterministic-dispatch maximum;
 - model-turn accounting for delivered model-lane work only.

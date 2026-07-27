@@ -303,7 +303,7 @@ Scope:
 | 4 | History surface | `src/ui/history-surface.ts`, `tests/m6b-history-surface.test.ts` |
 | 5 | Debugger pane | `src/pi/graph-pane.ts`, `tests/m6b-debugger-pane.test.ts` |
 | 6 | Revisions and seams | `src/history/revisions.ts`, `tests/m6b-revisions-and-seams.test.ts` |
-| 7 | Dogfood and release | `tests/m6b-dogfood.test.ts`, `docs/m6b-dogfood.md`, `docs/v0.7-release-notes.md` |
+| 7 | Dogfood and release | `tests/m6b-dogfood.test.ts`, live Pi evidence under `docs/dogfood-evidence/`, `docs/m6b-dogfood.md`, `docs/v0.7-release-notes.md` |
 
 Rule 5.7 holds. The schema version stays 6, and M6B adds no event type and no
 stored field.

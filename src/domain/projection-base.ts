@@ -337,6 +337,17 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.blockedReason = String(event.data.reason ?? "");
         const blockerKind = event.data.blockerKind;
         node.blockerKind = blockerKind === "repository-work" || blockerKind === "external-dependency" || blockerKind === "safeguard" ? blockerKind : "unknown";
+        // Blocking ends active work. If an older stream blocked without a cancel
+        // event, close the open attempt here so restore stays consistent.
+        if (node.currentAttemptId) {
+          const open = node.attempts[node.currentAttemptId];
+          if (open && (open.status === "running" || open.status === "submitted" || open.status === "verifying")) {
+            open.status = "cancelled";
+            open.completedAt = event.timestamp;
+            open.failureReason = node.blockedReason || "The node was blocked.";
+          }
+          delete node.currentAttemptId;
+        }
       }
       break;
     case "hypagraph.node.unblocked":
