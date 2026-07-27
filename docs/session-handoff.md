@@ -1,17 +1,16 @@
-# Session handoff: v0.7 candidate after M6A and M6B
+# Session handoff: v0.7 released to M6.1
 
 - Handoff date: 2026-07-27
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
-- Implementation baseline before this slice: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
-- Slice 7 candidate commit: `a89dce344ebb21b1cd999ecd98c7388cff3c4da7`
-- Live Pi dogfood evidence: `docs/dogfood-evidence/m6b-live/`, `docs/dogfood-evidence/m6b-live-loop-revision/`, and `docs/m6b-dogfood.md`
-- Published release: `v0.6`
-- Release candidate: `v0.7`
+- Release baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
+- Published release: `v0.7`
 - Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
 - Current milestone: M6.1 interaction and approval nodes
+- Live Pi dogfood evidence: `docs/dogfood-evidence/m6b-live/`, `docs/dogfood-evidence/m6b-live-loop-revision/`, and `docs/m6b-dogfood.md`
 - M6A plan: `docs/m6a-deterministic-dispatch-plan.md`
 - M6B plan: `docs/m6b-event-history-plan.md`
+- M6.1 plan: `docs/m6-1-interaction-node-plan.md`
 
 ## 1. Read first
 
@@ -27,11 +26,11 @@ Read these files in order:
 8. `docs/m6-1-interaction-node-plan.md`;
 9. `docs/goal-family-and-concurrent-execution-plan.md`.
 
-## 2. Released and candidate state
+## 2. Released state
 
-M5A and M5B remain released as published `v0.6`.
+M5A and M5B remain available as published `v0.6`.
 
-M6A and M6B are complete in code and documentation for the `v0.7` release candidate.
+M6A and M6B are complete and published as `v0.7`.
 
 M6A provides:
 
@@ -69,13 +68,7 @@ Do not weaken these invariants during M6.1 and later work:
 - the root can later become a one-member goal family without rewriting workflow events;
 - M6B adds no schema version, no event type, and no stored field.
 
-## 4. Immediate release work for v0.7
-
-1. Land the M6B Slice 7 dogfood and release documentation on `main`.
-2. Publish the `v0.7` tag and GitHub release from the accepted main commit.
-3. Close stale issues for completed milestones when the release evidence is accepted.
-
-## 5. Current target: M6.1 interaction and approval nodes
+## 4. Current target: M6.1 interaction and approval nodes
 
 ### Objective
 
@@ -92,21 +85,17 @@ Let the graph return to the user for a decision, and let a typed answer control 
 - The model cannot invent an answer as a completion claim.
 - Replay and restore must not re-prompt for a stored answer.
 
-## 6. Release evidence for the candidate
+## 5. Release evidence
 
 - M6A dogfood: `docs/m6a-dogfood.md`
 - M6B dogfood: `docs/m6b-dogfood.md`
-- Live Pi evidence: `docs/dogfood-evidence/m6b-live/`
+- Live Pi evidence: `docs/dogfood-evidence/m6b-live/` and `docs/dogfood-evidence/m6b-live-loop-revision/`
 - Release notes: `docs/v0.7-release-notes.md`
-- M6A plan status: complete
-- M6B plan status: complete
-- Live Pi dogfood completed a short task and check path end to end
-- Live Pi dogfood completed a loop, gate, automatic-revision, and publish path end to end
-- Orphan model-lane continuation recovery is covered by `tests/hypagoal-continuation-pi.test.ts`
-- Block-while-running and durable revision submit recovery are covered by revision tests
-- Suite: 109 test files and 585 tests
+- Release baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
+- Suite: 109 test files and 586 tests
+- Release: https://github.com/Hypabolic/Hypagraph/releases/tag/v0.7
 
-## 7. Deferred product direction
+## 6. Deferred product direction
 
 The following work remains accepted but deferred beyond M6.1:
 

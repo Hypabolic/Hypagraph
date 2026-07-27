@@ -3,9 +3,8 @@
 - Status: active
 - Updated: 2026-07-27
 - Current milestone: M6.1 interaction and approval nodes
-- Current implementation baseline: `affef6cfb5b604b2d890bb139a6a7062ef72ac1d`
-- Current release candidate: `v0.7`
-- Current published release: `v0.6`
+- Current implementation baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
+- Current published release: `v0.7`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
@@ -216,8 +215,8 @@ All repository text must follow `AGENTS.md`.
 | M3.1 | included before v0.6 | Deterministic parser and assertion adapters | Complete |
 | M5A | v0.6 | Trusted evaluation contracts and adapter boundary | Complete |
 | M5B | v0.6 | Root Hypagoal autonomous controller | Complete; released as v0.6 |
-| M6A | v0.7 | Deterministic dispatch lane | Complete |
-| M6B | v0.7 | Event history, replay, and debugger UI | Complete |
+| M6A | v0.7 | Deterministic dispatch lane | Complete; released as v0.7 |
+| M6B | v0.7 | Event history, replay, and debugger UI | Complete; released as v0.7 |
 | M6.1 | v0.8 | Interaction and approval nodes | Planned |
 | M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Planned |
 | M6.3 | v0.10 | External effects and reconciliation | Planned |
@@ -982,9 +981,8 @@ Hypagraph can release version 1.0 when:
 
 ## 18. Immediate next work
 
-1. Publish the `v0.7` tag and GitHub release after the M6B dogfood suite is on `main`.
+1. Start M6.1 interaction and approval nodes. `docs/m6-1-interaction-node-plan.md` gives the plan.
 2. Close stale tracking issues for completed milestones when their evidence is accepted.
-3. Start M6.1 interaction and approval nodes. `docs/m6-1-interaction-node-plan.md` gives the plan.
-4. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
-5. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
-6. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.
+3. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
+4. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
+5. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.
