@@ -6,6 +6,7 @@ import type {
   CheckResult,
   CodeResult,
   DomainEvent,
+  EffectObservation,
   HypagraphDefinition,
   HypagraphState,
   InteractionPresentationKind,
@@ -59,14 +60,21 @@ const emptyLoop = (loop: LoopDefinition): LoopRuntime => {
   };
 };
 
+const nodeHasIndeterminateEffect = (node: NodeRuntime): boolean =>
+  Object.values(node.attempts).some((attempt) => attempt.effectObservation?.durableState === "indeterminate");
+
 const finalise = (state: Omit<HypagraphState, "snapshotHash">): HypagraphState => {
   const nodes = Object.values(state.runtime.nodes);
   const completeState = state as HypagraphState;
-  const runnable = nodes.some((node) => ["ready", "starting", "running", "verifying", "awaiting_evidence"].includes(node.status));
+  // Indeterminate effects remain reconcilable work. They must not freeze the workflow as blocked.
+  const runnable = nodes.some((node) =>
+    ["ready", "starting", "running", "verifying", "awaiting_evidence"].includes(node.status)
+    || nodeHasIndeterminateEffect(node));
+  const hardBlocked = nodes.some((node) => node.status === "blocked" && !nodeHasIndeterminateEffect(node));
   let phase = state.phase;
   if (phase !== "paused" && phase !== "failed" && phase !== "cancelled") {
     if (workflowCanComplete(completeState)) phase = "completed";
-    else if (!runnable && (nodes.some((node) => node.status === "blocked") || workflowBlockedByFailedLoop(completeState))) phase = "blocked";
+    else if (!runnable && (hardBlocked || workflowBlockedByFailedLoop(completeState))) phase = "blocked";
     else phase = "running";
   }
   return hashState({ ...state, phase });
@@ -440,6 +448,104 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         attempt.evidence = structuredClone(result.evidence);
         node.evidence = structuredClone(result.evidence);
         node.status = "awaiting_evidence";
+      }
+      break;
+    case "hypagraph.effect.requested":
+      if (node && event.attemptId) {
+        startAttempt(node, event.attemptId, event.timestamp, event.data);
+        const observation = structuredClone(event.data.observation as EffectObservation);
+        const started = node.attempts[event.attemptId];
+        if (started) {
+          started.effectObservation = observation;
+          if (observation.evidence?.length) {
+            started.evidence = structuredClone(observation.evidence);
+            node.evidence = structuredClone(observation.evidence);
+          }
+        }
+      }
+      break;
+    case "hypagraph.effect.observed":
+      if (node && attempt) {
+        const observation = structuredClone(event.data.observation as EffectObservation);
+        attempt.status = "submitted";
+        attempt.submittedAt = event.timestamp;
+        attempt.effectObservation = observation;
+        attempt.evidence = structuredClone(observation.evidence ?? []);
+        node.evidence = structuredClone(observation.evidence ?? []);
+        // Observed success enters verification. Observed failure is a normal failure.
+        if (observation.observedOutcome === "success") {
+          node.status = "awaiting_evidence";
+        } else {
+          attempt.status = "failed";
+          attempt.completedAt = event.timestamp;
+          attempt.failureReason = observation.error?.trim() || "The external effect failed.";
+          node.status = "failed";
+          delete node.currentAttemptId;
+        }
+      }
+      break;
+    case "hypagraph.effect.indeterminate":
+      if (node && attempt) {
+        const observation = structuredClone(event.data.observation as EffectObservation);
+        attempt.effectObservation = observation;
+        attempt.evidence = structuredClone(observation.evidence ?? []);
+        node.evidence = structuredClone(observation.evidence ?? []);
+        attempt.status = "failed";
+        attempt.completedAt = event.timestamp;
+        attempt.failureReason = observation.error?.trim()
+          || "The external effect result is indeterminate.";
+        // Keep the attempt id so reconcile can address the observation.
+        node.currentAttemptId = attempt.attemptId;
+        if (event.data.policy === "fail-workflow") {
+          node.status = "failed";
+        } else {
+          node.status = "blocked";
+          node.blockedReason = observation.error?.trim()
+            || "The external effect is indeterminate and blocks dependants until reconciliation decides.";
+          node.blockerKind = "external-dependency";
+        }
+      }
+      break;
+    case "hypagraph.effect.reconciled":
+      if (node) {
+        const attemptId = event.attemptId;
+        const target = attemptId ? node.attempts[attemptId] : undefined;
+        const observation = structuredClone(event.data.observation as EffectObservation);
+        if (target) {
+          target.effectObservation = observation;
+          target.evidence = structuredClone(observation.evidence ?? []);
+          node.evidence = structuredClone(observation.evidence ?? []);
+        }
+        const decision = event.data.decision;
+        if (decision === "undecidable") {
+          node.status = "blocked";
+          node.blockedReason = observation.error?.trim()
+            || "Reconciliation could not decide the external effect outcome.";
+          node.blockerKind = "external-dependency";
+          if (target) {
+            node.currentAttemptId = target.attemptId;
+          }
+        } else if (decision === "observed-success") {
+          delete node.blockedReason;
+          delete node.blockerKind;
+          if (target) {
+            node.currentAttemptId = target.attemptId;
+            target.status = "submitted";
+            target.submittedAt = event.timestamp;
+            delete target.failureReason;
+          }
+          node.status = "awaiting_evidence";
+        } else if (decision === "observed-failure") {
+          delete node.blockedReason;
+          delete node.blockerKind;
+          if (target) {
+            target.status = "failed";
+            target.completedAt = event.timestamp;
+            target.failureReason = observation.error?.trim() || "Reconciliation observed external failure.";
+          }
+          node.status = "failed";
+          delete node.currentAttemptId;
+        }
       }
       break;
     case "hypagraph.interaction.requested":

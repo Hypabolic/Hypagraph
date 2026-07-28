@@ -4,6 +4,38 @@
 
 No unreleased changes.
 
+## v0.10.0 - 2026-07-29
+
+M6.3 adds external effects and reconciliation.
+
+### Added
+
+- the `effect` node kind with durable states `requested`, `observed`, and `indeterminate`;
+- request-before-start durable lifecycle and lost-knowledge rules;
+- canonical-identity idempotency keys injected into sandbox programs;
+- declared read-only reconciliation programs selected before new work;
+- restore recovery for in-flight `requested` effects;
+- separation of execution success from external success;
+- status, graph, and history surfaces for effect state;
+- simulated dogfood evidence in `docs/m6-3-dogfood.md`;
+- focused tests in `tests/m6-3-external-effects.test.ts`.
+
+### Changed
+
+- persisted state uses schema version 8 for effect observations;
+- restore cancels in-flight code and effect registries before rebuild.
+
+### Unchanged
+
+- the domain reducer stays pure; external calls run on the executor side only;
+- replay restores effect state and never repeats the external call;
+- a revision cannot widen effect external authority.
+
+### Release notes
+
+See `docs/v0.10-release-notes.md` and `docs/m6-3-external-effect-plan.md`.
+
+
 ## v0.9.0 - 2026-07-29
 
 M6.2 adds code nodes and the sandbox executor adapter.

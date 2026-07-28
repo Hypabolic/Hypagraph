@@ -97,6 +97,26 @@ Use a `code` node for one type-checked pure or observation program that publishe
 
 The controller runs a ready code node in the deterministic lane without a model turn. Replay replays the recorded result and never runs the program again.
 
+## Effect node authoring
+
+Use an `effect` node when work must change external state, for example open a pull request, merge, deploy, or notify an external system.
+
+1. Declare `effect` and `reconcile` as separate `SandboxProgramDefinition` bodies. Do not nest one node definition inside another.
+2. Declare `idempotency.from` as `canonical-identity`. The runtime derives the key from workflow, revision, node, and attempt identity only.
+3. Declare `externalIdentity` fact contracts. They must also appear in `produces`.
+4. Set `onIndeterminate` to `block-dependants` or `fail-workflow`.
+5. The effect program may declare `external-effect` capabilities. The reconciliation program may declare `observation` capabilities only. A mutating reconciliation program fails validation.
+6. Do not use an effect node for display in Pi. Presentation belongs to interaction nodes.
+
+The controller stores `requested` before the external call starts. A lost result becomes `indeterminate`. Restart recovers requested-only attempts to indeterminate, then reconciles every indeterminate effect before it selects new work. Replay reproduces the recorded effect state and does not repeat the external call.
+
+Host-injected program bindings (not fact contracts):
+
+- `inputs["effect.idempotency_key"]` — the canonical-identity key for this attempt;
+- `inputs["effect.phase"]` — `effect` or `reconcile`.
+
+Do not list these names in `program.inputs`. The host injects them at prepare ambient type-check and at execution. They are not published facts. Pass the idempotency key to external systems that support one. Read-only reconciliation must use observation capabilities only.
+
 ## Evaluation-contract authoring
 
 Use an evaluation contract only when the objective has a defensible deterministic measurement.
@@ -201,8 +221,9 @@ Do not ask a model to judge structural strategy difference unless a deterministi
 4. Use `action: "submit"` with concrete evidence, then a separate `action: "verify"`.
 5. Use `hypagraph_run_check` for ready or retryable check nodes. Do not start checks through `hypagraph_transition`.
 6. A ready code node runs in the deterministic lane. Do not start a code node through `hypagraph_transition`.
-7. Use `action: "block"` when work cannot continue and `action: "cancel"` when an active attempt must stop.
-8. Call `hypagraph_revise` when new evidence makes the graph incorrect. Preserve unaffected completed work and routes. A revision must not widen a code capability allowlist.
+7. A ready effect node runs in the deterministic lane. Do not start an effect node through `hypagraph_transition`. The controller reconciles indeterminate effects before new work.
+8. Use `action: "block"` when work cannot continue and `action: "cancel"` when an active attempt must stop.
+9. Call `hypagraph_revise` when new evidence makes the graph incorrect. Preserve unaffected completed work and routes. A revision must not widen a code capability allowlist or effect external authority.
 
 ## Loop rules
 

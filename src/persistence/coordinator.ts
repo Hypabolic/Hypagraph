@@ -19,6 +19,12 @@ import {
   type DeterministicCodeDispatchResult,
 } from "../domain/deterministic-code-dispatch.js";
 import {
+  beginReadyEffectDispatch,
+  finishReadyEffectDispatch,
+  type DeterministicEffectDispatchRequest,
+  type DeterministicEffectDispatchResult,
+} from "../domain/deterministic-effect-dispatch.js";
+import {
   dispatchReadyGate,
   type DeterministicGateDispatchRequest,
   type DeterministicGateDispatchResult,
@@ -156,6 +162,24 @@ export async function finishReadyCodeDispatchAndCommit(
   reason?: string,
 ): Promise<DeterministicCodeDispatchResult> {
   return appendDispatch(store, state, finishReadyCodeDispatch(state, request, outcome, reason));
+}
+
+export async function beginReadyEffectDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicEffectDispatchRequest,
+): Promise<DeterministicEffectDispatchResult> {
+  return appendDispatch(store, state, beginReadyEffectDispatch(state, request));
+}
+
+export async function finishReadyEffectDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicEffectDispatchRequest,
+  outcome: "completed" | "failed" | "interrupted",
+  reason?: string,
+): Promise<DeterministicEffectDispatchResult> {
+  return appendDispatch(store, state, finishReadyEffectDispatch(state, request, outcome, reason));
 }
 
 export async function interruptPendingActionDispatchAndCommit(

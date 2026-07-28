@@ -9,7 +9,7 @@ import type {
 
 export * from "./model-base.js";
 
-export const HYPAGRAPH_SCHEMA_VERSION = 7 as const;
+export const HYPAGRAPH_SCHEMA_VERSION = 8 as const;
 
 export type ActionDispatchEventType =
   | "hypagraph.action.selected"

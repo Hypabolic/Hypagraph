@@ -6,10 +6,15 @@ import { Type } from "typebox";
 import { ActiveCheckExecutionRegistry } from "./checks/active-executions.js";
 import { ActiveCodeExecutionRegistry } from "./code/active-executions.js";
 import { QuickJSSandboxExecutor } from "./code/sandbox-executor.js";
+import { ActiveEffectExecutionRegistry } from "./effect/active-executions.js";
+import { SandboxEffectExecutor } from "./effect/execution.js";
+import { capabilityIsPermittedForRole } from "./domain/effect-authoring.js";
+import { MemoryEffectHost } from "./effect/memory-effect-host.js";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
 import { DefaultPresentationExecutor } from "./checks/presentation-executor.js";
 import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/recovery.js";
+import { recoverInterruptedEffects } from "./effect/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, InteractionDefinition, PersistedHypagraph } from "./domain/model.js";
 import { InteractionDialogComponent, type InteractionDialogResult } from "./pi/interaction-dialog.js";
@@ -17,6 +22,10 @@ import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
 import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";
 import { isReadyCodeDecision, type ReadyCodeDecision } from "./domain/deterministic-code-dispatch.js";
+import {
+  isDeterministicEffectDecision,
+  type DeterministicEffectDecision,
+} from "./domain/deterministic-effect-dispatch.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import {
   awaitingInteractions,
@@ -58,6 +67,7 @@ import {
 import { formatPiCheckCommand } from "./pi/check-runner.js";
 import { runDeterministicCheckDispatch } from "./pi/deterministic-check-runner.js";
 import { runDeterministicCodeDispatch } from "./pi/deterministic-code-runner.js";
+import { runDeterministicEffectDispatch } from "./pi/deterministic-effect-runner.js";
 import {
   continuationSystemPrompt,
   createPendingGoalContinuation,
@@ -284,6 +294,8 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
   const activeCodeExecutions = new ActiveCodeExecutionRegistry();
+  const activeEffectExecutions = new ActiveEffectExecutionRegistry();
+  const memoryEffectHost = new MemoryEffectHost();
   /** In-flight presentation effects keyed by workflow, node, and attempt. */
   const activePresentations = new Map<string, Promise<"ready" | "failed" | "unavailable">>();
 
@@ -296,6 +308,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const ensureNoActiveExecution = (): void => {
     if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
     if (activeCodeExecutions.hasActive()) throw new Error("A code node is active. Cancel it or let it finish before another workflow change.");
+    if (activeEffectExecutions.hasActive()) throw new Error("An effect node is active. Cancel it or let it finish before another workflow change.");
     if (activePresentations.size > 0) {
       throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
     }
@@ -318,6 +331,8 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     revisionProposalHandled = false;
     restoreContinuationTools();
     activeExecutions.cancelAll("The Pi session branch changed.");
+    activeCodeExecutions.cancelAll("The Pi session branch changed.");
+    activeEffectExecutions.cancelAll("The Pi session branch changed.");
     const session = restoreLatestSession(ctx.sessionManager.getBranch());
     eventStore.synchronize(session);
     state = session?.snapshot;
@@ -332,6 +347,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       });
       state = recovery.state;
       events.push(...recovery.events);
+      // Promote requested effects to indeterminate before loop cancel recovery.
+      // Effect nodes must not be cancelled; that would drop external knowledge.
+      const effectRecovery = await recoverInterruptedEffects({
+        state,
+        store: recoveryStore,
+        at: new Date().toISOString(),
+        onCommit: (next) => graphPane.update(next),
+      });
+      state = effectRecovery.state;
+      events.push(...effectRecovery.events);
       const orphaned = await recoverOrphanedLoopAttempts({
         state,
         store: recoveryStore,
@@ -340,7 +365,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       });
       state = orphaned.state;
       events.push(...orphaned.events);
-      const recovered = [...recovery.recoveredAttemptIds, ...orphaned.recoveredAttemptIds];
+      const recovered = [
+        ...recovery.recoveredAttemptIds,
+        ...effectRecovery.recoveredAttemptIds,
+        ...orphaned.recoveredAttemptIds,
+      ];
       if (recovered.length > 0) {
         ctx.ui.notify(`Hypagraph closed interrupted attempts: ${recovered.join(", ")}.`, "warning");
       }
@@ -846,6 +875,84 @@ ${dispatch.reason ?? "The code dispatch did not complete."}`, "warning");
     }
   };
 
+  const dispatchDeterministicEffect = async (
+    ctx: ExtensionContext,
+    decision: DeterministicEffectDecision,
+  ): Promise<boolean> => {
+    const runGeneration = sessionGeneration;
+    const runBranch = branchGeneration;
+    const label = decision.kind === "reconcile-indeterminate-effect" ? "Reconcile" : "Effect";
+    ctx.ui.setStatus("hypagraph-effect", `${label} ${decision.nodeId}: running`);
+    try {
+      // Run the authored sandbox program. Host handlers use an in-memory effect host
+      // as the simulated external system until a real adapter is registered.
+      const host = memoryEffectHost;
+      const effectHandlers = {
+        "mcp.effect.apply": (args: unknown) => {
+          const key = typeof (args as { idempotencyKey?: unknown })?.idempotencyKey === "string"
+            ? (args as { idempotencyKey: string }).idempotencyKey
+            : "";
+          const applied = host.apply({ idempotencyKey: key, payload: args });
+          if (applied.status === "lost") {
+            throw new Error("LOST_RESULT: The host lost the effect result after the external call.");
+          }
+          return applied;
+        },
+        "mcp.effect.query": (args: unknown) => {
+          const key = typeof (args as { idempotencyKey?: unknown })?.idempotencyKey === "string"
+            ? (args as { idempotencyKey: string }).idempotencyKey
+            : "";
+          return host.query({ idempotencyKey: key });
+        },
+      };
+      const executor = new SandboxEffectExecutor({
+        codeExecutor: new QuickJSSandboxExecutor({
+          handlers: effectHandlers,
+          capabilityPermit: (capability) => capabilityIsPermittedForRole(capability, "effect"),
+        }),
+        createCodeExecutor: (role) => new QuickJSSandboxExecutor({
+          handlers: effectHandlers,
+          capabilityPermit: (capability) => capabilityIsPermittedForRole(capability, role),
+        }),
+      });
+      const dispatch = await runDeterministicEffectDispatch({
+        state: state!,
+        decision,
+        dispatchId: `hypagoal-dispatch:${randomUUID()}`,
+        attemptId: randomUUID(),
+        at: new Date().toISOString(),
+        store: eventStore.lease(),
+        executor,
+        registry: activeEffectExecutions,
+        stale: () => sessionGeneration !== runGeneration || branchGeneration !== runBranch,
+        onCommit: (next, committed) => {
+          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
+          state = next;
+          events.push(...committed);
+          updateUi(state, ctx, graphPane);
+        },
+      });
+      if (!dispatch.ok) {
+        ctx.ui.notify(dispatch.dispatched
+          ? `Hypagoal ran deterministic effect '${decision.nodeId}', but it could not store the dispatch outcome '${dispatch.outcome}'.
+The effect lifecycle is durable. Restore reconciles indeterminate effects.
+${formatDiagnostics(dispatch.diagnostics)}`
+          : `Hypagoal deterministic effect '${decision.nodeId}' was not dispatched.
+${formatDiagnostics(dispatch.diagnostics)}`, "warning");
+        return false;
+      }
+      if (dispatch.stale) return false;
+      if (dispatch.outcome === "failed") {
+        ctx.ui.notify(`Hypagoal deterministic effect '${decision.nodeId}' failed.
+${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
+        return false;
+      }
+      return true;
+    } finally {
+      ctx.ui.setStatus("hypagraph-effect", undefined);
+    }
+  };
+
   /**
    * Evaluate outstanding interaction deadlines with the supplied evaluation time.
    *
@@ -979,7 +1086,8 @@ ${dispatch.reason ?? "The code dispatch did not complete."}`, "warning");
 
       const deterministic = isReadyGateDecision(decision)
         || isReadyCheckDecision(decision)
-        || isReadyCodeDecision(decision);
+        || isReadyCodeDecision(decision)
+        || isDeterministicEffectDecision(decision);
       if (deterministic && deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
         ctx.ui.notify(
           `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
@@ -997,6 +1105,13 @@ ${dispatch.reason ?? "The code dispatch did not complete."}`, "warning");
 
       if (isReadyCodeDecision(decision)) {
         const continued = await dispatchDeterministicCode(ctx, decision);
+        deterministicDispatches += 1;
+        if (!continued) return;
+        continue;
+      }
+
+      if (isDeterministicEffectDecision(decision)) {
+        const continued = await dispatchDeterministicEffect(ctx, decision);
         deterministicDispatches += 1;
         if (!continued) return;
         continue;
@@ -1086,6 +1201,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     restoreContinuationTools();
     activeExecutions.cancelAll();
     activeCodeExecutions.cancelAll("session_shutdown");
+    activeEffectExecutions.cancelAll("session_shutdown");
     graphPane.dispose();
   });
 

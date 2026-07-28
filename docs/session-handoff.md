@@ -1,16 +1,16 @@
-# Session handoff: M6.2 released as v0.9
+# Session handoff: M6.3 released as v0.10
 
 - Handoff date: 2026-07-29
 - Repository: `Hypabolic/Hypagraph`
-- Working branch: `main` after the v0.9 release merge
-- Published release: `v0.9`
-- Completed milestones: M6A, M6B, M6.1, M6.2 code nodes and sandbox executor
-- Current milestone: M6.3 external effects and reconciliation
-- M6.2 plan: `docs/code-node-adapter-plan.md`
-- M6.2 tests: `tests/m6-2-code-node-sandbox.test.ts`
+- Working branch: `main` after the v0.10 release merge
+- Published release: `v0.10`
+- Completed milestones: M6A, M6B, M6.1, M6.2, M6.3 external effects and reconciliation
+- Current milestone: M7 goal families and isolated Pi execution
 - M6.3 plan: `docs/m6-3-external-effect-plan.md`
-- Schema version: 7
-- Release notes: `docs/v0.9-release-notes.md`
+- M6.3 tests: `tests/m6-3-external-effects.test.ts`
+- M6.3 dogfood: `docs/m6-3-dogfood.md` (simulated in-memory host)
+- Schema version: 8
+- Release notes: `docs/v0.10-release-notes.md`
 
 ## 1. Read first
 
@@ -20,11 +20,10 @@ Read these files in order:
 2. `docs/session-handoff.md`;
 3. `docs/execution-roadmap.md`;
 4. `docs/product-spec.md`;
-5. `docs/code-node-adapter-plan.md`;
-6. `docs/m6-3-external-effect-plan.md`;
-7. `docs/v0.9-release-notes.md`;
-8. `docs/v0.8-release-notes.md`;
-9. `docs/goal-family-and-concurrent-execution-plan.md`.
+5. `docs/m6-3-external-effect-plan.md`;
+6. `docs/goal-family-and-concurrent-execution-plan.md`;
+7. `docs/v0.10-release-notes.md`;
+8. `docs/v0.9-release-notes.md`.
 
 ## 2. Released state
 
@@ -36,64 +35,53 @@ M6.1 is complete and published as `v0.8`.
 
 M6.2 is complete and published as `v0.9`.
 
-M6.2 provides:
+M6.3 is complete and published as `v0.10`.
 
-- the `code` node kind with a type-checked TypeScript program;
-- definition-time TypeScript prepare and host-pinned runtime identity;
-- a QuickJS sandbox executor and a deny-by-default bridge;
-- deterministic controller dispatch for ready code nodes;
-- durable code lifecycle events and schema version 7;
-- capability allowlists with non-widening revision checks;
-- scope verification with baseline content hashes for mutating programs;
-- definition-time code authoring advisories.
+M6.3 provides:
 
-M6.2 ships the full control path for `pure` programs. Non-pure host handlers
-for workspace and external surfaces land with M6.3.
+- the `effect` node kind with durable states `requested`, `observed`, and `indeterminate`;
+- request-before-start durable lifecycle and lost-knowledge rules;
+- canonical-identity idempotency keys injected into sandbox programs;
+- declared read-only reconciliation selected before new work;
+- restore recovery for in-flight `requested` effects;
+- separation of execution success from external success;
+- status, graph, and history surfaces for effect state;
+- schema version 8;
+- simulated dogfood through an in-memory effect host.
 
 ## 3. Preserved invariants
 
-Do not weaken these invariants during M6.3 and later work:
+Do not weaken these invariants during M7 and later work:
 
 - canonical state changes only through the controller and reducers;
-- workflow state remains authoritative for goal completion;
-- the model has no workflow-completion or goal-completion tool;
-- one durable event sequence defines one workflow aggregate;
-- snapshot hashes include canonical state;
-- stale, cancelled, and pre-revision results cannot change current state;
+- the domain reducer stays pure;
+- store `requested` before any external call starts;
+- a lost result becomes `indeterminate`, never silent success;
 - restore and replay do not repeat external effects;
-- protected evaluator internals remain outside model-visible output;
-- independent branches and bounded regions keep independent lifecycle state;
-- the root can later become a one-member goal family without rewriting workflow events;
-- the domain reducer stays pure; the sandbox and host bridge run outside the reducer;
-- a revision cannot widen a code capability allowlist.
+- a revision cannot widen effect external authority;
+- reconciliation queries remain read-only;
+- workflow state remains authoritative for goal completion;
+- the model has no workflow-completion or goal-completion tool.
 
-## 4. Current target: M6.3 external effects and reconciliation
+## 4. Current target: M7 goal families and isolated Pi execution
 
 ### Objective
 
-Let a node change external state safely, for example open a pull request, merge,
-deploy, or notify, and reconcile a lost result with the external system.
+Add bounded recursive goal composition and transport-independent node execution.
 
 ### Plan
 
-`docs/m6-3-external-effect-plan.md`
-
-### Mandatory rules
-
-- An external effect can complete after the host loses the result. The runtime
-  must reconcile.
-- Host handlers for non-pure code capabilities land with this milestone.
-- Replay and restore must not re-run a completed external effect.
+`docs/goal-family-and-concurrent-execution-plan.md` and `docs/execution-roadmap.md` section 12.
 
 ### Next work
 
-Start M6.3 from `docs/m6-3-external-effect-plan.md` and the M6.2 host surface note
-in `docs/execution-roadmap.md`.
+Start M7 from the roadmap vertical slices. Optional: attach a live GitHub PR
+dogfood for M6.3 when credentials and a safe repository are available.
 
 ## 5. Release evidence
 
-- M6A dogfood: `docs/m6a-dogfood.md`
-- M6B dogfood: `docs/m6b-dogfood.md`
-- M6.1 dogfood: `docs/m6-1-dogfood.md`
+- M6.3 suite: `tests/m6-3-external-effects.test.ts`
+- M6.3 dogfood: `docs/m6-3-dogfood.md`
 - M6.2 suite: `tests/m6-2-code-node-sandbox.test.ts`
+- v0.10 notes: `docs/v0.10-release-notes.md`
 - v0.9 notes: `docs/v0.9-release-notes.md`

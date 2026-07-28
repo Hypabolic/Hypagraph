@@ -40,6 +40,19 @@ export interface HypagoalDispatchSurface {
   lastOutcome?: HypagoalDispatchAction;
 }
 
+export interface HypagoalEffectSurface {
+  nodeId: string;
+  durableState: "requested" | "observed" | "indeterminate";
+  observedOutcome?: "success" | "failure";
+  executionStatus?: string;
+  idempotencyKey?: string;
+  reconciliationAttempts: number;
+  lastReconciliationDecision?: "observed-success" | "observed-failure" | "undecidable";
+  externalIdentity?: Array<{ name: string; value: unknown }>;
+  error?: string;
+  nodeStatus: string;
+}
+
 export interface HypagoalSurface {
   objective: string;
   workflow: {
@@ -74,6 +87,7 @@ export interface HypagoalSurface {
     lastOutcomeCode?: string;
     lastReason?: string;
   };
+  effects: HypagoalEffectSurface[];
   loops: LoopSurfaceSummary[];
   stopCode?: string;
   controls: string[];
@@ -95,6 +109,8 @@ const actionLabel = (action: GoalContinuationAction): string => {
   if (action.kind === "start-ready-task") return `start task '${action.nodeId}'${loop}`;
   if (action.kind === "run-ready-check") return `run check '${action.nodeId}'${loop}`;
   if (action.kind === "run-ready-code") return `run code '${action.nodeId}'${loop}`;
+  if (action.kind === "run-ready-effect") return `run effect '${action.nodeId}'${loop}`;
+  if (action.kind === "reconcile-indeterminate-effect") return `reconcile effect '${action.nodeId}'${loop}`;
   if (action.kind === "request-ready-interaction") return `request interaction '${action.nodeId}'${loop}`;
   return `evaluate gate '${action.nodeId}'${loop}`;
 };
@@ -174,6 +190,60 @@ const controls = (state: HypagraphState): string[] => {
   return values;
 };
 
+const effectSurfaces = (state: HypagraphState): HypagoalEffectSurface[] => {
+  const surfaces: HypagoalEffectSurface[] = [];
+  for (const node of state.definition.nodes) {
+    if ((node.kind ?? "task") !== "effect") continue;
+    const runtime = state.runtime.nodes[node.id];
+    if (!runtime) continue;
+    const observation = runtime.currentAttemptId
+      ? runtime.attempts[runtime.currentAttemptId]?.effectObservation
+      : Object.values(runtime.attempts)
+        .map((attempt) => attempt.effectObservation)
+        .filter((item): item is NonNullable<typeof item> => item !== undefined)
+        .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))[0];
+    if (!observation) continue;
+    surfaces.push({
+      nodeId: node.id,
+      durableState: observation.durableState,
+      ...(observation.observedOutcome === undefined ? {} : { observedOutcome: observation.observedOutcome }),
+      ...(observation.executionStatus === undefined ? {} : { executionStatus: observation.executionStatus }),
+      ...(observation.idempotencyKey === undefined ? {} : { idempotencyKey: observation.idempotencyKey }),
+      reconciliationAttempts: observation.reconciliationAttempts,
+      ...(observation.lastReconciliationDecision === undefined
+        ? {}
+        : { lastReconciliationDecision: observation.lastReconciliationDecision }),
+      ...(observation.externalIdentityFacts === undefined
+        ? {}
+        : {
+          externalIdentity: observation.externalIdentityFacts.map((fact) => ({
+            name: fact.name,
+            value: fact.value,
+          })),
+        }),
+      ...(observation.error === undefined ? {} : { error: observation.error }),
+      nodeStatus: runtime.status,
+    });
+  }
+  return surfaces.sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+};
+
+const effectLine = (effect: HypagoalEffectSurface): string => {
+  const parts = [
+    `durable ${effect.durableState}`,
+    effect.observedOutcome ? `outcome ${effect.observedOutcome}` : undefined,
+    effect.executionStatus ? `execution ${effect.executionStatus}` : undefined,
+    `reconcile attempts ${effect.reconciliationAttempts}`,
+    effect.lastReconciliationDecision ? `last ${effect.lastReconciliationDecision}` : undefined,
+    effect.externalIdentity && effect.externalIdentity.length > 0
+      ? `identity ${effect.externalIdentity.map((item) => `${item.name}=${JSON.stringify(item.value)}`).join(", ")}`
+      : undefined,
+    effect.error ? `error ${effect.error}` : undefined,
+    `node ${effect.nodeStatus}`,
+  ].filter((item): item is string => item !== undefined);
+  return parts.join("; ");
+};
+
 export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface | undefined {
   const goal = state.goal;
   if (!goal) return undefined;
@@ -233,6 +303,7 @@ export function projectHypagoalSurface(state: HypagraphState): HypagoalSurface |
       ...(lastAttempt?.outcomeCode === undefined ? {} : { lastOutcomeCode: lastAttempt.outcomeCode }),
       ...(lastAttempt?.reason === undefined ? {} : { lastReason: redactReason(lastAttempt.reason) }),
     },
+    effects: effectSurfaces(state),
     loops: policy.redact(loops),
     ...(code === undefined ? {} : { stopCode: code }),
     controls: controls(state),
@@ -311,6 +382,7 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
     if (surface.stopCode || surface.goal.stopReason) lines.push(...wrap(`Stop ${surface.stopCode ?? "reason"}: `, surface.goal.stopReason ?? "none", width));
     if (surface.blockage.kind !== "not-blocked") lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
     lines.push(...waitingQuestionLines(state));
+    for (const effect of surface.effects) lines.push(...wrap(`Effect ${effect.nodeId}: `, effectLine(effect), width));
     for (const loop of surface.loops) lines.push(...wrap("Loop: ", loopLine(loop, true), width));
     lines.push(...wrap("Controls: ", surface.controls.join(" · "), width));
     return lines.map((line) => fit(line, width)).join("\n");
@@ -333,6 +405,10 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
   lines.push(`Automatic revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}; remaining ${surface.automaticRevision.remaining}${surface.automaticRevision.pending ? "; pending" : ""}${surface.automaticRevision.lastOutcome ? `; last ${surface.automaticRevision.lastOutcome}` : ""}${surface.automaticRevision.lastOutcomeCode ? ` (${surface.automaticRevision.lastOutcomeCode})` : ""}`);
   lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
   lines.push(...waitingQuestionLines(state));
+  if (surface.effects.length > 0) {
+    lines.push("Effect state:");
+    for (const effect of surface.effects) lines.push(...wrap(`- ${effect.nodeId}: `, effectLine(effect), width));
+  }
   if (surface.loops.length > 0) {
     lines.push("Loop and evaluation state:");
     for (const loop of surface.loops) lines.push(...wrap(`- ${loop.id}: `, loopLine(loop, false).replace(`${loop.id}: `, ""), width));

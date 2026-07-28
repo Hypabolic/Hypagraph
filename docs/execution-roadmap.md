@@ -2,9 +2,9 @@
 
 - Status: active
 - Updated: 2026-07-29
-- Current milestone: M6.3 external effects and reconciliation
-- Current implementation baseline: agent/m6-2-code-node-sandbox at v0.9
-- Current published release: `v0.9`
+- Current milestone: M7 goal families and isolated Pi execution
+- Current implementation baseline: main at v0.10
+- Current published release: `v0.10`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Deterministic orchestration plan, which spans a new aggregate node, a synthesis node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
 - Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
@@ -221,7 +221,7 @@ All repository text must follow `AGENTS.md`.
 | M6B | v0.7 | Event history, replay, and debugger UI | Complete; released as v0.7 |
 | M6.1 | v0.8 | Interaction and approval nodes | Complete; released as v0.8 |
 | M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Complete; released as v0.9 (pure programs; non-pure handlers in M6.3) |
-| M6.3 | v0.10 | External effects and reconciliation | Planned |
+| M6.3 | v0.10 | External effects and reconciliation | Complete; released as v0.10 |
 | M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
 | M8.1 | v0.13 | Dynamic fan-out regions | Planned; use case confirmed in section 18 |

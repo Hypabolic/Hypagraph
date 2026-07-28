@@ -5,6 +5,7 @@ import {
   type QuickJSWASMModule,
 } from "quickjs-emscripten-core";
 import type {
+  CodeCapability,
   CodeExecutionRequest,
   CodeExecutor,
   CodeResult,
@@ -22,6 +23,11 @@ export interface QuickJSSandboxExecutorOptions {
   now?: () => Date;
   /** Synchronous host handlers only. Async handlers are rejected. */
   handlers?: Record<string, (args: unknown) => unknown>;
+  /**
+   * Optional capability permit. Defaults to the code-node permit.
+   * Effect and reconcile executors supply a role-specific permit.
+   */
+  capabilityPermit?: (capability: CodeCapability) => boolean;
 }
 
 let modulePromise: Promise<QuickJSWASMModule> | undefined;
@@ -42,12 +48,14 @@ export class QuickJSSandboxExecutor implements CodeExecutor {
   readonly version: number;
   private readonly now: () => Date;
   private readonly handlers: QuickJSSandboxExecutorOptions["handlers"];
+  private readonly capabilityPermit: QuickJSSandboxExecutorOptions["capabilityPermit"];
 
   constructor(options: QuickJSSandboxExecutorOptions = {}) {
     this.id = options.id ?? "quickjs-sandbox-executor";
     this.version = options.version ?? 1;
     this.now = options.now ?? (() => new Date());
     this.handlers = options.handlers;
+    this.capabilityPermit = options.capabilityPermit;
   }
 
   async execute(request: CodeExecutionRequest, signal: AbortSignal): Promise<CodeResult> {
@@ -107,6 +115,7 @@ export class QuickJSSandboxExecutor implements CodeExecutor {
             ),
           }
           : {}),
+        ...(this.capabilityPermit ? { capabilityPermit: this.capabilityPermit } : {}),
       });
 
       const QuickJS = await loadModule();

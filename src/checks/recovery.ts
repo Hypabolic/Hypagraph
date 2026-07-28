@@ -155,7 +155,9 @@ export async function recoverOrphanedLoopAttempts(input: CheckRecoveryInput): Pr
   const loopByNode = new Map(state.definition.loops.flatMap((loop) => loop.nodes.map((nodeId) => [nodeId, loop.id] as const)));
 
   for (const definitionNode of [...state.definition.nodes].sort((left, right) => left.id.localeCompare(right.id))) {
-    if ((definitionNode.kind ?? "task") === "check" || !loopByNode.has(definitionNode.id)) continue;
+    const kind = definitionNode.kind ?? "task";
+    // Checks have a dedicated recovery path. Effects preserve requested knowledge as indeterminate.
+    if (kind === "check" || kind === "effect" || !loopByNode.has(definitionNode.id)) continue;
     const runtime = state.runtime.nodes[definitionNode.id];
     const attemptId = runtime?.currentAttemptId;
     if (!runtime || !attemptId || !["starting", "running", "awaiting_evidence", "verifying"].includes(runtime.status)) continue;

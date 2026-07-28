@@ -1,9 +1,18 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import type { CheckRetryPolicy, CodeNodeDefinition, Diagnostic, HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
+import type {
+  CheckRetryPolicy,
+  CodeNodeDefinition,
+  Diagnostic,
+  EffectNodeDefinition,
+  HypagraphDefinition,
+  ReportCheckDefinition,
+  SandboxProgramDefinition,
+} from "../domain/model.js";
 import { createSandboxRuntimeIdentity } from "../domain/sandbox-runtime-identity.js";
 import { canonicalProtectedPath } from "../domain/integrity-policy.js";
 import { prepareDefinitionCodeNodes } from "../code/prepare.js";
+import { prepareDefinitionEffectNodes } from "../effect/prepare.js";
 
 const factTypeSchema = Type.Union([
   Type.Literal("boolean"),
@@ -236,7 +245,7 @@ const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
   title: Type.String(),
   description: Type.Optional(Type.String()),
-  kind: Type.Optional(StringEnum(["task", "gate", "check", "interaction", "code"] as const)),
+  kind: Type.Optional(StringEnum(["task", "gate", "check", "interaction", "code", "effect"] as const)),
   requires: Type.Optional(Type.Array(Type.String())),
   acceptance: Type.Optional(Type.Array(Type.String())),
   produces: Type.Optional(Type.Array(factContractSchema)),
@@ -266,6 +275,49 @@ const nodeSchema = Type.Object({
     }),
     retry: Type.Optional(retrySchema),
   }, { description: "Code node. Runs one type-checked program in a QuickJS sandbox." })),
+  effect: Type.Optional(Type.Object({
+    kind: Type.Literal("effect"),
+    version: Type.Literal(1),
+    effect: Type.Object({
+      version: Type.Literal(1),
+      program: Type.String({ description: "Effect program. May use external-effect capabilities." }),
+      inputs: Type.Array(Type.String()),
+      capabilities: Type.Array(Type.Object({
+        kind: StringEnum(["pure", "pi-tool", "mcp", "workspace-read", "workspace-write"] as const),
+        effectClass: StringEnum(["pure", "observation", "workspace-mutation", "external-effect"] as const),
+        name: Type.Optional(Type.String()),
+        server: Type.Optional(Type.String()),
+        methods: Type.Optional(Type.Array(Type.String())),
+        paths: Type.Optional(Type.Array(Type.String())),
+      })),
+      timeoutMs: Type.Integer({ minimum: 1, maximum: 86_400_000 }),
+      maxMemoryBytes: Type.Integer({ minimum: 1 }),
+      maxBridgeCalls: Type.Integer({ minimum: 0 }),
+      maxResultBytes: Type.Integer({ minimum: 1 }),
+    }),
+    reconcile: Type.Object({
+      version: Type.Literal(1),
+      program: Type.String({ description: "Read-only reconciliation query. Observation capabilities only." }),
+      inputs: Type.Array(Type.String()),
+      capabilities: Type.Array(Type.Object({
+        kind: StringEnum(["pure", "pi-tool", "mcp", "workspace-read", "workspace-write"] as const),
+        effectClass: StringEnum(["pure", "observation", "workspace-mutation", "external-effect"] as const),
+        name: Type.Optional(Type.String()),
+        server: Type.Optional(Type.String()),
+        methods: Type.Optional(Type.Array(Type.String())),
+        paths: Type.Optional(Type.Array(Type.String())),
+      })),
+      timeoutMs: Type.Integer({ minimum: 1, maximum: 86_400_000 }),
+      maxMemoryBytes: Type.Integer({ minimum: 1 }),
+      maxBridgeCalls: Type.Integer({ minimum: 0 }),
+      maxResultBytes: Type.Integer({ minimum: 1 }),
+    }),
+    idempotency: Type.Object({
+      from: Type.Literal("canonical-identity"),
+    }),
+    externalIdentity: Type.Array(factContractSchema),
+    onIndeterminate: StringEnum(["block-dependants", "fail-workflow"] as const),
+  }, { description: "External effect node with requested, observed, and indeterminate states." })),
   context: Type.Optional(Type.Object({
     feedbackFrom: Type.Array(Type.String(), {
       minItems: 1,
@@ -441,6 +493,9 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       ...(node.code === undefined ? {} : {
         code: normalizeCodeNodeInput(node.code as CodeNodeDefinition),
       }),
+      ...(node.effect === undefined ? {} : {
+        effect: normalizeEffectNodeInput(node.effect as EffectNodeDefinition),
+      }),
       ...(node.context === undefined ? {} : { context: { feedbackFrom: [...node.context.feedbackFrom] } }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
@@ -460,9 +515,11 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
     ...(input.evaluation === undefined ? {} : { evaluation: { budget: { ...input.evaluation.budget } } }),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };
-  const prepared = prepareDefinitionCodeNodes(structural);
-  if (!prepared.ok) throw normalizeCodeDiagnosticsError(prepared.diagnostics);
-  return prepared.definition;
+  const preparedCode = prepareDefinitionCodeNodes(structural);
+  if (!preparedCode.ok) throw normalizeCodeDiagnosticsError(preparedCode.diagnostics);
+  const preparedEffect = prepareDefinitionEffectNodes(preparedCode.definition);
+  if (!preparedEffect.ok) throw normalizeCodeDiagnosticsError(preparedEffect.diagnostics);
+  return preparedEffect.definition;
 }
 
 /**
@@ -484,6 +541,28 @@ const normalizeCodeNodeInput = (code: CodeNodeDefinition): CodeNodeDefinition =>
     runtimeIdentity: createSandboxRuntimeIdentity(),
   },
   ...(code.retry === undefined ? {} : { retry: structuredClone(code.retry) }),
+});
+
+const normalizeSandboxProgramInput = (program: SandboxProgramDefinition): SandboxProgramDefinition => ({
+  version: 1,
+  program: program.program,
+  inputs: [...program.inputs],
+  capabilities: structuredClone(program.capabilities),
+  timeoutMs: program.timeoutMs,
+  maxMemoryBytes: program.maxMemoryBytes,
+  maxBridgeCalls: program.maxBridgeCalls,
+  maxResultBytes: program.maxResultBytes,
+  runtimeIdentity: createSandboxRuntimeIdentity(),
+});
+
+const normalizeEffectNodeInput = (effect: EffectNodeDefinition): EffectNodeDefinition => ({
+  kind: "effect",
+  version: 1,
+  effect: normalizeSandboxProgramInput(effect.effect),
+  reconcile: normalizeSandboxProgramInput(effect.reconcile),
+  idempotency: { from: "canonical-identity" },
+  externalIdentity: structuredClone(effect.externalIdentity),
+  onIndeterminate: effect.onIndeterminate,
 });
 
 export class CodeDefinitionError extends Error {

@@ -10,6 +10,7 @@ export type TimelineLane =
   | "node"
   | "check"
   | "code"
+  | "effect"
   | "interaction"
   | "evaluation"
   | "fact"
@@ -53,6 +54,7 @@ const laneOf = (type: string): TimelineLane => {
   if (type.startsWith("hypagraph.goal.")) return "goal";
   if (type.startsWith("hypagraph.check.")) return "check";
   if (type.startsWith("hypagraph.code.")) return "code";
+  if (type.startsWith("hypagraph.effect.")) return "effect";
   if (type.startsWith("hypagraph.interaction.")) return "interaction";
   if (type.startsWith("hypagraph.evaluation.")) return "evaluation";
   if (type === "hypagraph.fact.published") return "fact";
@@ -84,6 +86,8 @@ const actionLabel = (action: unknown): string => {
     case "start-ready-task": return `start task '${value.nodeId}'`;
     case "run-ready-check": return `run check '${value.nodeId}'`;
     case "run-ready-code": return `run code '${value.nodeId}'`;
+    case "run-ready-effect": return `run effect '${value.nodeId}'`;
+    case "reconcile-indeterminate-effect": return `reconcile effect '${value.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate gate '${value.nodeId}'`;
     case "request-ready-interaction": return `request interaction '${value.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${value.blocker?.kind} '${value.blocker?.id}'`;
@@ -127,6 +131,31 @@ const codeSummary = ({ event }: SummaryContext): string | undefined => {
       const status = result?.status ?? "unknown";
       return `Code node '${event.nodeId}' recorded a '${status}' result.`;
     }
+    default: return undefined;
+  }
+};
+
+const effectSummary = ({ event, safe }: SummaryContext): string | undefined => {
+  const data = event.data;
+  const observation = data.observation as {
+    durableState?: string;
+    observedOutcome?: string;
+    idempotencyKey?: string;
+    lastReconciliationDecision?: string;
+    error?: string;
+  } | undefined;
+  switch (event.type) {
+    case "hypagraph.effect.requested":
+      return `Effect node '${event.nodeId}' stored requested before the external call`
+        + (observation?.idempotencyKey ? ` with key ${observation.idempotencyKey.slice(0, 12)}…` : ".");
+    case "hypagraph.effect.observed":
+      return `Effect node '${event.nodeId}' observed ${observation?.observedOutcome ?? "an outcome"}.`;
+    case "hypagraph.effect.indeterminate":
+      return `Effect node '${event.nodeId}' became indeterminate`
+        + (observation?.error ? `: ${safe(observation.error)}` : ".");
+    case "hypagraph.effect.reconciled":
+      return `Effect node '${event.nodeId}' reconciliation decided '${String(data.decision ?? "unknown")}'`
+        + (observation?.durableState ? ` (durable ${observation.durableState})` : ".");
     default: return undefined;
   }
 };
@@ -262,6 +291,7 @@ const otherSummary = ({ event, redacted }: SummaryContext): string => {
 const summarize = (context: SummaryContext): string =>
   checkSummary(context)
   ?? codeSummary(context)
+  ?? effectSummary(context)
   ?? interactionSummary(context)
   ?? nodeSummary(context)
   ?? loopSummary(context)

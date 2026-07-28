@@ -77,6 +77,7 @@ export interface HypagoalReadyWork {
   tasks: string[];
   checks: string[];
   codes: string[];
+  effects: string[];
   gates: string[];
   interactions: string[];
   loopEntries: string[];
@@ -89,6 +90,7 @@ export function hypagoalReadyWork(state: HypagraphState): HypagoalReadyWork {
     tasks: ready.filter((node) => (node.kind ?? "task") === "task").map((node) => node.id),
     checks: ready.filter((node) => node.kind === "check").map((node) => node.id),
     codes: ready.filter((node) => node.kind === "code").map((node) => node.id),
+    effects: ready.filter((node) => node.kind === "effect").map((node) => node.id),
     gates: ready.filter((node) => node.kind === "gate").map((node) => node.id),
     interactions: ready.filter((node) => node.kind === "interaction").map((node) => node.id),
     loopEntries: ready.filter((node) => loopEntries.has(node.id)).map((node) => node.id),
@@ -117,6 +119,7 @@ export function renderHypagoalCreated(
     `Ready tasks: ${list(ready.tasks)}`,
     `Ready checks: ${list(ready.checks)}`,
     `Ready code nodes: ${list(ready.codes)}`,
+    `Ready effect nodes: ${list(ready.effects)}`,
     `Ready gates: ${list(ready.gates)}`,
     `Ready interactions: ${list(ready.interactions)}`,
     `Ready loop entries: ${list(ready.loopEntries)}`,

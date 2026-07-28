@@ -19,12 +19,18 @@ export interface CodeBridgeOptions {
   definition: CodeNodeDefinition;
   handlers?: Record<string, BridgeHandler>;
   maxBridgeCalls: number;
+  /**
+   * Optional capability permit. Defaults to the code-node permit.
+   * Effect and reconcile programs supply a role-specific permit.
+   */
+  capabilityPermit?: (capability: CodeCapability) => boolean;
 }
 
 export class CodeHostBridge {
   private readonly allowlist: readonly CodeCapability[];
   private readonly handlers: Record<string, BridgeHandler>;
   private readonly maxBridgeCalls: number;
+  private readonly capabilityPermit: (capability: CodeCapability) => boolean;
   private callCount = 0;
   readonly audit: CodeBridgeCallAudit[] = [];
 
@@ -32,6 +38,7 @@ export class CodeHostBridge {
     this.allowlist = options.definition.execution.capabilities;
     this.handlers = options.handlers ?? {};
     this.maxBridgeCalls = options.maxBridgeCalls;
+    this.capabilityPermit = options.capabilityPermit ?? codeCapabilityIsPermittedForCodeNode;
   }
 
   /**
@@ -104,12 +111,12 @@ export class CodeHostBridge {
     if (!capability) {
       this.fail(action, args, "denied", `Capability '${action}' is denied by the allowlist.`);
     }
-    if (capability && !codeCapabilityIsPermittedForCodeNode(capability)) {
+    if (capability && !this.capabilityPermit(capability)) {
       this.fail(
         action,
         args,
         "denied",
-        `Capability '${action}' effect class '${capability.effectClass}' is not permitted on a code node.`,
+        `Capability '${action}' effect class '${capability.effectClass}' is not permitted for this program.`,
       );
     }
   }

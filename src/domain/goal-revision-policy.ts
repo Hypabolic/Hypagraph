@@ -1,5 +1,6 @@
 import { sha256 } from "./hash.js";
 import { revisionDoesNotWidenCodeCapabilities } from "./code-authoring.js";
+import { revisionDoesNotWidenEffectAuthority } from "./effect-authoring.js";
 import type { Diagnostic, EvaluationBudgetDefinition, HypagraphDefinition, LoopDefinition, NodeDefinition } from "./model.js";
 import { loopFailurePolicy } from "./workflow-outcome.js";
 
@@ -45,6 +46,34 @@ const validateNode = (previous: NodeDefinition, next: NodeDefinition): Diagnosti
           "automatic_revision_code_program_changed",
           `Node '${previous.id}' cannot change its code program bounds or runtime identity automatically.`,
           `${location}.code.execution`,
+        ));
+      }
+    }
+  }
+  if (previous.effect) {
+    if (!next.effect) {
+      diagnostics.push(diagnostic(
+        "automatic_revision_effect_removed",
+        `Node '${previous.id}' cannot remove its effect definition automatically.`,
+        `${location}.effect`,
+      ));
+    } else {
+      if (!revisionDoesNotWidenEffectAuthority(previous.effect, next.effect)) {
+        diagnostics.push(diagnostic(
+          "automatic_revision_effect_authority_widened",
+          `Node '${previous.id}' cannot widen its external effect authority automatically.`,
+          `${location}.effect`,
+        ));
+      }
+      if (!exact(previous.effect.effect.program, next.effect.effect.program)
+        || !exact(previous.effect.reconcile.program, next.effect.reconcile.program)
+        || !exact(previous.effect.effect.inputs, next.effect.effect.inputs)
+        || !exact(previous.effect.reconcile.inputs, next.effect.reconcile.inputs)
+        || previous.effect.onIndeterminate !== next.effect.onIndeterminate) {
+        diagnostics.push(diagnostic(
+          "automatic_revision_effect_program_changed",
+          `Node '${previous.id}' cannot change its effect programs or indeterminate policy automatically.`,
+          `${location}.effect`,
         ));
       }
     }

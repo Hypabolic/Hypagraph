@@ -25,6 +25,7 @@ const TIMELINE_LANE_SET: Record<TimelineLane, true> = {
   node: true,
   check: true,
   code: true,
+  effect: true,
   interaction: true,
   evaluation: true,
   fact: true,

@@ -59,7 +59,7 @@ describe("Review finding 1: every timeline lane is selectable", () => {
 
   it("offers every lane which the projection can produce", () => {
     const lanes: TimelineLane[] = [
-      "workflow", "goal", "dispatch", "node", "check", "code",
+      "workflow", "goal", "dispatch", "node", "check", "code", "effect",
       "interaction", "evaluation", "fact", "route", "loop", "unknown",
     ];
 

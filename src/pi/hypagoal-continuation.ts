@@ -40,6 +40,8 @@ const actionLabel = (action: GoalDispatchableContinuation): string => {
     case "start-ready-task": return `start ready task '${action.nodeId}'`;
     case "run-ready-check": return `run ready check '${action.nodeId}'`;
     case "run-ready-code": return `run ready code '${action.nodeId}'`;
+    case "run-ready-effect": return `run ready effect '${action.nodeId}'`;
+    case "reconcile-indeterminate-effect": return `reconcile indeterminate effect '${action.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate ready gate '${action.nodeId}'`;
     case "request-ready-interaction": return `request ready interaction '${action.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${action.blocker.kind} '${action.blocker.id}'`;
@@ -178,6 +180,14 @@ export function continuationSystemPrompt(pending: PendingGoalContinuation, state
     common.push(
       `Code node '${action.nodeId}' runs in the deterministic lane. Do not start it with hypagraph_transition. The controller runs the sandbox program and records the result.`,
     );
+  } else if (action.kind === "run-ready-effect") {
+    common.push(
+      `Effect node '${action.nodeId}' runs in the deterministic lane. The controller stores requested before the external call and records observed or indeterminate.`,
+    );
+  } else if (action.kind === "reconcile-indeterminate-effect") {
+    common.push(
+      `Effect node '${action.nodeId}' is indeterminate. The controller runs the declared reconciliation query before any new work.`,
+    );
   } else {
     common.push(`Evaluate gate '${action.nodeId}' with the evaluate action of hypagraph_transition. Do not use model judgement to select the route.`);
   }
@@ -189,7 +199,8 @@ export function requiredContinuationTools(action: GoalDispatchableContinuation):
   if (action.kind === "request-revision") return ["hypagraph_read", "hypagoal_submit_revision"];
   if (action.kind === "run-ready-check") return ["hypagraph_read", "hypagraph_run_check", "hypagraph_cancel_check"];
   if (action.kind === "request-ready-interaction") return ["hypagraph_read", "hypagraph_ask"];
-  // Code nodes run in the deterministic lane. The model only needs read access.
+  // Code and effect nodes run in the deterministic lane. The model only needs read access.
   if (action.kind === "run-ready-code") return ["hypagraph_read"];
+  if (action.kind === "run-ready-effect" || action.kind === "reconcile-indeterminate-effect") return ["hypagraph_read"];
   return ["hypagraph_read", "hypagraph_transition"];
 }

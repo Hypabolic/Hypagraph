@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { evaluateCheckStart } from "./check-policy.js";
 import { evaluateCodeStart } from "./code-policy.js";
+import { evaluateEffectStart } from "./effect-policy.js";
 import type {
   CheckDefinition,
   CheckResult,
   CodeResult,
   Diagnostic,
   DomainEvent,
+  EffectObservation,
   EventType,
   EvidenceReference,
   HypagraphCommand,
@@ -306,6 +308,87 @@ const validateCodeResult = (result: CodeResult, attemptId: string): Rejection | 
     return reject("invalid_code_duration", "The code completion time must not be before its start time.");
   }
   return undefined;
+};
+
+const validateEffectObservation = (
+  observation: EffectObservation,
+  attemptId: string,
+  expectedKey: string | undefined,
+  expectedStates: ReadonlySet<EffectObservation["durableState"]>,
+): Rejection | undefined => {
+  if (!observation.idempotencyKey.trim()) {
+    return reject("effect_idempotency_key_required", "An effect observation requires an idempotency key.");
+  }
+  if (expectedKey !== undefined && observation.idempotencyKey !== expectedKey) {
+    return reject("effect_idempotency_key_mismatch", "The effect observation idempotency key does not match the request.");
+  }
+  if (!expectedStates.has(observation.durableState)) {
+    return reject(
+      "effect_observation_state_invalid",
+      `The effect observation durable state '${observation.durableState}' is not valid for this command.`,
+    );
+  }
+  if (!Number.isFinite(Date.parse(observation.requestedAt))) {
+    return reject("invalid_effect_request_time", "The effect observation requires a valid request timestamp.");
+  }
+  if (observation.durableState === "observed") {
+    if (observation.observedOutcome !== "success" && observation.observedOutcome !== "failure") {
+      return reject("effect_observed_outcome_required", "An observed effect requires outcome success or failure.");
+    }
+    if (!observation.observedAt || !Number.isFinite(Date.parse(observation.observedAt))) {
+      return reject("invalid_effect_observed_time", "An observed effect requires a valid observation timestamp.");
+    }
+  }
+  if (observation.reconciliationAttempts < 0 || !Number.isInteger(observation.reconciliationAttempts)) {
+    return reject("invalid_effect_reconciliation_count", "The reconciliation attempt count must be a non-negative integer.");
+  }
+  void attemptId;
+  return undefined;
+};
+
+const publishObservationFacts = (
+  state: HypagraphState,
+  events: DomainEvent[],
+  command: HypagraphCommand,
+  nodeId: string,
+  attemptId: string,
+  facts: FactInput[],
+): { ok: true; state: HypagraphState } | Rejection => {
+  if (facts.length === 0) return { ok: true, state };
+  if (new Set(facts.map((fact) => fact.name)).size !== facts.length) {
+    return reject("duplicate_fact_input", "A publication command must not contain the same fact more than one time.");
+  }
+  const definitionNode = state.definition.nodes.find((item) => item.id === nodeId);
+  if (!definitionNode) return reject("unknown_node", `Unknown node '${nodeId}'.`, "nodeId");
+  const attempt = state.runtime.nodes[nodeId]?.attempts[attemptId];
+  if (!attempt) return reject("stale_fact_attempt", "The facts do not match the current attempt.");
+  let next = state;
+  for (const input of facts) {
+    const fact: PublishedFact = {
+      name: input.name,
+      type: input.type,
+      value: structuredClone(input.value),
+      producerNodeId: nodeId,
+      attemptId,
+      revision: state.revision,
+      evidence: structuredClone(input.evidence ?? []),
+      ...(attempt.loopId === undefined ? {} : { loopId: attempt.loopId }),
+      ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
+    };
+    const result = validatePublishedFact(fact, {
+      contracts: definitionNode.produces ?? [],
+      currentRevision: state.revision,
+      currentAttemptId: attemptId,
+    });
+    if (!result.ok) return reject(result.code, result.message, `facts.${input.name}`);
+    next = append(next, events, command, {
+      type: "hypagraph.fact.published",
+      nodeId,
+      attemptId,
+      data: { fact: structuredClone(result.fact) },
+    });
+  }
+  return { ok: true, state: next };
 };
 
 interface LoopEvaluation {
@@ -661,6 +744,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if (kind === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
       if (kind === "check") return reject("check_start_required", "Start a check with the check execution command.");
       if (kind === "code") return reject("code_start_required", "Start a code node with the code execution command.");
+      if (kind === "effect") return reject("effect_request_required", "Start an effect node with the effect request command.");
       if (kind === "interaction") return reject("interaction_request_required", "Request an interaction with the interaction request command.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
       if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
@@ -1144,6 +1228,183 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         attemptId: command.attemptId,
         data: { result: structuredClone(command.result) },
       });
+      break;
+    }
+    case "request-effect": {
+      if ((definitionNode.kind ?? "task") !== "effect" || !definitionNode.effect) {
+        return reject("node_not_effect", `Node '${command.nodeId}' is not an effect node.`);
+      }
+      const eligibility = evaluateEffectStart(node, definitionNode.effect, command.attemptId);
+      if (!eligibility.ok) return { ok: false, diagnostics: [eligibility.diagnostic] };
+      if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
+      if (!command.idempotencyKey.trim()) {
+        return reject("effect_idempotency_key_required", "A request-effect command requires an idempotency key.");
+      }
+      const prepared = prepareLoopStart(next, events, command, command.nodeId);
+      if ("ok" in prepared) return prepared;
+      next = prepared.state;
+      const requestedObservation: EffectObservation = {
+        durableState: "requested",
+        idempotencyKey: command.idempotencyKey,
+        requestedAt: command.at,
+        reconciliationAttempts: 0,
+        evidence: [],
+      };
+      next = append(next, events, command, {
+        type: "hypagraph.effect.requested",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          observation: structuredClone(requestedObservation),
+          ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }),
+          ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }),
+        },
+      });
+      break;
+    }
+    case "record-effect-observed": {
+      if ((definitionNode.kind ?? "task") !== "effect" || !definitionNode.effect) {
+        return reject("node_not_effect", `Node '${command.nodeId}' is not an effect node.`);
+      }
+      if (node.status !== "running" || node.currentAttemptId !== command.attemptId) {
+        return reject("stale_effect_attempt", "The effect observation does not match the current running attempt.");
+      }
+      const current = node.attempts[command.attemptId]?.effectObservation;
+      if (!current || current.durableState !== "requested") {
+        return reject("effect_not_requested", "The effect must be requested before it can be observed.");
+      }
+      const invalidObservation = validateEffectObservation(
+        command.observation,
+        command.attemptId,
+        current.idempotencyKey,
+        new Set(["observed"]),
+      );
+      if (invalidObservation) return invalidObservation;
+      next = append(next, events, command, {
+        type: "hypagraph.effect.observed",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: { observation: structuredClone(command.observation) },
+      });
+      if (command.observation.observedOutcome === "success") {
+        const facts = [
+          ...(command.observation.externalIdentityFacts ?? []),
+          ...((command.observation.effectProgramResult?.facts ?? []).filter(
+            (fact) => !(command.observation.externalIdentityFacts ?? []).some((item) => item.name === fact.name),
+          )),
+        ];
+        const published = publishObservationFacts(next, events, command, command.nodeId, command.attemptId, facts);
+        if (!published.ok) return published;
+        next = published.state;
+      } else {
+        // Observed external failure is a normal failure. Block dependants only when policy requires.
+        next = appendReadyEvents(next, events, command);
+        next = appendCompletionIfNeeded(next, events, command);
+        next = appendGoalOutcomeIfNeeded(next, events, command);
+      }
+      break;
+    }
+    case "record-effect-indeterminate": {
+      if ((definitionNode.kind ?? "task") !== "effect" || !definitionNode.effect) {
+        return reject("node_not_effect", `Node '${command.nodeId}' is not an effect node.`);
+      }
+      if (node.status !== "running" || node.currentAttemptId !== command.attemptId) {
+        return reject("stale_effect_attempt", "The effect observation does not match the current running attempt.");
+      }
+      const current = node.attempts[command.attemptId]?.effectObservation;
+      if (!current || current.durableState !== "requested") {
+        return reject("effect_not_requested", "The effect must be requested before it can become indeterminate.");
+      }
+      const invalidObservation = validateEffectObservation(
+        command.observation,
+        command.attemptId,
+        current.idempotencyKey,
+        new Set(["indeterminate"]),
+      );
+      if (invalidObservation) return invalidObservation;
+      const policy = definitionNode.effect.onIndeterminate;
+      next = append(next, events, command, {
+        type: "hypagraph.effect.indeterminate",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          observation: structuredClone(command.observation),
+          policy,
+        },
+      });
+      if (policy === "fail-workflow") {
+        next = append(next, events, command, {
+          type: "hypagraph.workflow.failed",
+          data: {
+            reason: "effect_indeterminate",
+            nodeId: command.nodeId,
+            attemptId: command.attemptId,
+          },
+        });
+        next = appendGoalOutcomeIfNeeded(next, events, command);
+      }
+      // block-dependants: node is blocked. Dependants stay pending. No silent continue.
+      break;
+    }
+    case "record-effect-reconciled": {
+      if ((definitionNode.kind ?? "task") !== "effect" || !definitionNode.effect) {
+        return reject("node_not_effect", `Node '${command.nodeId}' is not an effect node.`);
+      }
+      const attempt = node.attempts[command.attemptId];
+      const current = attempt?.effectObservation;
+      if (!current || current.durableState !== "indeterminate") {
+        return reject(
+          "effect_not_indeterminate",
+          "Only an indeterminate effect can be reconciled.",
+        );
+      }
+      if (node.status !== "blocked" && node.status !== "failed") {
+        return reject(
+          "effect_reconcile_not_allowed",
+          `The effect node cannot reconcile from '${node.status}'.`,
+        );
+      }
+      const invalidObservation = validateEffectObservation(
+        command.observation,
+        command.attemptId,
+        current.idempotencyKey,
+        new Set(command.decision === "undecidable" ? ["indeterminate"] : ["observed"]),
+      );
+      if (invalidObservation) return invalidObservation;
+      if (command.decision === "observed-success" && command.observation.observedOutcome !== "success") {
+        return reject("effect_reconcile_outcome_mismatch", "observed-success requires observedOutcome success.");
+      }
+      if (command.decision === "observed-failure" && command.observation.observedOutcome !== "failure") {
+        return reject("effect_reconcile_outcome_mismatch", "observed-failure requires observedOutcome failure.");
+      }
+      if (command.decision === "undecidable" && command.observation.durableState !== "indeterminate") {
+        return reject("effect_reconcile_outcome_mismatch", "undecidable reconciliation must keep indeterminate state.");
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.effect.reconciled",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          decision: command.decision,
+          observation: structuredClone(command.observation),
+        },
+      });
+      if (command.decision === "observed-success") {
+        const facts = [
+          ...(command.observation.externalIdentityFacts ?? []),
+          ...((command.observation.effectProgramResult?.facts ?? []).filter(
+            (fact) => !(command.observation.externalIdentityFacts ?? []).some((item) => item.name === fact.name),
+          )),
+        ];
+        const published = publishObservationFacts(next, events, command, command.nodeId, command.attemptId, facts);
+        if (!published.ok) return published;
+        next = published.state;
+      } else if (command.decision === "observed-failure") {
+        next = appendReadyEvents(next, events, command);
+        next = appendCompletionIfNeeded(next, events, command);
+        next = appendGoalOutcomeIfNeeded(next, events, command);
+      }
+      // undecidable: remain blocked and continue to block dependants.
       break;
     }
     case "evaluate-gate": {

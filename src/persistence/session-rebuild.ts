@@ -35,7 +35,7 @@ const storedSchemaVersion = (entry: unknown): number | undefined => {
   return typeof stored?.schemaVersion === "number" ? stored.schemaVersion : undefined;
 };
 
-const SUPPORTED_STORED_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 6, HYPAGRAPH_SCHEMA_VERSION]);
+const SUPPORTED_STORED_SCHEMA_VERSIONS = new Set([1, 2, 3, 4, 6, 7, HYPAGRAPH_SCHEMA_VERSION]);
 
 const rejectUnsupportedSchemas = (entries: readonly unknown[]): void => {
   for (const entry of entries) {

@@ -1,11 +1,14 @@
 # M6.3 external effects and reconciliation vertical-slice plan
 
-- Status: planned
+- Status: complete; released as v0.10
 - Milestone: M6.3
 - Release marker: v0.10
 - Prerequisite: M6.2 code nodes and the sandbox executor adapter
 - Analysis source: `docs/graph-capability-review.md` section 8, gap N5
 - Writing standard: ASD-STE100 Simplified Technical English
+- Schema version: 8
+- Suite: `tests/m6-3-external-effects.test.ts`
+- Release notes: `docs/v0.10-release-notes.md`
 
 ## 1. Purpose
 

@@ -33,6 +33,16 @@ export interface GraphViewCodeSummary {
   bridgeCallCount?: number;
 }
 
+export interface GraphViewEffectSummary {
+  durableState: "requested" | "observed" | "indeterminate";
+  observedOutcome?: "success" | "failure";
+  executionStatus?: CheckResultStatus;
+  idempotencyKey?: string;
+  reconciliationAttempts?: number;
+  lastReconciliationDecision?: "observed-success" | "observed-failure" | "undecidable";
+  error?: string;
+}
+
 export interface GraphViewEvaluatorSummary {
   purpose: EvaluationKind;
   trustLevel?: EvaluatorTrustLevel;
@@ -63,6 +73,7 @@ export interface GraphViewNode {
   iteration?: number;
   check?: GraphViewCheckSummary;
   code?: GraphViewCodeSummary;
+  effect?: GraphViewEffectSummary;
   evaluator?: GraphViewEvaluatorSummary;
 }
 
@@ -314,6 +325,11 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         : runtime.attempts[runtime.currentAttemptId];
       const checkResult = attempt?.checkResult;
       const codeResult = attempt?.codeResult;
+      const effectObservation = attempt?.effectObservation
+        ?? Object.values(runtime.attempts)
+          .map((item) => item.effectObservation)
+          .filter((item): item is NonNullable<typeof item> => item !== undefined)
+          .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))[0];
       const evaluator = evaluatorSummary(state, definition.id, checkResult?.evaluation?.integrity);
       const protectsEvaluatorOutput = definition.check?.kind === "metric-report"
         && definition.check.evaluation !== undefined
@@ -350,6 +366,25 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
                 status: codeResult.status,
                 ...(codeResult.error === undefined ? {} : { error: codeResult.error }),
                 ...(codeResult.bridgeCalls === undefined ? {} : { bridgeCallCount: codeResult.bridgeCalls.length }),
+              },
+            }),
+        ...(effectObservation === undefined
+          ? {}
+          : {
+              effect: {
+                durableState: effectObservation.durableState,
+                ...(effectObservation.observedOutcome === undefined
+                  ? {}
+                  : { observedOutcome: effectObservation.observedOutcome }),
+                ...(effectObservation.executionStatus === undefined
+                  ? {}
+                  : { executionStatus: effectObservation.executionStatus }),
+                idempotencyKey: effectObservation.idempotencyKey,
+                reconciliationAttempts: effectObservation.reconciliationAttempts,
+                ...(effectObservation.lastReconciliationDecision === undefined
+                  ? {}
+                  : { lastReconciliationDecision: effectObservation.lastReconciliationDecision }),
+                ...(effectObservation.error === undefined ? {} : { error: effectObservation.error }),
               },
             }),
       };

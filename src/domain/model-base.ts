@@ -62,6 +62,8 @@ export type GoalWorkContinuationActionKind =
   | "start-ready-task"
   | "run-ready-check"
   | "run-ready-code"
+  | "run-ready-effect"
+  | "reconcile-indeterminate-effect"
   | "evaluate-ready-gate"
   | "request-ready-interaction";
 
@@ -164,7 +166,7 @@ export type NodeStatus =
   | "stale";
 export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
-export type NodeKind = "task" | "gate" | "check" | "interaction" | "code";
+export type NodeKind = "task" | "gate" | "check" | "interaction" | "code" | "effect";
 export type InteractionPresentationClass = "deterministic" | "semantic";
 export type InteractionPresentationKind = "none" | "report" | "command";
 export type InteractionPresentationStatus = "succeeded" | "failed" | "timed_out" | "cancelled" | "error";
@@ -621,6 +623,29 @@ export interface CodeNodeDefinition {
   retry?: CheckRetryPolicy;
 }
 
+/**
+ * External effect node.
+ * Stores requested before the external call, observes the outcome, and reconciles when the result is lost.
+ */
+export interface EffectNodeDefinition {
+  kind: "effect";
+  version: 1;
+  effect: SandboxProgramDefinition;
+  reconcile: SandboxProgramDefinition;
+  idempotency: { from: "canonical-identity" };
+  /** External identity facts which observation or reconciliation may publish. */
+  externalIdentity: FactContract[];
+  onIndeterminate: "block-dependants" | "fail-workflow";
+}
+
+/** Durable effect knowledge. Separate from local sandbox execution success. */
+export type EffectDurableState = "requested" | "observed" | "indeterminate";
+
+/** Confirmed external outcome. Present only when durableState is observed. */
+export type EffectObservedOutcome = "success" | "failure";
+
+export type EffectReconciliationDecision = "observed-success" | "observed-failure" | "undecidable";
+
 export type CodeResultStatus = CheckResultStatus;
 
 export interface CodeBridgeCallAudit {
@@ -658,6 +683,30 @@ export interface CodeResult {
   error?: string;
 }
 
+/**
+ * Durable effect observation on an attempt.
+ * Execution success (sandbox) and external success remain separate fields.
+ */
+export interface EffectObservation {
+  durableState: EffectDurableState;
+  idempotencyKey: string;
+  requestedAt: string;
+  observedAt?: string;
+  observedOutcome?: EffectObservedOutcome;
+  /** Local sandbox status for the effect program. Not proof of external success. */
+  executionStatus?: CheckResultStatus;
+  externalIdentityFacts?: FactInput[];
+  reconciliationAttempts: number;
+  lastReconciliationAt?: string;
+  lastReconciliationDecision?: EffectReconciliationDecision;
+  value?: unknown;
+  bridgeCalls?: CodeBridgeCallAudit[];
+  evidence: EvidenceReference[];
+  error?: string;
+  effectProgramResult?: CodeResult;
+  reconcileProgramResult?: CodeResult;
+}
+
 export interface CodeExecutionRequest {
   workflowId: string;
   revision: number;
@@ -677,6 +726,30 @@ export interface CodeExecutor {
   execute(request: CodeExecutionRequest, signal: AbortSignal): Promise<CodeResult>;
 }
 
+export type EffectProgramPhase = "effect" | "reconcile";
+
+export interface EffectExecutionRequest {
+  workflowId: string;
+  revision: number;
+  nodeId: string;
+  attemptId: string;
+  requestedAt: string;
+  phase: EffectProgramPhase;
+  definition: EffectNodeDefinition;
+  program: SandboxProgramDefinition;
+  bindings: Record<string, FactValue>;
+  idempotencyKey: string;
+  produces: FactContract[];
+  externalIdentity: FactContract[];
+  scopePaths?: string[];
+}
+
+export interface EffectExecutor {
+  readonly id: string;
+  readonly version: number;
+  execute(request: EffectExecutionRequest, signal: AbortSignal): Promise<CodeResult>;
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
@@ -689,6 +762,7 @@ export interface NodeDefinition {
   check?: CheckDefinition;
   interaction?: InteractionDefinition;
   code?: CodeNodeDefinition;
+  effect?: EffectNodeDefinition;
   /** Explicit context bindings for a semantic task. Prefer feedbackFrom. */
   context?: TaskContextDefinition;
   scope?: { paths: string[] };
@@ -828,6 +902,8 @@ export interface AttemptRuntime {
   failureReason?: string;
   checkResult?: CheckResult;
   codeResult?: CodeResult;
+  /** Durable external-effect observation for an effect attempt. */
+  effectObservation?: EffectObservation;
   /** Presentation observation for an interaction attempt. */
   presentation?: InteractionPresentationObservation;
   /** Absolute deadline stored when the interaction was requested. */
@@ -929,6 +1005,10 @@ export type EventType =
   | "hypagraph.check.result-recorded"
   | "hypagraph.code.started"
   | "hypagraph.code.result-recorded"
+  | "hypagraph.effect.requested"
+  | "hypagraph.effect.observed"
+  | "hypagraph.effect.indeterminate"
+  | "hypagraph.effect.reconciled"
   | "hypagraph.interaction.requested"
   | "hypagraph.interaction.presented"
   | "hypagraph.interaction.answered"
@@ -982,6 +1062,31 @@ export type HypagraphCommand =
   | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
   | (CommandBase & { type: "start-code"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "record-code-result"; nodeId: string; attemptId: string; result: CodeResult })
+  | (CommandBase & {
+    type: "request-effect";
+    nodeId: string;
+    attemptId: string;
+    idempotencyKey: string;
+  })
+  | (CommandBase & {
+    type: "record-effect-observed";
+    nodeId: string;
+    attemptId: string;
+    observation: EffectObservation;
+  })
+  | (CommandBase & {
+    type: "record-effect-indeterminate";
+    nodeId: string;
+    attemptId: string;
+    observation: EffectObservation;
+  })
+  | (CommandBase & {
+    type: "record-effect-reconciled";
+    nodeId: string;
+    attemptId: string;
+    decision: EffectReconciliationDecision;
+    observation: EffectObservation;
+  })
   | (CommandBase & { type: "request-interaction"; nodeId: string; attemptId: string })
   | (CommandBase & {
     type: "present-interaction";

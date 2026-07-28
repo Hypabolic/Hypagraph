@@ -899,7 +899,7 @@ return { "compute.ok": value };
       maxBridgeCalls: 5,
       handlers: { "mcp.deploy.ship": () => true },
     });
-    expect(() => bridge.callSync("mcp.deploy.ship", {})).toThrow(/not permitted on a code node/);
+    expect(() => bridge.callSync("mcp.deploy.ship", {})).toThrow(/not permitted for this program/);
     expect(bridge.audit[0]?.status).toBe("denied");
   });
 
