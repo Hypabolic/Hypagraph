@@ -12,18 +12,27 @@ import { renderWorkflow } from "./format.js";
 
 export const DEFAULT_HISTORY_PAGE = 20;
 
-const TIMELINE_LANES: readonly TimelineLane[] = [
-  "workflow",
-  "goal",
-  "dispatch",
-  "node",
-  "check",
-  "evaluation",
-  "fact",
-  "route",
-  "loop",
-  "unknown",
-];
+/**
+ * Every selectable lane.
+ *
+ * The type is a total record of `TimelineLane`. A new lane therefore fails the
+ * type check until it appears here, so a lane cannot become unselectable.
+ */
+const TIMELINE_LANE_SET: Record<TimelineLane, true> = {
+  workflow: true,
+  goal: true,
+  dispatch: true,
+  node: true,
+  check: true,
+  interaction: true,
+  evaluation: true,
+  fact: true,
+  route: true,
+  loop: true,
+  unknown: true,
+};
+
+export const TIMELINE_LANES: readonly TimelineLane[] = Object.keys(TIMELINE_LANE_SET) as TimelineLane[];
 
 export function isTimelineLane(value: string): value is TimelineLane {
   return (TIMELINE_LANES as readonly string[]).includes(value);

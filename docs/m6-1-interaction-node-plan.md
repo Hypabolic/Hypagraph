@@ -191,6 +191,57 @@ Tests:
 
 Exit: a graph with one interaction node and one independent loop continues the loop while the question waits.
 
+### Slice 1.1 - Interactive presentation and the ask tool
+
+Slice 1 makes an interaction node wait correctly, but no surface shows the question. A person cannot answer a question which they cannot read. This slice makes an interaction node usable from end to end.
+
+Scope:
+
+1. Add `hypagraph_ask`. This model tool presents one declared interaction node and accepts one typed answer.
+2. Present an open question from the controller when the controller reaches the waiting-response stop.
+3. Show the question, the response IDs, and the response labels in the waiting surfaces.
+4. Add the `interaction` lane to the selectable history lanes.
+5. Remove the `/hypagraph answer` command. Add `/hypagraph ask`, which presents an open question again. Add a `/hypagraph help` usage line.
+
+Mandatory rules:
+
+#### 1.1.1 Present only when no other action is runnable
+
+A dialog stops the host turn. A host turn which stops also stops the scheduler. The tool and the controller must therefore open a dialog only when `enumerateGoalContinuationCandidates` returns no candidate. This rule keeps section 3.1.
+
+#### 1.1.2 Store the request before the dialog opens
+
+The controller must commit the request event before it opens a dialog. A host which reloads during a dialog must find a durable `awaiting_response` node.
+
+#### 1.1.3 A dismissed dialog is not an answer
+
+A dismissed dialog must leave the node in `awaiting_response`. Only a selected response can become an answer. The controller presents the question again on its next pass.
+
+#### 1.1.4 A host without dialog capability keeps the durable wait
+
+A host which reports no dialog capability must keep the durable wait and must not fail. An interaction node needs a person. A host with no dialog capability has no person, so the question stays open.
+
+#### 1.1.5 A dialog is the only way to answer
+
+Hypagraph must not accept a typed answer from a command. A command which accepts a node ID and a response ID makes the person do the work which the dialog does. Remove `/hypagraph answer`. Keep `/hypagraph ask`, because it presents the declared question and it consumes no model turn.
+
+#### 1.1.6 Each dialog option must contain its response ID
+
+Response labels are not unique. The dialog returns the option text. Each option must therefore start with its response ID, so the runtime can map the option text back to exactly one response.
+
+Tests:
+
+- the tool presents a ready interaction and stores the answer;
+- the tool does not open a dialog while another action is runnable;
+- a dismissed dialog leaves the node in `awaiting_response`;
+- a host without dialog capability leaves the node in `awaiting_response`;
+- the controller presents an open question when no other action is runnable;
+- the waiting surface shows the question and every response ID;
+- two responses with the same label map to different response IDs;
+- the extension registers no command which accepts a typed answer.
+
+Exit: a person answers a question through a dialog and never types a node ID or a response ID.
+
 ### Slice 2 - Deterministic presentation effects
 
 Scope:

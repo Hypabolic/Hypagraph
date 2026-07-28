@@ -13,6 +13,13 @@ import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
 import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";
 import { readyNodeIds } from "./domain/readiness.js";
+import {
+  awaitingInteractions,
+  interactionOptions,
+  interactionPresentationIsAllowed,
+  responseForOptionText,
+  type AwaitingInteraction,
+} from "./domain/interaction-presentation.js";
 import { projectGraphView } from "./graph/projection.js";
 import {
   replacementConfirmationFor,
@@ -58,6 +65,7 @@ import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
 import {
   isTimelineLane,
+  TIMELINE_LANES,
   projectModelVisibleHistory,
   renderEventTimeline,
   renderExplanation,
@@ -293,6 +301,43 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     events.push(...result.value.events);
   };
 
+  /**
+   * Present one waiting interaction and store the selected answer.
+   *
+   * The caller must commit the request event first. Rule 1.1.2 requires a
+   * durable `awaiting_response` node before a dialog opens, so a reload during
+   * the dialog keeps the question.
+   */
+  const presentAwaitingInteraction = async (
+    ctx: ExtensionContext,
+    awaiting: AwaitingInteraction,
+  ): Promise<"answered" | "dismissed" | "unavailable"> => {
+    if (!ctx.hasUI) return "unavailable";
+    const { interaction } = awaiting;
+    const selected = await ctx.ui.select(interaction.question, interactionOptions(interaction));
+    if (selected === undefined) return "dismissed";
+    const response = responseForOptionText(interaction, selected);
+    if (!response) return "dismissed";
+
+    let freeText: string | undefined;
+    if (interaction.freeText) {
+      const supplied = await ctx.ui.input(interaction.freeText.prompt);
+      const trimmed = supplied?.trim();
+      if (trimmed) freeText = trimmed;
+    }
+
+    await runCommands([{
+      type: "answer-interaction",
+      nodeId: awaiting.nodeId,
+      attemptId: awaiting.attemptId,
+      responseId: response.id,
+      ...(freeText ? { freeText } : {}),
+      commandId: randomUUID(),
+      at: new Date().toISOString(),
+    }]);
+    return "answered";
+  };
+
   const abandonPendingContinuation = async (reason: string): Promise<void> => {
     const canonical = state?.goal?.pendingContinuation;
     if (!state?.goal || !canonical) return;
@@ -409,6 +454,18 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
     while (true) {
       const decision = selectGoalContinuation(state);
       if (!isDispatchableGoalContinuation(decision)) {
+        // The waiting stop happens only when no other action is runnable, so a
+        // dialog here cannot stop an independent branch. Rule 1.1.1 holds.
+        if (decision.kind === "stop-waiting-response") {
+          const awaiting = awaitingInteractions(state)[0];
+          if (awaiting) {
+            const outcome = await presentAwaitingInteraction(ctx, awaiting);
+            if (outcome === "answered") {
+              updateUi(state, ctx, graphPane);
+              continue;
+            }
+          }
+        }
         if (decision.kind === "invariant-error") {
           if (state.goal?.status === "active") ctx.ui.notify(`Hypagoal cannot continue: ${decision.reason}`, "warning");
         } else {
@@ -1118,6 +1175,55 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
   });
 
   pi.registerTool({
+    name: "hypagraph_ask",
+    label: "Ask the user",
+    description: "Present the declared question of one interaction node to the user and store the typed answer which the user selects.",
+    promptSnippet: "Ask the user one declared question",
+    promptGuidelines: [
+      "Use hypagraph_ask only for an interaction node which is ready or which waits for an answer.",
+      "hypagraph_ask presents the declared question and the declared response options. Do not invent a question, a response, or an answer.",
+      "hypagraph_ask opens a dialog only when the graph has no other runnable action. Complete the other runnable work first.",
+    ],
+    parameters: Type.Object({
+      nodeId: Type.String({ description: "The interaction node which holds the declared question" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
+      const nodeId = params.nodeId;
+      const node = state.definition.nodes.find((item) => item.id === nodeId);
+      if ((node?.kind ?? "task") !== "interaction" || !node?.interaction) {
+        throw new Error(`Node '${nodeId}' is not an interaction.`);
+      }
+      const runtime = state.runtime.nodes[nodeId];
+      if (runtime?.status !== "ready" && runtime?.status !== "awaiting_response") {
+        throw new Error(`Interaction '${nodeId}' is '${runtime?.status ?? "pending"}'. Only a ready or awaiting interaction can be asked.`);
+      }
+      // Rule 1.1.1. A dialog stops the host turn, so it must not open while the
+      // graph has other runnable work.
+      if (!interactionPresentationIsAllowed(state, nodeId)) {
+        return textResult(`Interaction '${nodeId}' was not presented. The graph has other runnable work. Complete that work, then ask again.`);
+      }
+
+      ensureNoActiveExecution();
+      // Rule 1.1.2. Store the request before the dialog opens.
+      if (runtime.status === "ready") {
+        await runCommands([{ type: "request-interaction", nodeId, attemptId: randomUUID(), commandId: randomUUID(), correlationId: randomUUID(), at: new Date().toISOString() }]);
+      }
+      const awaiting = awaitingInteractions(state!).find((item) => item.nodeId === nodeId);
+      if (!awaiting) throw new Error(`Interaction '${nodeId}' is not awaiting a response.`);
+
+      const outcome = await presentAwaitingInteraction(ctx, awaiting);
+      updateUi(state!, ctx, graphPane);
+      if (outcome === "answered") return textResult(`${renderWorkflow(state!)}\n\nHypagraph stored the answer for interaction '${nodeId}'.`);
+      // Rules 1.1.3 and 1.1.4. The question stays open and durable.
+      const cause = outcome === "unavailable"
+        ? "This host has no dialog capability."
+        : "The user dismissed the dialog.";
+      return textResult(`Interaction '${nodeId}' waits for an answer. ${cause} Stop and wait for the user. Hypagraph presents the question again on the next controller pass.`);
+    },
+  });
+
+  pi.registerTool({
     name: "hypagoal_submit_revision",
     label: "Submit bounded Hypagoal revision",
     description: "Submit the one state-bound replacement definition for deterministic automatic-revision validation.",
@@ -1327,17 +1433,29 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
     }
     if (first === "revisions") return renderRevisionHistory(events, state);
     if (first !== undefined && !isTimelineLane(first)) {
-      return "Usage: /hypagraph history [<sequence> | revisions | <lane>] where a lane is workflow, goal, dispatch, node, check, evaluation, fact, route, loop, or unknown.";
+      return `Usage: /hypagraph history [<sequence> | revisions | <lane>] where a lane is ${TIMELINE_LANES.join(", ")}.`;
     }
     return renderEventTimeline(events, first === undefined ? {} : { lane: first });
   };
 
   pi.registerCommand("hypagraph", {
-    description: "Show Hypagraph status, event history, replay, explanations, loop status, cancel a check, or control the graph pane",
+    description: "Show Hypagraph status, present an open question, read event history, replay, explanations, loop status, cancel a check, or control the graph pane",
     handler: async (args, ctx) => {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words.map((word) => word.toLowerCase()).join(" ");
-      if (action === "graph" || action === "graph open") graphPane.open(ctx);
+      if (action === "help") {
+        ctx.ui.notify([
+          "Usage: /hypagraph [help | ask | history | explain | loop | check | graph]",
+          "  ask [<nodeId>]                             Present an open question again.",
+          "  history [<sequence> | revisions | <lane>]  Read the event timeline.",
+          "  explain [<nodeId>]                         Explain why work is not runnable.",
+          "  loop                                       Show bounded iteration regions.",
+          "  check active | check cancel [<nodeId>]     Inspect or stop a running check.",
+          "  graph [open | close | toggle | focus]      Control the graph pane.",
+          "  (no argument)                              Show the workflow.",
+        ].join("\n"), "info");
+      }
+      else if (action === "graph" || action === "graph open") graphPane.open(ctx);
       else if (action === "graph close") graphPane.close();
       else if (action === "graph toggle") graphPane.toggle(ctx);
       else if (action === "graph focus") graphPane.focus();
@@ -1353,41 +1471,23 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       } else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "active") {
         const active = state ? activeExecutions.list(state.workflowId) : [];
         ctx.ui.notify(active.length > 0 ? active.map((entry) => `${entry.nodeId} (${entry.attemptId})`).join("\n") : "There is no active check.", "info");
-      } else if (words[0]?.toLowerCase() === "answer") {
+      } else if (words[0]?.toLowerCase() === "ask") {
         if (!state) {
           ctx.ui.notify("There is no active Hypagraph.", "info");
           return;
         }
-        const nodeId = words[1];
-        const responseId = words[2];
-        if (!nodeId || !responseId) {
-          ctx.ui.notify("Usage: /hypagraph answer <nodeId> <responseId> [free text]", "info");
+        const awaiting = words[1]
+          ? awaitingInteractions(state).find((item) => item.nodeId === words[1])
+          : awaitingInteractions(state)[0];
+        if (!awaiting) {
+          ctx.ui.notify(words[1] ? `Interaction '${words[1]}' is not awaiting a response.` : "No question is waiting for an answer.", "info");
           return;
         }
-        const node = state.definition.nodes.find((item) => item.id === nodeId);
-        if ((node?.kind ?? "task") !== "interaction" || !node?.interaction) {
-          ctx.ui.notify(`Node '${nodeId}' is not an interaction.`, "warning");
-          return;
-        }
-        const runtime = state.runtime.nodes[nodeId];
-        const attemptId = runtime?.currentAttemptId;
-        if (!attemptId || runtime?.status !== "awaiting_response") {
-          ctx.ui.notify(`Interaction '${nodeId}' is not awaiting a response.`, "warning");
-          return;
-        }
-        const freeText = words.slice(3).join(" ").trim();
         ensureNoActiveExecution();
-        await runCommands([{
-          type: "answer-interaction",
-          nodeId,
-          attemptId,
-          responseId,
-          ...(freeText ? { freeText } : {}),
-          commandId: randomUUID(),
-          at: new Date().toISOString(),
-        }]);
-        updateUi(state, ctx, graphPane);
-        ctx.ui.notify(renderWorkflow(state!), "info");
+        const outcome = await presentAwaitingInteraction(ctx, awaiting);
+        updateUi(state!, ctx, graphPane);
+        if (outcome === "answered") ctx.ui.notify(renderWorkflow(state!), "info");
+        else ctx.ui.notify(`Interaction '${awaiting.nodeId}' still waits for an answer.`, "info");
       } else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
     },
   });

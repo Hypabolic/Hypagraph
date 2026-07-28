@@ -22,6 +22,7 @@ describe("Pi extension registration", () => {
       "hypagraph_run_check",
       "hypagraph_cancel_check",
       "hypagraph_transition",
+      "hypagraph_ask",
       "hypagoal_submit_revision",
       "hypagraph_revise",
     ]);

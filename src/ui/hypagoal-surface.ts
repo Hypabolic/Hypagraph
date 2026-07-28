@@ -7,6 +7,7 @@ import { selectGoalContinuation, type GoalContinuationDecision } from "../domain
 import type { GoalContinuationAction, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopSurfaceSummaries, type LoopSurfaceSummary } from "./loop-surface.js";
+import { waitingQuestionLines } from "./interaction-surface.js";
 
 /**
  * M6A turn accounting. Hypagraph charges a turn for a model-lane action only.
@@ -307,6 +308,7 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
     lines.push(`Revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}${surface.automaticRevision.pending ? " pending" : ""}${surface.automaticRevision.lastOutcomeCode ? ` · ${surface.automaticRevision.lastOutcomeCode}` : ""}`);
     if (surface.stopCode || surface.goal.stopReason) lines.push(...wrap(`Stop ${surface.stopCode ?? "reason"}: `, surface.goal.stopReason ?? "none", width));
     if (surface.blockage.kind !== "not-blocked") lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
+    lines.push(...waitingQuestionLines(state));
     for (const loop of surface.loops) lines.push(...wrap("Loop: ", loopLine(loop, true), width));
     lines.push(...wrap("Controls: ", surface.controls.join(" · "), width));
     return lines.map((line) => fit(line, width)).join("\n");
@@ -328,6 +330,7 @@ export function renderHypagoalStatus(state: HypagraphState, width = 100): string
   }
   lines.push(`Automatic revision: ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}; remaining ${surface.automaticRevision.remaining}${surface.automaticRevision.pending ? "; pending" : ""}${surface.automaticRevision.lastOutcome ? `; last ${surface.automaticRevision.lastOutcome}` : ""}${surface.automaticRevision.lastOutcomeCode ? ` (${surface.automaticRevision.lastOutcomeCode})` : ""}`);
   lines.push(...wrap("Blockage: ", blockageLine(surface.blockage), width));
+  lines.push(...waitingQuestionLines(state));
   if (surface.loops.length > 0) {
     lines.push("Loop and evaluation state:");
     for (const loop of surface.loops) lines.push(...wrap(`- ${loop.id}: `, loopLine(loop, false).replace(`${loop.id}: `, ""), width));

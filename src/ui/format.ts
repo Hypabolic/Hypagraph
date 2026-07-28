@@ -3,6 +3,7 @@ import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
 import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
+import { waitingQuestionLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 
@@ -76,6 +77,7 @@ export function renderWorkflow(state: HypagraphState): string {
     const attempt = runtime.currentAttemptId ? runtime.attempts[runtime.currentAttemptId] : undefined;
     lines.push(`- ${node.id}: ${runtime.status} - ${node.title} (attempts ${runtime.attemptCount}${attempt?.iteration === undefined ? "" : `, iteration ${attempt.iteration}`})`);
   }
+  lines.push(...waitingQuestionLines(state));
   return lines.join("\n");
 }
 
