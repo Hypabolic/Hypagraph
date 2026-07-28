@@ -9,6 +9,7 @@ export type TimelineLane =
   | "dispatch"
   | "node"
   | "check"
+  | "code"
   | "interaction"
   | "evaluation"
   | "fact"
@@ -51,6 +52,7 @@ const laneOf = (type: string): TimelineLane => {
   if (type.startsWith("hypagraph.workflow.")) return "workflow";
   if (type.startsWith("hypagraph.goal.")) return "goal";
   if (type.startsWith("hypagraph.check.")) return "check";
+  if (type.startsWith("hypagraph.code.")) return "code";
   if (type.startsWith("hypagraph.interaction.")) return "interaction";
   if (type.startsWith("hypagraph.evaluation.")) return "evaluation";
   if (type === "hypagraph.fact.published") return "fact";
@@ -81,6 +83,7 @@ const actionLabel = (action: unknown): string => {
     case "continue-active-task": return `continue task '${value.nodeId}'`;
     case "start-ready-task": return `start task '${value.nodeId}'`;
     case "run-ready-check": return `run check '${value.nodeId}'`;
+    case "run-ready-code": return `run code '${value.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate gate '${value.nodeId}'`;
     case "request-ready-interaction": return `request interaction '${value.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${value.blocker?.kind} '${value.blocker?.id}'`;
@@ -109,6 +112,20 @@ const checkSummary = ({ event, redacted }: SummaryContext): string | undefined =
       if (redacted) return `Check '${event.nodeId}' recorded a protected evaluator result with status '${status}'.`;
       const exit = result?.exitCode === undefined ? "" : `, exit code ${result.exitCode}`;
       return `Check '${event.nodeId}' recorded a '${status}' result${exit}.`;
+    }
+    default: return undefined;
+  }
+};
+
+const codeSummary = ({ event }: SummaryContext): string | undefined => {
+  const data = event.data;
+  switch (event.type) {
+    case "hypagraph.code.started":
+      return `Code node '${event.nodeId}' started a sandbox attempt.`;
+    case "hypagraph.code.result-recorded": {
+      const result = data.result as { status?: string } | undefined;
+      const status = result?.status ?? "unknown";
+      return `Code node '${event.nodeId}' recorded a '${status}' result.`;
     }
     default: return undefined;
   }
@@ -244,6 +261,7 @@ const otherSummary = ({ event, redacted }: SummaryContext): string => {
 
 const summarize = (context: SummaryContext): string =>
   checkSummary(context)
+  ?? codeSummary(context)
   ?? interactionSummary(context)
   ?? nodeSummary(context)
   ?? loopSummary(context)

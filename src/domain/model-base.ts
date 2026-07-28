@@ -61,6 +61,7 @@ export type GoalWorkContinuationActionKind =
   | "continue-active-task"
   | "start-ready-task"
   | "run-ready-check"
+  | "run-ready-code"
   | "evaluate-ready-gate"
   | "request-ready-interaction";
 
@@ -163,7 +164,7 @@ export type NodeStatus =
   | "stale";
 export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" | "failed" | "cancelled";
 export type EnforcementMode = "guided" | "strict";
-export type NodeKind = "task" | "gate" | "check" | "interaction";
+export type NodeKind = "task" | "gate" | "check" | "interaction" | "code";
 export type InteractionPresentationClass = "deterministic" | "semantic";
 export type InteractionPresentationKind = "none" | "report" | "command";
 export type InteractionPresentationStatus = "succeeded" | "failed" | "timed_out" | "cancelled" | "error";
@@ -544,6 +545,138 @@ export interface CheckExecutor {
   execute(request: CheckExecutionRequest, signal: AbortSignal): Promise<CheckResult>;
 }
 
+/**
+ * Effect class for a bridge capability.
+ * A code node may use pure, observation, and declared workspace-mutation only.
+ */
+export type CapabilityEffectClass =
+  | "pure"
+  | "observation"
+  | "workspace-mutation"
+  | "external-effect";
+
+/**
+ * One declared host surface for a sandbox program.
+ * The bridge denies every action which is not on this allowlist.
+ */
+export type CodeCapability =
+  | {
+    kind: "pure";
+    effectClass: "pure";
+  }
+  | {
+    kind: "pi-tool";
+    name: string;
+    effectClass: CapabilityEffectClass;
+  }
+  | {
+    kind: "mcp";
+    server: string;
+    methods: string[];
+    effectClass: CapabilityEffectClass;
+  }
+  | {
+    kind: "workspace-read";
+    paths: string[];
+    effectClass: "observation";
+  }
+  | {
+    kind: "workspace-write";
+    paths: string[];
+    effectClass: "workspace-mutation";
+  };
+
+/** Pinned compiler and sandbox identity. Include this in the snapshot hash. */
+export interface SandboxRuntimeIdentity {
+  typescriptVersion: string;
+  compilerOptions: Record<string, unknown>;
+  languageTarget: string;
+  ambientTypesFingerprint: string;
+  quickjsVersion: string;
+  bridgeSchemaFingerprint: string;
+}
+
+/**
+ * Reusable executable body for a code node.
+ * M6.3 reuses this shape for effect and reconciliation programs.
+ */
+export interface SandboxProgramDefinition {
+  version: 1;
+  program: string;
+  /** Deterministic compiled JavaScript. Persist this so replay does not need the TypeScript compiler. */
+  compiledJavaScript?: string;
+  compiledHash?: string;
+  inputs: string[];
+  capabilities: CodeCapability[];
+  timeoutMs: number;
+  maxMemoryBytes: number;
+  maxBridgeCalls: number;
+  maxResultBytes: number;
+  runtimeIdentity: SandboxRuntimeIdentity;
+}
+
+export interface CodeNodeDefinition {
+  kind: "code";
+  execution: SandboxProgramDefinition;
+  retry?: CheckRetryPolicy;
+}
+
+export type CodeResultStatus = CheckResultStatus;
+
+export interface CodeBridgeCallAudit {
+  action: string;
+  argsHash: string;
+  resultHash?: string;
+  status: "ok" | "denied" | "error";
+  error?: string;
+}
+
+export interface CodeScopeVerification {
+  passed: boolean;
+  /** Paths the program changed after baseline filtering. */
+  changedPaths?: string[];
+  /**
+   * Paths dirty before the program ran.
+   * Further modifications of these paths are detected by content hash.
+   */
+  baselinePaths?: string[];
+  error?: string;
+}
+
+export interface CodeResult {
+  attemptId: string;
+  startedAt: string;
+  completedAt: string;
+  status: CodeResultStatus;
+  /** Untrusted program return value before fact validation. */
+  value?: unknown;
+  facts: FactInput[];
+  evidence: EvidenceReference[];
+  bridgeCalls?: CodeBridgeCallAudit[];
+  scopeVerification?: CodeScopeVerification;
+  runtimeIdentity?: SandboxRuntimeIdentity;
+  error?: string;
+}
+
+export interface CodeExecutionRequest {
+  workflowId: string;
+  revision: number;
+  nodeId: string;
+  attemptId: string;
+  requestedAt: string;
+  definition: CodeNodeDefinition;
+  bindings: Record<string, FactValue>;
+  /** Declared repository scope paths for mutation verification. */
+  scopePaths?: string[];
+  produces: FactContract[];
+}
+
+export interface CodeExecutor {
+  readonly id: string;
+  readonly version: number;
+  execute(request: CodeExecutionRequest, signal: AbortSignal): Promise<CodeResult>;
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
@@ -555,6 +688,7 @@ export interface NodeDefinition {
   gate?: GateDefinition;
   check?: CheckDefinition;
   interaction?: InteractionDefinition;
+  code?: CodeNodeDefinition;
   /** Explicit context bindings for a semantic task. Prefer feedbackFrom. */
   context?: TaskContextDefinition;
   scope?: { paths: string[] };
@@ -693,6 +827,7 @@ export interface AttemptRuntime {
   evidence: EvidenceReference[];
   failureReason?: string;
   checkResult?: CheckResult;
+  codeResult?: CodeResult;
   /** Presentation observation for an interaction attempt. */
   presentation?: InteractionPresentationObservation;
   /** Absolute deadline stored when the interaction was requested. */
@@ -792,6 +927,8 @@ export type EventType =
   | "hypagraph.check.started"
   | "hypagraph.evaluation.started"
   | "hypagraph.check.result-recorded"
+  | "hypagraph.code.started"
+  | "hypagraph.code.result-recorded"
   | "hypagraph.interaction.requested"
   | "hypagraph.interaction.presented"
   | "hypagraph.interaction.answered"
@@ -843,6 +980,8 @@ export type HypagraphCommand =
   | (CommandBase & { type: "start-node"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "start-check"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
+  | (CommandBase & { type: "start-code"; nodeId: string; attemptId: string })
+  | (CommandBase & { type: "record-code-result"; nodeId: string; attemptId: string; result: CodeResult })
   | (CommandBase & { type: "request-interaction"; nodeId: string; attemptId: string })
   | (CommandBase & {
     type: "present-interaction";

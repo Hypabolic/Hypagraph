@@ -326,6 +326,10 @@ export class PiGraphPaneComponent implements Component, Focusable {
       details.push(` check=${node.check.status} exit=${node.check.exitCode ?? "none"}`);
       if (node.check.error) details.push(` error=${sanitizeTerminalText(node.check.error)}`);
     }
+    if (node.code) {
+      details.push(` code=${node.code.status} bridgeCalls=${node.code.bridgeCallCount ?? 0}`);
+      if (node.code.error) details.push(` error=${sanitizeTerminalText(node.code.error)}`);
+    }
     return details.map((line) => truncateToWidth(line, width, "…", true));
   }
 }

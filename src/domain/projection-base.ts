@@ -4,6 +4,7 @@ import type { FactRecord } from "./facts.js";
 import type {
   AttemptRuntime,
   CheckResult,
+  CodeResult,
   DomainEvent,
   HypagraphDefinition,
   HypagraphState,
@@ -415,6 +416,27 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         attempt.status = "submitted";
         attempt.submittedAt = event.timestamp;
         attempt.checkResult = result;
+        attempt.evidence = structuredClone(result.evidence);
+        node.evidence = structuredClone(result.evidence);
+        node.status = "awaiting_evidence";
+      }
+      break;
+    case "hypagraph.code.started":
+      if (node && event.attemptId) {
+        if (event.data.retry === true && event.nodeId) {
+          for (const [name, fact] of Object.entries(next.runtime.facts)) {
+            if (fact.producerNodeId === event.nodeId) delete next.runtime.facts[name];
+          }
+        }
+        startAttempt(node, event.attemptId, event.timestamp, event.data);
+      }
+      break;
+    case "hypagraph.code.result-recorded":
+      if (node && attempt) {
+        const result = structuredClone(event.data.result as CodeResult);
+        attempt.status = "submitted";
+        attempt.submittedAt = event.timestamp;
+        attempt.codeResult = result;
         attempt.evidence = structuredClone(result.evidence);
         node.evidence = structuredClone(result.evidence);
         node.status = "awaiting_evidence";

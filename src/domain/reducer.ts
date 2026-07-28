@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { evaluateCheckStart } from "./check-policy.js";
+import { evaluateCodeStart } from "./code-policy.js";
 import type {
   CheckDefinition,
   CheckResult,
+  CodeResult,
   Diagnostic,
   DomainEvent,
   EventType,
@@ -291,6 +293,17 @@ const validateCheckResult = (result: CheckResult, attemptId: string, definition:
   if (definition.kind === "metric-report") {
     const diagnostics = validateEvaluationIntegrityResult(definition, result);
     if (diagnostics.length > 0) return { ok: false, diagnostics };
+  }
+  return undefined;
+};
+
+const validateCodeResult = (result: CodeResult, attemptId: string): Rejection | undefined => {
+  if (result.attemptId !== attemptId) return reject("stale_code_result", "The code result does not match the current attempt.");
+  if (!Number.isFinite(Date.parse(result.startedAt)) || !Number.isFinite(Date.parse(result.completedAt))) {
+    return reject("invalid_code_timestamps", "The code result must contain valid start and completion timestamps.");
+  }
+  if (Date.parse(result.completedAt) < Date.parse(result.startedAt)) {
+    return reject("invalid_code_duration", "The code completion time must not be before its start time.");
   }
   return undefined;
 };
@@ -647,6 +660,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       const kind = definitionNode.kind ?? "task";
       if (kind === "gate") return reject("gate_start_not_allowed", "Evaluate a gate instead of starting it.");
       if (kind === "check") return reject("check_start_required", "Start a check with the check execution command.");
+      if (kind === "code") return reject("code_start_required", "Start a code node with the code execution command.");
       if (kind === "interaction") return reject("interaction_request_required", "Request an interaction with the interaction request command.");
       if (node.status !== "ready") return reject("node_not_ready", `Node '${command.nodeId}' is not ready.`);
       if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
@@ -1091,6 +1105,46 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if (node.status !== "running" || node.currentAttemptId !== command.attemptId) return reject("stale_check_attempt", "The check result does not match the current running attempt.");
       const invalid = validateCheckResult(command.result, command.attemptId, definitionNode.check); if (invalid) return invalid;
       next = append(next, events, command, { type: "hypagraph.check.result-recorded", nodeId: command.nodeId, attemptId: command.attemptId, data: { result: structuredClone(command.result) } }); break;
+    }
+    case "start-code": {
+      if ((definitionNode.kind ?? "task") !== "code" || !definitionNode.code) {
+        return reject("node_not_code", `Node '${command.nodeId}' is not a code node.`);
+      }
+      const eligibility = evaluateCodeStart(node, definitionNode.code, command.attemptId, command.at);
+      if (!eligibility.ok) return { ok: false, diagnostics: [eligibility.diagnostic] };
+      if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
+      const prepared = prepareLoopStart(next, events, command, command.nodeId);
+      if ("ok" in prepared) return prepared;
+      next = prepared.state;
+      next = append(next, events, command, {
+        type: "hypagraph.code.started",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          retry: eligibility.retry,
+          ...(eligibility.previousAttemptId ? { previousAttemptId: eligibility.previousAttemptId } : {}),
+          ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }),
+          ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }),
+        },
+      });
+      break;
+    }
+    case "record-code-result": {
+      if ((definitionNode.kind ?? "task") !== "code" || !definitionNode.code) {
+        return reject("node_not_code", `Node '${command.nodeId}' is not a code node.`);
+      }
+      if (node.status !== "running" || node.currentAttemptId !== command.attemptId) {
+        return reject("stale_code_attempt", "The code result does not match the current running attempt.");
+      }
+      const invalidCode = validateCodeResult(command.result, command.attemptId);
+      if (invalidCode) return invalidCode;
+      next = append(next, events, command, {
+        type: "hypagraph.code.result-recorded",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: { result: structuredClone(command.result) },
+      });
+      break;
     }
     case "evaluate-gate": {
       if ((definitionNode.kind ?? "task") !== "gate" || !definitionNode.gate) return reject("node_not_gate", `Node '${command.nodeId}' is not a gate.`);

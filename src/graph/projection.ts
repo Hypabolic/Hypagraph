@@ -27,6 +27,12 @@ export interface GraphViewCheckSummary {
   evaluator?: GraphViewEvaluatorSummary;
 }
 
+export interface GraphViewCodeSummary {
+  status: CheckResultStatus;
+  error?: string;
+  bridgeCallCount?: number;
+}
+
 export interface GraphViewEvaluatorSummary {
   purpose: EvaluationKind;
   trustLevel?: EvaluatorTrustLevel;
@@ -56,6 +62,7 @@ export interface GraphViewNode {
   loopId?: string;
   iteration?: number;
   check?: GraphViewCheckSummary;
+  code?: GraphViewCodeSummary;
   evaluator?: GraphViewEvaluatorSummary;
 }
 
@@ -306,6 +313,7 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
         ? Object.values(runtime.attempts).sort((left, right) => right.number - left.number)[0]
         : runtime.attempts[runtime.currentAttemptId];
       const checkResult = attempt?.checkResult;
+      const codeResult = attempt?.codeResult;
       const evaluator = evaluatorSummary(state, definition.id, checkResult?.evaluation?.integrity);
       const protectsEvaluatorOutput = definition.check?.kind === "metric-report"
         && definition.check.evaluation !== undefined
@@ -333,6 +341,15 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
                 ...(checkResult.exitCode === undefined ? {} : { exitCode: checkResult.exitCode }),
                 ...(checkResult.error === undefined ? {} : { error: protectsEvaluatorOutput ? "The protected evaluator failed." : checkResult.error }),
                 ...(evaluator === undefined ? {} : { evaluator }),
+              },
+            }),
+        ...(codeResult === undefined
+          ? {}
+          : {
+              code: {
+                status: codeResult.status,
+                ...(codeResult.error === undefined ? {} : { error: codeResult.error }),
+                ...(codeResult.bridgeCalls === undefined ? {} : { bridgeCallCount: codeResult.bridgeCalls.length }),
               },
             }),
       };

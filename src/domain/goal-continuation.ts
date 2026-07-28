@@ -136,6 +136,7 @@ export function isRunnableGoalContinuation(decision: GoalContinuationDecision): 
   return decision.kind === "continue-active-task"
     || decision.kind === "start-ready-task"
     || decision.kind === "run-ready-check"
+    || decision.kind === "run-ready-code"
     || decision.kind === "evaluate-ready-gate"
     || decision.kind === "request-ready-interaction";
 }

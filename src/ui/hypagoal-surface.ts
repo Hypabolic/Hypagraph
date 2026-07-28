@@ -94,6 +94,7 @@ const actionLabel = (action: GoalContinuationAction): string => {
   if (action.kind === "continue-active-task") return `continue task '${action.nodeId}'${loop}`;
   if (action.kind === "start-ready-task") return `start task '${action.nodeId}'${loop}`;
   if (action.kind === "run-ready-check") return `run check '${action.nodeId}'${loop}`;
+  if (action.kind === "run-ready-code") return `run code '${action.nodeId}'${loop}`;
   if (action.kind === "request-ready-interaction") return `request interaction '${action.nodeId}'${loop}`;
   return `evaluate gate '${action.nodeId}'${loop}`;
 };

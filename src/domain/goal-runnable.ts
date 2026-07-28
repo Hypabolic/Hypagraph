@@ -1,4 +1,5 @@
 import { checkCanStartWithoutWaiting } from "./check-policy.js";
+import { codeCanStartWithoutWaiting } from "./code-policy.js";
 import type { GoalWorkContinuationAction, HypagraphState, NodeDefinition } from "./model.js";
 
 export const ACTIVE_ROOT_STATUSES = new Set(["starting", "running", "awaiting_evidence", "verifying"]);
@@ -29,6 +30,9 @@ const actionForReadyNode = (
   }
   if (kind === "check" && node.check && checkCanStartWithoutWaiting(runtime, node.check)) {
     return { kind: "run-ready-check", nodeId: node.id, ...(loopId ? { loopId } : {}) };
+  }
+  if (kind === "code" && node.code && codeCanStartWithoutWaiting(runtime, node.code)) {
+    return { kind: "run-ready-code", nodeId: node.id, ...(loopId ? { loopId } : {}) };
   }
   // A ready interaction is requested by the controller or product surface.
   // While awaiting_response, the node is intentionally not runnable.
@@ -65,6 +69,9 @@ export function rootWorkActionIsRunnable(state: HypagraphState, action: GoalWork
   if (action.kind === "evaluate-ready-gate") return kind === "gate" && runtime.status === "ready";
   if (action.kind === "request-ready-interaction") {
     return kind === "interaction" && !!node.interaction && runtime.status === "ready";
+  }
+  if (action.kind === "run-ready-code") {
+    return kind === "code" && !!node.code && codeCanStartWithoutWaiting(runtime, node.code);
   }
   return kind === "check" && !!node.check && checkCanStartWithoutWaiting(runtime, node.check);
 }

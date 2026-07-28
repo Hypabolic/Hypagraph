@@ -39,6 +39,7 @@ const actionLabel = (action: GoalDispatchableContinuation): string => {
     case "continue-active-task": return `continue active task '${action.nodeId}'`;
     case "start-ready-task": return `start ready task '${action.nodeId}'`;
     case "run-ready-check": return `run ready check '${action.nodeId}'`;
+    case "run-ready-code": return `run ready code '${action.nodeId}'`;
     case "evaluate-ready-gate": return `evaluate ready gate '${action.nodeId}'`;
     case "request-ready-interaction": return `request ready interaction '${action.nodeId}'`;
     case "request-revision": return `request one bounded revision for ${action.blocker.kind} '${action.blocker.id}'`;
@@ -169,9 +170,17 @@ export function continuationSystemPrompt(pending: PendingGoalContinuation, state
   } else if (action.kind === "start-ready-task") {
     common.push(`Start task '${action.nodeId}' with hypagraph_transition before repository changes. Work only in its declared scope. Then publish facts, submit evidence, and verify it.`);
     common.push(...renderTaskContextLines(state, action.nodeId));
-  } else if (action.kind === "run-ready-check") common.push(`Run check '${action.nodeId}' with hypagraph_run_check. Do not start it with hypagraph_transition.`);
-  else if (action.kind === "request-ready-interaction") common.push(`Ask interaction '${action.nodeId}' with hypagraph_ask. The tool presents the declared question and stores the answer which the user selects. Do not invent a question, a response, or an answer.`);
-  else common.push(`Evaluate gate '${action.nodeId}' with the evaluate action of hypagraph_transition. Do not use model judgement to select the route.`);
+  } else if (action.kind === "run-ready-check") {
+    common.push(`Run check '${action.nodeId}' with hypagraph_run_check. Do not start it with hypagraph_transition.`);
+  } else if (action.kind === "request-ready-interaction") {
+    common.push(`Ask interaction '${action.nodeId}' with hypagraph_ask. The tool presents the declared question and stores the answer which the user selects. Do not invent a question, a response, or an answer.`);
+  } else if (action.kind === "run-ready-code") {
+    common.push(
+      `Code node '${action.nodeId}' runs in the deterministic lane. Do not start it with hypagraph_transition. The controller runs the sandbox program and records the result.`,
+    );
+  } else {
+    common.push(`Evaluate gate '${action.nodeId}' with the evaluate action of hypagraph_transition. Do not use model judgement to select the route.`);
+  }
   common.push("Do not revise the graph, replace the root, or mark the goal complete unless canonical state requires a separate supported action.");
   return common.join("\n");
 }
@@ -180,5 +189,7 @@ export function requiredContinuationTools(action: GoalDispatchableContinuation):
   if (action.kind === "request-revision") return ["hypagraph_read", "hypagoal_submit_revision"];
   if (action.kind === "run-ready-check") return ["hypagraph_read", "hypagraph_run_check", "hypagraph_cancel_check"];
   if (action.kind === "request-ready-interaction") return ["hypagraph_read", "hypagraph_ask"];
+  // Code nodes run in the deterministic lane. The model only needs read access.
+  if (action.kind === "run-ready-code") return ["hypagraph_read"];
   return ["hypagraph_read", "hypagraph_transition"];
 }

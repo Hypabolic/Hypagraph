@@ -4,6 +4,39 @@
 
 No unreleased changes.
 
+## v0.9.0 - 2026-07-29
+
+M6.2 adds code nodes and the sandbox executor adapter.
+
+### Added
+
+- the `code` node kind with a type-checked TypeScript program and mandatory bounds;
+- a QuickJS sandbox executor and a deny-by-default host bridge;
+- definition-time TypeScript check with line-numbered diagnostics;
+- host-pinned runtime identity and compiled output on prepare;
+- deterministic controller dispatch for ready code nodes;
+- durable code lifecycle events and attempt results;
+- capability allowlists with non-widening revision checks;
+- scope verification with baseline content hashes for mutating programs;
+- definition-time code authoring advisories on status surfaces;
+- focused tests in `tests/m6-2-code-node-sandbox.test.ts`.
+
+### Changed
+
+- persisted state uses schema version 7 for code node shape and attempt results;
+- the package depends on `quickjs-emscripten-core`, the QuickJS singlefile runtime, and `typescript` for prepare and execute.
+
+### Unchanged
+
+- the domain reducer stays pure; the sandbox runs on the executor side only;
+- replay restores a recorded code result and never re-runs the program;
+- M6.2 ships `pure` programs end to end; non-pure host handlers remain for M6.3.
+
+### Release notes
+
+See `docs/v0.9-release-notes.md` and `docs/code-node-adapter-plan.md`.
+
+
 ## v0.8.0 - 2026-07-28
 
 M6.1 adds interaction and approval nodes.

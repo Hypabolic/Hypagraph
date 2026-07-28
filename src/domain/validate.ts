@@ -3,6 +3,8 @@ import type { FactType, FactValue } from "./facts.js";
 import type {
   CheckFactSource,
   CheckRetryPolicy,
+  CodeCapability,
+  CodeNodeDefinition,
   Diagnostic,
   FileAssertionCheckDefinition,
   GitAssertionCheckDefinition,
@@ -12,8 +14,10 @@ import type {
   LoopDefinition,
   MetricReportCheckDefinition,
   NodeDefinition,
+  SandboxProgramDefinition,
 } from "./model.js";
 import { isFactValueOfType } from "./facts.js";
+import { codeCapabilityIsPermittedForCodeNode } from "./code-authoring.js";
 import { canonicalProtectedPath } from "./integrity-policy.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
 
@@ -31,6 +35,11 @@ const MAX_INVALID_EVALUATIONS = 1_000;
 const MAX_EVALUATIONS = 1_000_000;
 const MAX_DIAGNOSTIC_ITEMS = 100;
 const MAX_EVALUATOR_VERSION_LENGTH = 128;
+const MAX_CODE_TIMEOUT_MS = 86_400_000;
+const MAX_CODE_MEMORY_BYTES = 256 * 1024 * 1024;
+const MAX_CODE_BRIDGE_CALLS = 10_000;
+const MAX_CODE_RESULT_BYTES = 16_777_216;
+const MAX_CODE_PROGRAM_BYTES = 256 * 1024;
 const RETRY_STATUSES = new Set(["failed", "timed_out", "error"]);
 const REPORT_PARSERS = {
   "test-report": "vitest-json",
@@ -788,6 +797,279 @@ export const openAnswerFactNames = (definition: HypagraphDefinition): Set<string
   new Set(definition.nodes.flatMap((node) =>
     node.interaction?.openAnswer ? [node.interaction.openAnswer.fact] : []));
 
+const validateCodeCapability = (
+  nodeId: string,
+  capability: CodeCapability,
+  index: number,
+  location: string,
+): Diagnostic[] => {
+  const itemLocation = `${location}[${index}]`;
+  const diagnostics: Diagnostic[] = [];
+  if (!codeCapabilityIsPermittedForCodeNode(capability)) {
+    diagnostics.push({
+      code: "code_capability_external_effect_denied",
+      message: `Code node '${nodeId}' cannot use capability effect class '${capability.effectClass}'.`,
+      location: `${itemLocation}.effectClass`,
+    });
+  }
+  switch (capability.kind) {
+    case "pure":
+      if (capability.effectClass !== "pure") {
+        diagnostics.push({
+          code: "code_capability_effect_class_mismatch",
+          message: `Code node '${nodeId}' pure capability must use effect class 'pure'.`,
+          location: `${itemLocation}.effectClass`,
+        });
+      }
+      break;
+    case "pi-tool":
+      if (!capability.name.trim()) {
+        diagnostics.push({
+          code: "code_capability_name_required",
+          message: `Code node '${nodeId}' pi-tool capability requires a name.`,
+          location: `${itemLocation}.name`,
+        });
+      }
+      break;
+    case "mcp":
+      if (!capability.server.trim()) {
+        diagnostics.push({
+          code: "code_capability_server_required",
+          message: `Code node '${nodeId}' MCP capability requires a server name.`,
+          location: `${itemLocation}.server`,
+        });
+      } else if (!/^[a-z][a-z0-9_-]*$/.test(capability.server)) {
+        diagnostics.push({
+          code: "code_capability_server_invalid",
+          message: `Code node '${nodeId}' MCP server name must be a lower-case identifier without dots.`,
+          location: `${itemLocation}.server`,
+        });
+      }
+      if (!Array.isArray(capability.methods) || capability.methods.length === 0) {
+        diagnostics.push({
+          code: "code_capability_methods_required",
+          message: `Code node '${nodeId}' MCP capability requires at least one method.`,
+          location: `${itemLocation}.methods`,
+        });
+      } else {
+        capability.methods.forEach((method, methodIndex) => {
+          if (!method.trim() || method.includes(".")) {
+            diagnostics.push({
+              code: "code_capability_method_invalid",
+              message: `Code node '${nodeId}' MCP method must be a non-empty name without dots.`,
+              location: `${itemLocation}.methods[${methodIndex}]`,
+            });
+          }
+        });
+      }
+      break;
+    case "workspace-read":
+      if (capability.effectClass !== "observation") {
+        diagnostics.push({
+          code: "code_capability_effect_class_mismatch",
+          message: `Code node '${nodeId}' workspace-read capability must use effect class 'observation'.`,
+          location: `${itemLocation}.effectClass`,
+        });
+      }
+      if (!Array.isArray(capability.paths) || capability.paths.length === 0) {
+        diagnostics.push({
+          code: "code_capability_paths_required",
+          message: `Code node '${nodeId}' workspace-read capability requires at least one path.`,
+          location: `${itemLocation}.paths`,
+        });
+      } else {
+        capability.paths.forEach((path, pathIndex) => {
+          if (relativePathInvalid(path) || !canonicalProtectedPath(path)) {
+            diagnostics.push({
+              code: "code_capability_path_invalid",
+              message: `Code node '${nodeId}' capability path '${path}' must be workspace-relative without parent segments.`,
+              location: `${itemLocation}.paths[${pathIndex}]`,
+            });
+          }
+        });
+      }
+      break;
+    case "workspace-write":
+      if (capability.effectClass !== "workspace-mutation") {
+        diagnostics.push({
+          code: "code_capability_effect_class_mismatch",
+          message: `Code node '${nodeId}' workspace-write capability must use effect class 'workspace-mutation'.`,
+          location: `${itemLocation}.effectClass`,
+        });
+      }
+      if (!Array.isArray(capability.paths) || capability.paths.length === 0) {
+        diagnostics.push({
+          code: "code_capability_paths_required",
+          message: `Code node '${nodeId}' workspace-write capability requires at least one path.`,
+          location: `${itemLocation}.paths`,
+        });
+      } else {
+        capability.paths.forEach((path, pathIndex) => {
+          if (relativePathInvalid(path) || !canonicalProtectedPath(path)) {
+            diagnostics.push({
+              code: "code_capability_path_invalid",
+              message: `Code node '${nodeId}' capability path '${path}' must be workspace-relative without parent segments.`,
+              location: `${itemLocation}.paths[${pathIndex}]`,
+            });
+          }
+        });
+      }
+      break;
+  }
+  return diagnostics;
+};
+
+const validateSandboxProgram = (
+  node: NodeDefinition,
+  execution: SandboxProgramDefinition,
+  location: string,
+  factTypes: Map<string, FactType>,
+): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  if (execution.version !== 1) {
+    diagnostics.push({
+      code: "invalid_code_program_version",
+      message: `Code node '${node.id}' program version must be 1.`,
+      location: `${location}.version`,
+    });
+  }
+  if (typeof execution.program !== "string" || !execution.program.trim()) {
+    diagnostics.push({
+      code: "code_program_required",
+      message: `Code node '${node.id}' requires a non-empty program.`,
+      location: `${location}.program`,
+    });
+  } else if (Buffer.byteLength(execution.program, "utf8") > MAX_CODE_PROGRAM_BYTES) {
+    diagnostics.push({
+      code: "code_program_too_large",
+      message: `Code node '${node.id}' program exceeds ${MAX_CODE_PROGRAM_BYTES} bytes.`,
+      location: `${location}.program`,
+    });
+  }
+  if (!Number.isInteger(execution.timeoutMs) || execution.timeoutMs < 1 || execution.timeoutMs > MAX_CODE_TIMEOUT_MS) {
+    diagnostics.push({
+      code: "invalid_code_timeout",
+      message: `Code node '${node.id}' timeoutMs must be between 1 and ${MAX_CODE_TIMEOUT_MS}.`,
+      location: `${location}.timeoutMs`,
+    });
+  }
+  if (!Number.isInteger(execution.maxMemoryBytes) || execution.maxMemoryBytes < 1 || execution.maxMemoryBytes > MAX_CODE_MEMORY_BYTES) {
+    diagnostics.push({
+      code: "invalid_code_memory_limit",
+      message: `Code node '${node.id}' maxMemoryBytes must be between 1 and ${MAX_CODE_MEMORY_BYTES}.`,
+      location: `${location}.maxMemoryBytes`,
+    });
+  }
+  if (!Number.isInteger(execution.maxBridgeCalls) || execution.maxBridgeCalls < 0 || execution.maxBridgeCalls > MAX_CODE_BRIDGE_CALLS) {
+    diagnostics.push({
+      code: "invalid_code_bridge_call_limit",
+      message: `Code node '${node.id}' maxBridgeCalls must be between 0 and ${MAX_CODE_BRIDGE_CALLS}.`,
+      location: `${location}.maxBridgeCalls`,
+    });
+  }
+  if (!Number.isInteger(execution.maxResultBytes) || execution.maxResultBytes < 1 || execution.maxResultBytes > MAX_CODE_RESULT_BYTES) {
+    diagnostics.push({
+      code: "invalid_code_result_size_limit",
+      message: `Code node '${node.id}' maxResultBytes must be between 1 and ${MAX_CODE_RESULT_BYTES}.`,
+      location: `${location}.maxResultBytes`,
+    });
+  }
+  if (!execution.runtimeIdentity
+    || typeof execution.runtimeIdentity.typescriptVersion !== "string"
+    || typeof execution.runtimeIdentity.quickjsVersion !== "string"
+    || typeof execution.runtimeIdentity.languageTarget !== "string"
+    || typeof execution.runtimeIdentity.ambientTypesFingerprint !== "string"
+    || typeof execution.runtimeIdentity.bridgeSchemaFingerprint !== "string"
+    || !execution.runtimeIdentity.compilerOptions
+    || typeof execution.runtimeIdentity.compilerOptions !== "object") {
+    diagnostics.push({
+      code: "code_runtime_identity_required",
+      message: `Code node '${node.id}' requires a complete sandbox runtime identity.`,
+      location: `${location}.runtimeIdentity`,
+    });
+  }
+  if (!Array.isArray(execution.inputs)) {
+    diagnostics.push({
+      code: "code_inputs_required",
+      message: `Code node '${node.id}' inputs must be an array of fact names.`,
+      location: `${location}.inputs`,
+    });
+  } else {
+    const seen = new Set<string>();
+    execution.inputs.forEach((name, index) => {
+      const itemLocation = `${location}.inputs[${index}]`;
+      if (seen.has(name)) {
+        diagnostics.push({
+          code: "duplicate_code_input",
+          message: `Code node '${node.id}' repeats input '${name}'.`,
+          location: itemLocation,
+        });
+      }
+      seen.add(name);
+      if (!FACT_PATTERN.test(name)) {
+        diagnostics.push({
+          code: "invalid_code_input_name",
+          message: `Code input '${name}' must use a dotted lower-case name.`,
+          location: itemLocation,
+        });
+      } else if (!factTypes.has(name)) {
+        diagnostics.push({
+          code: "code_input_fact_unknown",
+          message: `Code node '${node.id}' input '${name}' is not a declared fact.`,
+          location: itemLocation,
+        });
+      }
+    });
+  }
+  if (!Array.isArray(execution.capabilities)) {
+    diagnostics.push({
+      code: "code_capabilities_required",
+      message: `Code node '${node.id}' capabilities must be an array. Use an empty array to deny all host actions.`,
+      location: `${location}.capabilities`,
+    });
+  } else {
+    execution.capabilities.forEach((capability, index) => {
+      diagnostics.push(...validateCodeCapability(node.id, capability, index, `${location}.capabilities`));
+    });
+    const mutating = execution.capabilities.some((capability) => capability.effectClass === "workspace-mutation");
+    if (mutating && (!node.scope || node.scope.paths.length === 0)) {
+      diagnostics.push({
+        code: "code_mutation_scope_required",
+        message: `Code node '${node.id}' declares a workspace mutation and must declare scope.paths.`,
+        location: `nodes.${node.id}.scope`,
+      });
+    }
+  }
+  return diagnostics;
+};
+
+const validateCode = (
+  node: NodeDefinition,
+  location: string,
+  factTypes: Map<string, FactType>,
+): Diagnostic[] => {
+  if (!node.code) {
+    return [{
+      code: "code_definition_required",
+      message: `Code node '${node.id}' requires a code definition.`,
+      location: `${location}.code`,
+    }];
+  }
+  const code: CodeNodeDefinition = node.code;
+  const codeLocation = `${location}.code`;
+  if (code.kind !== "code") {
+    return [{
+      code: "invalid_code_kind",
+      message: `Code node '${node.id}' definition kind must be 'code'.`,
+      location: `${codeLocation}.kind`,
+    }];
+  }
+  return [
+    ...validateSandboxProgram(node, code.execution, `${codeLocation}.execution`, factTypes),
+    ...validateRetry(node.id, code.retry, `${codeLocation}.retry`),
+  ];
+};
+
 const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
   const check = node.check;
@@ -914,6 +1196,7 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     if (kind !== "gate" && node.gate) diagnostics.push({ code: "non_gate_has_gate", message: `Node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
     if (kind !== "check" && node.check) diagnostics.push({ code: "non_check_has_check", message: `Node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
     if (kind !== "interaction" && node.interaction) diagnostics.push({ code: "non_interaction_has_interaction", message: `Node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
+    if (kind !== "code" && node.code) diagnostics.push({ code: "non_code_has_code", message: `Node '${node.id}' must not contain a code definition.`, location: `${location}.code` });
     if (node.context) {
       if (kind !== "task") {
         diagnostics.push({
@@ -928,11 +1211,19 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     if (kind === "check") {
       if (node.gate) diagnostics.push({ code: "check_has_gate", message: `Check node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
       if (node.interaction) diagnostics.push({ code: "check_has_interaction", message: `Check node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
+      if (node.code) diagnostics.push({ code: "check_has_code", message: `Check node '${node.id}' must not contain a code definition.`, location: `${location}.code` });
       diagnostics.push(...validateCheck(node, location));
+    }
+    if (kind === "code") {
+      if (node.gate) diagnostics.push({ code: "code_has_gate", message: `Code node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
+      if (node.check) diagnostics.push({ code: "code_has_check", message: `Code node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
+      if (node.interaction) diagnostics.push({ code: "code_has_interaction", message: `Code node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
+      diagnostics.push(...validateCode(node, location, factTypes));
     }
     if (kind === "interaction") {
       if (node.gate) diagnostics.push({ code: "interaction_has_gate", message: `Interaction node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
       if (node.check) diagnostics.push({ code: "interaction_has_check", message: `Interaction node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
+      if (node.code) diagnostics.push({ code: "interaction_has_code", message: `Interaction node '${node.id}' must not contain a code definition.`, location: `${location}.code` });
       diagnostics.push(...validateInteraction(node, location));
     }
     if (kind === "gate") {

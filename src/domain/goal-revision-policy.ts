@@ -1,4 +1,5 @@
 import { sha256 } from "./hash.js";
+import { revisionDoesNotWidenCodeCapabilities } from "./code-authoring.js";
 import type { Diagnostic, EvaluationBudgetDefinition, HypagraphDefinition, LoopDefinition, NodeDefinition } from "./model.js";
 import { loopFailurePolicy } from "./workflow-outcome.js";
 
@@ -22,6 +23,32 @@ const validateNode = (previous: NodeDefinition, next: NodeDefinition): Diagnosti
   }
   if (!exact(previous.gate ?? null, next.gate ?? null)) diagnostics.push(diagnostic("automatic_revision_gate_changed", `Node '${previous.id}' cannot remove or change a gate automatically.`, `${location}.gate`));
   if (!exact(previous.check ?? null, next.check ?? null)) diagnostics.push(diagnostic("automatic_revision_check_changed", `Node '${previous.id}' cannot remove or change a required check or evaluator automatically.`, `${location}.check`));
+  if (previous.code) {
+    if (!next.code) {
+      diagnostics.push(diagnostic("automatic_revision_code_removed", `Node '${previous.id}' cannot remove its code definition automatically.`, `${location}.code`));
+    } else {
+      if (!revisionDoesNotWidenCodeCapabilities(previous.code.execution, next.code.execution)) {
+        diagnostics.push(diagnostic(
+          "automatic_revision_code_capabilities_widened",
+          `Node '${previous.id}' cannot widen its code capability allowlist automatically.`,
+          `${location}.code.execution.capabilities`,
+        ));
+      }
+      if (!exact(previous.code.execution.program, next.code.execution.program)
+        || !exact(previous.code.execution.inputs, next.code.execution.inputs)
+        || !exact(previous.code.execution.runtimeIdentity, next.code.execution.runtimeIdentity)
+        || previous.code.execution.timeoutMs !== next.code.execution.timeoutMs
+        || previous.code.execution.maxMemoryBytes !== next.code.execution.maxMemoryBytes
+        || previous.code.execution.maxBridgeCalls !== next.code.execution.maxBridgeCalls
+        || previous.code.execution.maxResultBytes !== next.code.execution.maxResultBytes) {
+        diagnostics.push(diagnostic(
+          "automatic_revision_code_program_changed",
+          `Node '${previous.id}' cannot change its code program bounds or runtime identity automatically.`,
+          `${location}.code.execution`,
+        ));
+      }
+    }
+  }
   if (previous.scope) {
     if (!next.scope || !next.scope.paths.every((path) => previous.scope!.paths.includes(path))) diagnostics.push(diagnostic("automatic_revision_scope_weakened", `Node '${previous.id}' cannot broaden or remove its repository scope automatically.`, `${location}.scope`));
   }

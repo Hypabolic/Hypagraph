@@ -4,6 +4,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ActiveCheckExecutionRegistry } from "./checks/active-executions.js";
+import { ActiveCodeExecutionRegistry } from "./code/active-executions.js";
+import { QuickJSSandboxExecutor } from "./code/sandbox-executor.js";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
 import { DefaultPresentationExecutor } from "./checks/presentation-executor.js";
@@ -14,6 +16,7 @@ import { InteractionDialogComponent, type InteractionDialogResult } from "./pi/i
 import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
 import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";
+import { isReadyCodeDecision, type ReadyCodeDecision } from "./domain/deterministic-code-dispatch.js";
 import { readyNodeIds } from "./domain/readiness.js";
 import {
   awaitingInteractions,
@@ -45,7 +48,7 @@ import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
-import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
+import { CodeDefinitionError, definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
 import {
   projectModelVisibleGraphView,
@@ -54,6 +57,7 @@ import {
 } from "./pi/model-visible-state.js";
 import { formatPiCheckCommand } from "./pi/check-runner.js";
 import { runDeterministicCheckDispatch } from "./pi/deterministic-check-runner.js";
+import { runDeterministicCodeDispatch } from "./pi/deterministic-code-runner.js";
 import {
   continuationSystemPrompt,
   createPendingGoalContinuation,
@@ -279,6 +283,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const graphPane = new GraphPaneController(() => events);
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
+  const activeCodeExecutions = new ActiveCodeExecutionRegistry();
   /** In-flight presentation effects keyed by workflow, node, and attempt. */
   const activePresentations = new Map<string, Promise<"ready" | "failed" | "unavailable">>();
 
@@ -290,6 +295,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
 
   const ensureNoActiveExecution = (): void => {
     if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
+    if (activeCodeExecutions.hasActive()) throw new Error("A code node is active. Cancel it or let it finish before another workflow change.");
     if (activePresentations.size > 0) {
       throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
     }
@@ -793,6 +799,53 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
     }
   };
 
+  const dispatchDeterministicCode = async (
+    ctx: ExtensionContext,
+    decision: ReadyCodeDecision,
+  ): Promise<boolean> => {
+    const runGeneration = sessionGeneration;
+    const runBranch = branchGeneration;
+    ctx.ui.setStatus("hypagraph-code", `Code ${decision.nodeId}: running`);
+    try {
+      const dispatch = await runDeterministicCodeDispatch({
+        state: state!,
+        decision,
+        dispatchId: `hypagoal-dispatch:${randomUUID()}`,
+        attemptId: randomUUID(),
+        at: new Date().toISOString(),
+        store: eventStore.lease(),
+        executor: new QuickJSSandboxExecutor(),
+        registry: activeCodeExecutions,
+        rootDirectory: ctx.cwd,
+        stale: () => sessionGeneration !== runGeneration || branchGeneration !== runBranch,
+        onCommit: (next, committed) => {
+          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
+          state = next;
+          events.push(...committed);
+          updateUi(state, ctx, graphPane);
+        },
+      });
+      if (!dispatch.ok) {
+        ctx.ui.notify(dispatch.dispatched
+          ? `Hypagoal ran deterministic code '${decision.nodeId}', but it could not store the dispatch outcome '${dispatch.outcome}'.
+The code lifecycle is durable. Restore closes the interrupted dispatch.
+${formatDiagnostics(dispatch.diagnostics)}`
+          : `Hypagoal deterministic code '${decision.nodeId}' was not dispatched.
+${formatDiagnostics(dispatch.diagnostics)}`, "warning");
+        return false;
+      }
+      if (dispatch.stale) return false;
+      if (dispatch.outcome !== "completed") {
+        ctx.ui.notify(`Hypagoal deterministic code '${decision.nodeId}' ${dispatch.outcome}.
+${dispatch.reason ?? "The code dispatch did not complete."}`, "warning");
+        return false;
+      }
+      return true;
+    } finally {
+      ctx.ui.setStatus("hypagraph-code", undefined);
+    }
+  };
+
   /**
    * Evaluate outstanding interaction deadlines with the supplied evaluation time.
    *
@@ -924,7 +977,9 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
         return;
       }
 
-      const deterministic = isReadyGateDecision(decision) || isReadyCheckDecision(decision);
+      const deterministic = isReadyGateDecision(decision)
+        || isReadyCheckDecision(decision)
+        || isReadyCodeDecision(decision);
       if (deterministic && deterministicDispatches >= MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES) {
         ctx.ui.notify(
           `Hypagoal stopped automatic deterministic dispatch after ${MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES} consecutive actions in one controller pass. Review the graph before continuing.`,
@@ -935,6 +990,13 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
 
       if (isReadyCheckDecision(decision)) {
         const continued = await dispatchDeterministicCheck(ctx, decision);
+        deterministicDispatches += 1;
+        if (!continued) return;
+        continue;
+      }
+
+      if (isReadyCodeDecision(decision)) {
+        const continued = await dispatchDeterministicCode(ctx, decision);
         deterministicDispatches += 1;
         if (!continued) return;
         continue;
@@ -1023,6 +1085,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     revisionProposalHandled = false;
     restoreContinuationTools();
     activeExecutions.cancelAll();
+    activeCodeExecutions.cancelAll("session_shutdown");
     graphPane.dispose();
   });
 
@@ -1730,6 +1793,23 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       }
       const revisionOperationId = delivered?.operationId ?? canonical.operationId;
       revisionProposalHandled = true;
+      let revisedDefinition;
+      try {
+        revisedDefinition = { ...normalizeDefinition(params), goal: params.goal };
+      } catch (error) {
+        if (error instanceof CodeDefinitionError) {
+          return {
+            content: [{ type: "text" as const, text: `The automatic revision proposal is stale or unsafe. Canonical workflow state is unchanged.
+${formatDiagnostics(error.diagnostics)}` }],
+            details: {
+              hypagraph: persisted(),
+              revision: { kind: "rejected", diagnostics: structuredClone(error.diagnostics) },
+            },
+            terminate: true,
+          };
+        }
+        throw error;
+      }
       const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
         type: "apply-goal-revision",
         goalId: state.goal.goalId,
@@ -1744,7 +1824,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         sessionGeneration: canonical.sessionGeneration,
         branchGeneration: canonical.branchGeneration,
         blocker: structuredClone(revisionRequest.blocker),
-        definition: { ...normalizeDefinition(params), goal: params.goal },
+        definition: revisedDefinition,
         commandId: `apply-goal-revision:${randomUUID()}`,
         correlationId: revisionOperationId,
         at: new Date().toISOString(),

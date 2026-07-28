@@ -1,6 +1,6 @@
 {
   "name": "hypagraph",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Graph-native workflow guidance and execution control for coding agents",
   "type": "module",
   "private": true,
@@ -47,7 +47,11 @@
     "@types/node": "24.0.15",
     "fast-check": "4.9.0",
     "typebox": "1.3.6",
-    "typescript": "5.8.3",
     "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
+    "quickjs-emscripten-core": "0.32.0",
+    "typescript": "5.8.3"
   }
 }

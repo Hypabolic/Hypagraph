@@ -68,10 +68,10 @@ const event = (
 });
 
 describe("M6A canonical action dispatch projection", () => {
-  it("initializes schema 6 goal state with an independent scheduler ordinal", () => {
+  it("initializes schema 7 goal state with an independent scheduler ordinal", () => {
     const { state } = create();
-    expect(HYPAGRAPH_SCHEMA_VERSION).toBe(6);
-    expect(state.schemaVersion).toBe(6);
+    expect(HYPAGRAPH_SCHEMA_VERSION).toBe(7);
+    expect(state.schemaVersion).toBe(7);
     expect(state.goal?.schedulerOrdinal).toBe(0);
     expect(state.goal?.actionDispatch).toEqual({ schedulerOrdinal: 0 });
     expect(() => validateRestoredGoalState(state)).not.toThrow();
@@ -182,7 +182,7 @@ describe("M6A canonical action dispatch projection", () => {
       },
     };
     expect(() => restoreLatestSession([entry])).toThrow(
-      "Unsupported Hypagraph schema version '5'. Expected schema version 6.",
+      "Unsupported Hypagraph schema version '5'. Expected schema version 7.",
     );
   });
 });

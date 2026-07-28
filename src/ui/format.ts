@@ -1,4 +1,5 @@
 import { assessEvaluationAuthoring, formatEvaluationAuthoringAdvisories } from "../domain/evaluation-authoring.js";
+import { assessCodeAuthoring, formatCodeAuthoringAdvisories } from "../domain/code-authoring.js";
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
@@ -40,6 +41,7 @@ export function workflowSummary(state: HypagraphState): Record<string, unknown> 
     ...(state.goal === undefined ? {} : { goalControl: projectGoalControlSurface(state) }),
     ...(hypagoal === undefined ? {} : { hypagoal: policy.redact(structuredClone(hypagoal)) }),
     evaluationAuthoringAdvisories: assessEvaluationAuthoring(state.definition),
+    codeAuthoringAdvisories: assessCodeAuthoring(state.definition),
     snapshotHash: state.snapshotHash,
   };
 }
@@ -70,6 +72,10 @@ export function renderWorkflow(state: HypagraphState): string {
   const authoringAdvisories = assessEvaluationAuthoring(state.definition);
   if (authoringAdvisories.length > 0) {
     lines.push(formatEvaluationAuthoringAdvisories(authoringAdvisories));
+  }
+  const codeAdvisories = assessCodeAuthoring(state.definition);
+  if (codeAdvisories.length > 0) {
+    lines.push(formatCodeAuthoringAdvisories(codeAdvisories));
   }
   lines.push("Nodes:");
   for (const node of state.definition.nodes) {

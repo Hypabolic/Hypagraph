@@ -1,7 +1,9 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import type { CheckRetryPolicy, HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
+import type { CheckRetryPolicy, CodeNodeDefinition, Diagnostic, HypagraphDefinition, ReportCheckDefinition } from "../domain/model.js";
+import { createSandboxRuntimeIdentity } from "../domain/sandbox-runtime-identity.js";
 import { canonicalProtectedPath } from "../domain/integrity-policy.js";
+import { prepareDefinitionCodeNodes } from "../code/prepare.js";
 
 const factTypeSchema = Type.Union([
   Type.Literal("boolean"),
@@ -234,13 +236,36 @@ const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
   title: Type.String(),
   description: Type.Optional(Type.String()),
-  kind: Type.Optional(StringEnum(["task", "gate", "check", "interaction"] as const)),
+  kind: Type.Optional(StringEnum(["task", "gate", "check", "interaction", "code"] as const)),
   requires: Type.Optional(Type.Array(Type.String())),
   acceptance: Type.Optional(Type.Array(Type.String())),
   produces: Type.Optional(Type.Array(factContractSchema)),
   gate: Type.Optional(gateSchema),
   check: Type.Optional(checkSchema),
   interaction: Type.Optional(interactionSchema),
+  code: Type.Optional(Type.Object({
+    kind: Type.Literal("code"),
+    execution: Type.Object({
+      version: Type.Literal(1),
+      program: Type.String({ description: "TypeScript program body. Return one value which matches produces." }),
+      inputs: Type.Array(Type.String(), { description: "Declared fact bindings injected as inputs" }),
+      capabilities: Type.Array(Type.Object({
+        kind: StringEnum(["pure", "pi-tool", "mcp", "workspace-read", "workspace-write"] as const),
+        effectClass: StringEnum(["pure", "observation", "workspace-mutation", "external-effect"] as const),
+        name: Type.Optional(Type.String()),
+        server: Type.Optional(Type.String()),
+        methods: Type.Optional(Type.Array(Type.String())),
+        paths: Type.Optional(Type.Array(Type.String())),
+      }), { description: "Deny-by-default capability allowlist" }),
+      timeoutMs: Type.Integer({ minimum: 1, maximum: 86_400_000 }),
+      maxMemoryBytes: Type.Integer({ minimum: 1 }),
+      maxBridgeCalls: Type.Integer({ minimum: 0 }),
+      maxResultBytes: Type.Integer({ minimum: 1 }),
+      // compiledJavaScript, compiledHash, and runtimeIdentity are host-pinned during prepare.
+      // Author values are ignored.
+    }),
+    retry: Type.Optional(retrySchema),
+  }, { description: "Code node. Runs one type-checked program in a QuickJS sandbox." })),
   context: Type.Optional(Type.Object({
     feedbackFrom: Type.Array(Type.String(), {
       minItems: 1,
@@ -304,8 +329,13 @@ const normalizeRetry = (retry: CheckRetryPolicy | undefined) => retry === undefi
   },
 };
 
+/**
+ * Normalize a tool-supplied definition.
+ * Code nodes are type-checked and receive compiled output plus runtime identity.
+ * Throws when a code program fails the TypeScript check.
+ */
 export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefinition {
-  return {
+  const structural: HypagraphDefinition = {
     title: input.title.trim(),
     goal: input.goal.trim(),
     nodes: input.nodes.map((node) => ({
@@ -408,6 +438,9 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                 },
       }),
       ...(node.interaction === undefined ? {} : { interaction: structuredClone(node.interaction) }),
+      ...(node.code === undefined ? {} : {
+        code: normalizeCodeNodeInput(node.code as CodeNodeDefinition),
+      }),
       ...(node.context === undefined ? {} : { context: { feedbackFrom: [...node.context.feedbackFrom] } }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
@@ -427,4 +460,40 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
     ...(input.evaluation === undefined ? {} : { evaluation: { budget: { ...input.evaluation.budget } } }),
     policy: { mode: input.policy?.mode ?? "guided", requireEvidence: input.policy?.requireEvidence ?? true },
   };
+  const prepared = prepareDefinitionCodeNodes(structural);
+  if (!prepared.ok) throw normalizeCodeDiagnosticsError(prepared.diagnostics);
+  return prepared.definition;
 }
+
+/**
+ * Drop untrusted compiled output and author runtime-identity overrides.
+ * The host pins identity and compiled output during prepare.
+ */
+const normalizeCodeNodeInput = (code: CodeNodeDefinition): CodeNodeDefinition => ({
+  kind: "code",
+  execution: {
+    version: 1,
+    program: code.execution.program,
+    inputs: [...code.execution.inputs],
+    capabilities: structuredClone(code.execution.capabilities),
+    timeoutMs: code.execution.timeoutMs,
+    maxMemoryBytes: code.execution.maxMemoryBytes,
+    maxBridgeCalls: code.execution.maxBridgeCalls,
+    maxResultBytes: code.execution.maxResultBytes,
+    // Placeholder only. prepareDefinitionCodeNodes replaces this with the host pin.
+    runtimeIdentity: createSandboxRuntimeIdentity(),
+  },
+  ...(code.retry === undefined ? {} : { retry: structuredClone(code.retry) }),
+});
+
+export class CodeDefinitionError extends Error {
+  readonly diagnostics: Diagnostic[];
+  constructor(diagnostics: Diagnostic[]) {
+    super(diagnostics.map((item) => `${item.code}${item.location ? ` at ${item.location}` : ""}: ${item.message}`).join("\n"));
+    this.name = "CodeDefinitionError";
+    this.diagnostics = diagnostics;
+  }
+}
+
+const normalizeCodeDiagnosticsError = (diagnostics: Diagnostic[]): CodeDefinitionError =>
+  new CodeDefinitionError(diagnostics);

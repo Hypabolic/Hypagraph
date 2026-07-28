@@ -13,6 +13,12 @@ import {
   type DeterministicCheckDispatchResult,
 } from "../domain/deterministic-check-dispatch.js";
 import {
+  beginReadyCodeDispatch,
+  finishReadyCodeDispatch,
+  type DeterministicCodeDispatchRequest,
+  type DeterministicCodeDispatchResult,
+} from "../domain/deterministic-code-dispatch.js";
+import {
   dispatchReadyGate,
   type DeterministicGateDispatchRequest,
   type DeterministicGateDispatchResult,
@@ -40,11 +46,11 @@ const storeDiagnostic = (error: unknown): Diagnostic => error instanceof Workflo
     ? { code: "event_store_branch_changed", message: error.message }
     : { code: "event_store_append_failed", message: error instanceof Error ? error.message : String(error) };
 
-const appendDispatch = async (
+const appendDispatch = async <T extends { ok: true; state: HypagraphState; events: DomainEvent[] } | { ok: false; diagnostics: Diagnostic[] }>(
   store: WorkflowEventStore,
   previous: HypagraphState,
-  reduced: DeterministicCheckDispatchResult,
-): Promise<DeterministicCheckDispatchResult> => {
+  reduced: T,
+): Promise<T | { ok: false; diagnostics: Diagnostic[] }> => {
   if (!reduced.ok) return reduced;
   try {
     await store.append({
@@ -132,6 +138,24 @@ export async function finishReadyCheckDispatchAndCommit(
   reason?: string,
 ): Promise<DeterministicCheckDispatchResult> {
   return appendDispatch(store, state, finishReadyCheckDispatch(state, request, outcome, reason));
+}
+
+export async function beginReadyCodeDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicCodeDispatchRequest,
+): Promise<DeterministicCodeDispatchResult> {
+  return appendDispatch(store, state, beginReadyCodeDispatch(state, request));
+}
+
+export async function finishReadyCodeDispatchAndCommit(
+  store: WorkflowEventStore,
+  state: HypagraphState,
+  request: DeterministicCodeDispatchRequest,
+  outcome: "completed" | "failed" | "interrupted",
+  reason?: string,
+): Promise<DeterministicCodeDispatchResult> {
+  return appendDispatch(store, state, finishReadyCodeDispatch(state, request, outcome, reason));
 }
 
 export async function interruptPendingActionDispatchAndCommit(

@@ -1,4 +1,5 @@
 import { evaluateCheckStart } from "../domain/check-policy.js";
+import { evaluateCodeStart } from "../domain/code-policy.js";
 import {
   isProtectedEvaluatorNode,
   redactGoalBlockage,
@@ -22,6 +23,7 @@ export type NotRunnableReason =
   | { kind: "blocked"; reason: string; blockerKind: string }
   | { kind: "loop-not-running"; loopId: string; status: string; exitReason?: string }
   | { kind: "check-policy"; code: string; message: string }
+  | { kind: "code-policy"; code: string; message: string }
   | { kind: "active-elsewhere"; nodeId: string }
   | { kind: "goal-stopped"; status: string; reason: string }
   | { kind: "awaiting-model-turn"; nodeId?: string };
@@ -116,6 +118,8 @@ const summarize = (nodeId: string, reason: NotRunnableReason): string => {
         : `Node '${nodeId}' belongs to loop '${reason.loopId}', which is ${reason.status}.`;
     case "check-policy":
       return `Check '${nodeId}' cannot start: ${reason.code}: ${reason.message}`;
+    case "code-policy":
+      return `Code node '${nodeId}' cannot start: ${reason.code}: ${reason.message}`;
     case "active-elsewhere":
       return `Node '${nodeId}' waits, because node '${reason.nodeId}' has an active attempt.`;
     case "goal-stopped":
@@ -198,6 +202,13 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
       if (!eligibility.ok) {
         return { kind: "check-policy", code: eligibility.diagnostic.code, message: eligibility.diagnostic.message };
       }
+    } else if (kind === "code" && node.code) {
+      const unsatisfied = unsatisfiedDependencies(state, node);
+      if (unsatisfied.length > 0) return { kind: "dependency", blockedBy: unsatisfied };
+      const eligibility = evaluateCodeStart(runtime, node.code, `explain-${state.sequence}-${nodeId}`, state.updatedAt);
+      if (!eligibility.ok) {
+        return { kind: "code-policy", code: eligibility.diagnostic.code, message: eligibility.diagnostic.message };
+      }
     } else if (status === "failed") {
       return { kind: "terminal", status };
     }
@@ -213,11 +224,13 @@ export function explainNode(state: HypagraphState, nodeId: string): NodeExplanat
 
     const action: GoalWorkContinuationAction = kind === "check"
       ? { kind: "run-ready-check", nodeId }
-      : kind === "gate"
-        ? { kind: "evaluate-ready-gate", nodeId }
-        : kind === "interaction"
-          ? { kind: "request-ready-interaction", nodeId }
-          : { kind: "start-ready-task", nodeId };
+      : kind === "code"
+        ? { kind: "run-ready-code", nodeId }
+        : kind === "gate"
+          ? { kind: "evaluate-ready-gate", nodeId }
+          : kind === "interaction"
+            ? { kind: "request-ready-interaction", nodeId }
+            : { kind: "start-ready-task", nodeId };
     const loopId = state.definition.loops.find((item) => item.nodes.includes(nodeId))?.id;
     const withLoop = { ...action, ...(loopId ? { loopId } : {}) } as GoalWorkContinuationAction;
     if (rootWorkActionIsRunnable(state, withLoop)) return { kind: "runnable", action: action.kind };
@@ -245,6 +258,7 @@ const decisionSummary = (
     case "continue-active-task":
     case "start-ready-task":
     case "run-ready-check":
+    case "run-ready-code":
     case "evaluate-ready-gate":
     case "request-ready-interaction":
       return {

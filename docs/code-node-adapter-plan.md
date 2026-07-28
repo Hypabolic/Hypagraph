@@ -1,14 +1,18 @@
 # Code node and sandbox executor adapter plan
 
-- Status: accepted decision, implementation not started
+- Status: complete; released as v0.9
 - Milestone: M6.2
 - Release marker: v0.9
 - Prerequisite: M6A deterministic dispatch
-- Updated: 2026-07-25
+- Updated: 2026-07-29
 - Depends on: `docs/graph-capability-review.md`, `docs/execution-roadmap.md`
 - Consumed by: `docs/m6-3-external-effect-plan.md`
 - Pattern source: https://github.com/monotykamary/pi-fabric (MIT)
 - Writing standard: ASD-STE100 Simplified Technical English
+- M6.2 host bridge: `pure` programs are fully executable. Non-pure capabilities
+  (`workspace-read`, `workspace-write`, `pi-tool`, `mcp`) validate, survive revision
+  checks, and are denied or rejected at the bridge when no host handler is registered.
+  Host handlers for workspace and external surfaces land with M6.3.
 
 ## 1. Decision
 

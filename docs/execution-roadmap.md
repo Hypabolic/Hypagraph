@@ -1,10 +1,10 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Updated: 2026-07-27
-- Current milestone: M6.1 interaction and approval nodes
-- Current implementation baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
-- Current published release: `v0.7`
+- Updated: 2026-07-29
+- Current milestone: M6.3 external effects and reconciliation
+- Current implementation baseline: agent/m6-2-code-node-sandbox at v0.9
+- Current published release: `v0.9`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Deterministic orchestration plan, which spans a new aggregate node, a synthesis node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
 - Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
@@ -219,8 +219,8 @@ All repository text must follow `AGENTS.md`.
 | M5B | v0.6 | Root Hypagoal autonomous controller | Complete; released as v0.6 |
 | M6A | v0.7 | Deterministic dispatch lane | Complete; released as v0.7 |
 | M6B | v0.7 | Event history, replay, and debugger UI | Complete; released as v0.7 |
-| M6.1 | v0.8 | Interaction and approval nodes | Planned |
-| M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Planned |
+| M6.1 | v0.8 | Interaction and approval nodes | Complete; released as v0.8 |
+| M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Complete; released as v0.9 (pure programs; non-pure handlers in M6.3) |
 | M6.3 | v0.10 | External effects and reconciliation | Planned |
 | M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
@@ -656,6 +656,14 @@ The decision, the adapter contract, the definition shape, the authoring rules, a
 - A mutating program is verified against its declared scope.
 - Replay replays the recorded result and never runs the program again.
 - A definition-time advisory reports a program which is probably more than one node.
+
+### M6.2 host surface note
+
+M6.2 ships the full control path for `pure` code programs. Non-pure capability kinds
+validate and are enforced at the bridge. The production host does not yet register
+`workspace.read` or `workspace.write` handlers. Those handlers and end-to-end mutation
+dogfood land with M6.3. Scope verification uses content hashes so a further change to a
+baseline-dirty path is still checked against `scope.paths`.
 
 ## 11. M6.3 - External effects and reconciliation
 

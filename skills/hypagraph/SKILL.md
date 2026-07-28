@@ -82,6 +82,21 @@ The reducer applies the declared loop failure policy. Do not replace a hard limi
 
 Independent runnable components remain eligible after each loop turn. Do not continue the same loop only because it produced the latest metric or evaluation event.
 
+## Code node authoring
+
+Use a `code` node for one type-checked pure or observation program that publishes declared facts without a model turn.
+
+1. Prefer graph structure over program size. If work can be two nodes and one gate, do not put an `if` branch that selects downstream work inside the program.
+2. Keep a branch in the graph when the branch changes what runs next. A condition inside a program may select a value. It must not select downstream work.
+3. Keep repetition in a loop region when each pass needs an attempt, evidence, a check, or an evaluation.
+4. Declare `inputs` as fact bindings. Declare `capabilities` as a deny-by-default allowlist. Do not use `external-effect` on a code node.
+5. Declare `scope.paths` when a program has a workspace-mutation capability.
+6. Keep one result contract per code node. A large program with many unrelated facts is usually more than one node.
+7. Author the program at definition time. `hypagraph_define` and `hypagoal_start` type-check the program and report line-numbered TypeScript errors before the definition is accepted.
+8. Review code authoring advisories on define and status surfaces. Do not reject the definition for an advisory alone.
+
+The controller runs a ready code node in the deterministic lane without a model turn. Replay replays the recorded result and never runs the program again.
+
 ## Evaluation-contract authoring
 
 Use an evaluation contract only when the objective has a defensible deterministic measurement.
@@ -185,8 +200,9 @@ Do not ask a model to judge structural strategy difference unless a deterministi
 3. Use `action: "publish"` for declared task facts while the attempt is running.
 4. Use `action: "submit"` with concrete evidence, then a separate `action: "verify"`.
 5. Use `hypagraph_run_check` for ready or retryable check nodes. Do not start checks through `hypagraph_transition`.
-6. Use `action: "block"` when work cannot continue and `action: "cancel"` when an active attempt must stop.
-7. Call `hypagraph_revise` when new evidence makes the graph incorrect. Preserve unaffected completed work and routes.
+6. A ready code node runs in the deterministic lane. Do not start a code node through `hypagraph_transition`.
+7. Use `action: "block"` when work cannot continue and `action: "cancel"` when an active attempt must stop.
+8. Call `hypagraph_revise` when new evidence makes the graph incorrect. Preserve unaffected completed work and routes. A revision must not widen a code capability allowlist.
 
 ## Loop rules
 
