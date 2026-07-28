@@ -99,6 +99,7 @@ A closed loop needs four separate parts, and they must not be confused:
 | Attempt | Model executor | 1 | What is the work? |
 | Opinions | N model executors in one region | N | Is this work acceptable? |
 | Decision | Aggregate, `quorum` | 0 | Does the loop stop? |
+| Collection | Aggregate, `collect` | 0 | What did the branches report? |
 | Feedback | Model executor, section 7.2 | 1 | What must the next attempt change? |
 
 The decision part is the reason the aggregate node exists. N reviewers produce N
@@ -145,7 +146,7 @@ An implementation loop with five reviewers. The loop region:
             "review-api", "review-performance",
             "review-verdict", "review-findings",
             "review-synthesis"],
-  "evaluateAfter": "review-verdict",
+  "evaluateAfter": "review-synthesis",
   "successWhen": { "fact": "review.passed", "equals": true },
   "maxIterations": 4,
   "progress": { "fact": "review.readyCount", "direction": "maximize", "minDelta": 1 },
@@ -158,6 +159,9 @@ An implementation loop with five reviewers. The loop region:
 The five reviewer nodes have no dependency edge between them, so they are
 runnable together. Each one publishes `review.ready`, which is a boolean, and
 `review.findings`, which is an array.
+
+The synthesis node is the loop evaluator, and the quorum node is not. Section
+3.4 states why.
 
 The decision:
 
@@ -192,8 +196,8 @@ The collection:
 }
 ```
 
-The synthesis node reads `review.findingList` and publishes `review.feedback`.
-The feedback edge carries it to `implement`.
+The synthesis node requires `review-verdict` and `review-findings`. It reads
+`review.findingList` and publishes `review.feedback`.
 
 One iteration:
 
@@ -205,8 +209,9 @@ One iteration:
 4. `review-findings` collects 11 findings in severity order. That is no model
    turn.
 5. `review-synthesis` merges them into a brief. That is one model turn.
-6. The loop evaluates after `review-verdict`. `successWhen` is false, and the
-   iteration limit is not reached, so the decision is `continue`.
+6. The loop evaluates after `review-synthesis`. `successWhen` reads
+   `review.passed`, which is false, and the iteration limit is not reached, so
+   the decision is `continue`.
 
 The second iteration reaches a count of 4. `review.passed` becomes true, the
 loop exits with `exitReason: "success"`, and `review.readyCount` moved from 2 to
@@ -215,6 +220,40 @@ loop exits with `exitReason: "success"`, and `review.readyCount` moved from 2 to
 The loop can stop four ways, and each way is a separate `LoopExitReason` in the
 event history: `success`, `max_iterations`, `no_progress`, and
 `evaluation_budget`. A script which writes `while (!approved)` records one.
+
+### 3.4 The evaluator is the synthesis node
+
+The loop evaluator is the last node of an iteration. It is not the node which
+supplies the success condition.
+
+Three existing validator rules decide this:
+
+| Rule | Diagnostic | Result |
+| --- | --- | --- |
+| Feedback must go from the evaluator to the entry | `invalid_feedback_boundary` | The evaluator must be the feedback source |
+| Every loop node must reach the evaluator | `loop_node_cannot_reach_evaluator` | The evaluator must be last |
+| An external consumer must leave through the evaluator | `loop_external_output_not_evaluator` | The evaluator is the one exit |
+
+The synthesis node is the only node which satisfies all three. It produces the
+feedback, and every other node in the region comes before it.
+
+A quorum node as the evaluator fails the second rule. The synthesis node is in
+the region and it cannot reach the quorum node, because it comes after it.
+
+The success condition still reads the quorum fact. This is the separation rule
+of section 3.2 in structural form: the node which closes an iteration is not the
+node which decides whether another iteration runs.
+
+One cost follows. The final iteration passes the quorum and still spends a
+synthesis turn, because the evaluator runs before the loop evaluates. One turn
+for each completed loop is an acceptable cost. Do not add a gate to avoid it,
+because a gate inside the region adds a route which the loop must then reason
+about.
+
+One validator message needs an update. `loop_evaluator_cannot_be_gate` reads
+"must be a task or check node", and a model-executor node is neither. The test
+rejects a gate only, so the behaviour is correct and the text is not. Slice 4
+must correct it.
 
 ## 4. Parity with a script orchestrator
 
@@ -539,6 +578,8 @@ result.
   which the feedback edge carries to the next attempt.
 - A gate or a loop success condition which reads a synthesis fact fails
   validation with `routes_on_synthesis_fact`.
+- A closed loop passes the existing loop validator with the synthesis node as
+  `evaluateAfter` and the quorum fact in `successWhen`.
 - A best-of-N region selects one branch by a numeric fact with no model turn.
 - A `collect` region keeps every item, orders the result before it applies
   `maximumItems`, and reports the removed count.

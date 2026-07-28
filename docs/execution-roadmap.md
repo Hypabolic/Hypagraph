@@ -6,7 +6,7 @@
 - Current implementation baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
 - Current published release: `v0.7`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
-- Deterministic orchestration plan, which spans a new aggregate node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
+- Deterministic orchestration plan, which spans a new aggregate node, a synthesis node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
 - Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
