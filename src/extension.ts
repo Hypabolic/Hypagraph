@@ -53,6 +53,10 @@ import {
   dispatchReadyGateAndCommit,
   interruptPendingActionDispatchAndCommit,
 } from "./persistence/coordinator.js";
+import {
+  appendOneMemberFamilyRecord,
+  restoreOrMigrateOneMemberFamilySession,
+} from "./persistence/family-session.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
@@ -333,10 +337,17 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     activeExecutions.cancelAll("The Pi session branch changed.");
     activeCodeExecutions.cancelAll("The Pi session branch changed.");
     activeEffectExecutions.cancelAll("The Pi session branch changed.");
-    const session = restoreLatestSession(ctx.sessionManager.getBranch());
+    const branch = ctx.sessionManager.getBranch();
+    const session = restoreLatestSession(branch);
     eventStore.synchronize(session);
     state = session?.snapshot;
     events = session?.events ?? [];
+    // Migrate a restored v0.6 root into a one-member family when no family record exists.
+    // Append is additive. Prior workflow event batches are not rewritten.
+    const familyProjection = restoreOrMigrateOneMemberFamilySession(branch);
+    if (familyProjection?.migrated) {
+      appendOneMemberFamilyRecord(pi, familyProjection.family);
+    }
     if (state) {
       const recoveryStore = eventStore.lease();
       const recovery = await recoverInterruptedChecks({
