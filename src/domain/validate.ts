@@ -93,6 +93,25 @@ const isConditionShape = (value: unknown, depth = 0): value is Condition => {
   }
 };
 
+/** Every fact name which one condition reads. */
+export function conditionFactNames(condition: unknown): Set<string> {
+  const names = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (!isRecord(value) || depth > 32) return;
+    if (value.kind === "exists" && typeof value.fact === "string") names.add(value.fact);
+    else if (value.kind === "not") visit(value.condition, depth + 1);
+    else if ((value.kind === "all" || value.kind === "any") && Array.isArray(value.conditions)) {
+      for (const item of value.conditions) visit(item, depth + 1);
+    } else if (value.kind === "compare") {
+      for (const side of [value.left, value.right]) {
+        if (isRecord(side) && side.kind === "fact" && typeof side.name === "string") names.add(side.name);
+      }
+    }
+  };
+  visit(condition, 0);
+  return names;
+}
+
 const validateCondition = (condition: unknown, factTypes: ReadonlyMap<string, FactType>, availableFacts: ReadonlySet<string>, location: string): Diagnostic[] => {
   if (!isConditionShape(condition)) return [{ code: "invalid_condition", message: "The condition must use the supported typed condition structure.", location }];
   const complexity = measureCondition(condition);
@@ -395,13 +414,49 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
   } else if (interaction.presentation.kind !== "none") {
     diagnostics.push({ code: "unsupported_interaction_presentation", message: `Interaction node '${node.id}' supports only presentation kind 'none' in this milestone slice.`, location: `${interactionLocation}.presentation.kind` });
   }
-  if (!Array.isArray(interaction.responses) || interaction.responses.length === 0) {
-    diagnostics.push({ code: "interaction_responses_required", message: `Interaction node '${node.id}' requires at least one response option.`, location: `${interactionLocation}.responses` });
+  const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
+  const hasResponses = Array.isArray(interaction.responses) && interaction.responses.length > 0;
+  const hasOpenAnswer = interaction.openAnswer !== undefined;
+
+  // A question is closed or open. A closed question has a fixed set of answers.
+  // An open question needs typed input, so a response list means nothing there.
+  if (hasResponses && hasOpenAnswer) {
+    diagnostics.push({
+      code: "interaction_answer_kind_conflict",
+      message: `Interaction node '${node.id}' declares response options and an open answer.`,
+      location: interactionLocation,
+      suggestion: "Declare responses for a closed question, or openAnswer for an open question.",
+    });
     return diagnostics;
   }
+  if (!hasResponses && !hasOpenAnswer) {
+    diagnostics.push({
+      code: "interaction_answer_required",
+      message: `Interaction node '${node.id}' requires response options or an open answer.`,
+      location: interactionLocation,
+      suggestion: "Declare responses for a closed question, or openAnswer for an open question.",
+    });
+    return diagnostics;
+  }
+
+  if (hasOpenAnswer) {
+    const open = interaction.openAnswer!;
+    const openLocation = `${interactionLocation}.openAnswer`;
+    if (!open.prompt?.trim()) diagnostics.push({ code: "interaction_open_prompt_required", message: `Interaction node '${node.id}' requires an open-answer prompt.`, location: `${openLocation}.prompt` });
+    if (!Number.isInteger(open.maxBytes) || open.maxBytes < 1 || open.maxBytes > MAX_ASSERTION_BYTES) {
+      diagnostics.push({ code: "invalid_interaction_open_limit", message: `Interaction open-answer maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`, location: `${openLocation}.maxBytes` });
+    }
+    const type = contracts.get(open.fact);
+    if (type === undefined) {
+      diagnostics.push({ code: "interaction_open_fact_not_declared", message: `Interaction node '${node.id}' publishes undeclared fact '${open.fact}'.`, location: `${openLocation}.fact`, suggestion: "Declare the fact in produces with type 'string'." });
+    } else if (type !== "string") {
+      diagnostics.push({ code: "interaction_open_fact_type_mismatch", message: `Open-answer fact '${open.fact}' must use type 'string'.`, location: `${openLocation}.fact` });
+    }
+    return diagnostics;
+  }
+
   const responseIds = new Set<string>();
-  const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
-  const recommended = interaction.responses.filter((response) => response.recommended === true);
+  const recommended = interaction.responses!.filter((response) => response.recommended === true);
   if (recommended.length > 1) {
     diagnostics.push({
       code: "multiple_recommended_interaction_responses",
@@ -410,7 +465,7 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
       suggestion: "Set recommended on one response only.",
     });
   }
-  interaction.responses.forEach((response, index) => {
+  interaction.responses!.forEach((response, index) => {
     const responseLocation = `${interactionLocation}.responses[${index}]`;
     if (!ID_PATTERN.test(response.id)) diagnostics.push({ code: "invalid_interaction_response_id", message: `Response ID '${response.id}' is not valid.`, location: `${responseLocation}.id` });
     if (responseIds.has(response.id)) diagnostics.push({ code: "duplicate_interaction_response_id", message: `Response ID '${response.id}' occurs more than one time.`, location: `${responseLocation}.id` });
@@ -434,14 +489,13 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
       else if (!isFactValueOfType(fact.type, fact.value)) diagnostics.push({ code: "interaction_fact_value_invalid", message: `Response fact '${fact.name}' has an invalid value for type '${fact.type}'.`, location: factLocation });
     });
   });
-  if (interaction.freeText) {
-    if (!interaction.freeText.prompt?.trim()) diagnostics.push({ code: "interaction_free_text_prompt_required", message: `Interaction free text requires a prompt.`, location: `${interactionLocation}.freeText.prompt` });
-    if (!Number.isInteger(interaction.freeText.maxBytes) || interaction.freeText.maxBytes < 1 || interaction.freeText.maxBytes > MAX_ASSERTION_BYTES) {
-      diagnostics.push({ code: "invalid_interaction_free_text_limit", message: `Interaction free text maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`, location: `${interactionLocation}.freeText.maxBytes` });
-    }
-  }
   return diagnostics;
 };
+
+/** Every fact which an open interaction publishes. A gate must not route on one. */
+export const openAnswerFactNames = (definition: HypagraphDefinition): Set<string> =>
+  new Set(definition.nodes.flatMap((node) =>
+    node.interaction?.openAnswer ? [node.interaction.openAnswer.fact] : []));
 
 const validateCheck = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.check) return [{ code: "check_definition_required", message: `Check node '${node.id}' requires a check definition.`, location: `${location}.check` }];
@@ -595,6 +649,18 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
       const upstream = upstreamNodeIds(definition, node.id);
       const availableFacts = new Set([...factOwners].filter(([, owner]) => upstream.has(owner)).map(([name]) => name));
       diagnostics.push(...validateCondition(node.gate.condition, factTypes, availableFacts, `${location}.gate.condition`));
+      // Rule 3.4. A typed answer to an open question is evidence for a
+      // model-backed task. It must never select a route.
+      const openFacts = openAnswerFactNames(definition);
+      for (const name of conditionFactNames(node.gate.condition)) {
+        if (!openFacts.has(name)) continue;
+        diagnostics.push({
+          code: "gate_routes_on_open_answer",
+          message: `Gate '${node.id}' routes on open-answer fact '${name}'.`,
+          location: `${location}.gate.condition`,
+          suggestion: "Route on a closed interaction, a check fact, or a task fact.",
+        });
+      }
     }
   });
   if (diagnostics.some((item) => item.code === "duplicate_node_id" || item.code === "dangling_dependency")) return diagnostics;

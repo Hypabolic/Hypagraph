@@ -77,8 +77,8 @@ import { renderRevisionHistory } from "./history/revisions.js";
 export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
 
 interface InteractionAnswer {
-  responseId: string;
-  freeText?: string;
+  responseId?: string;
+  openText?: string;
 }
 
 /** Present the rich dialog. TUI mode supports a custom overlay component. */
@@ -90,8 +90,9 @@ const presentInteractionDialog = async (
     (tui, theme, _keybindings, done) => new InteractionDialogComponent(tui, theme, interaction, done),
     { overlay: true, overlayOptions: { width: "80%", minWidth: 48, maxHeight: "70%" } },
   );
-  if (result.kind !== "response") return undefined;
-  return { responseId: result.responseId, ...(result.freeText ? { freeText: result.freeText } : {}) };
+  if (result.kind === "response") return { responseId: result.responseId };
+  if (result.kind === "open") return { openText: result.openText };
+  return undefined;
 };
 
 /**
@@ -105,14 +106,15 @@ const presentInteractionSelect = async (
   ctx: ExtensionContext,
   interaction: InteractionDefinition,
 ): Promise<InteractionAnswer | undefined> => {
+  if (interaction.openAnswer) {
+    const typed = (await ctx.ui.input(interaction.openAnswer.prompt))?.trim();
+    return typed ? { openText: typed } : undefined;
+  }
   const selected = await ctx.ui.select(interaction.question, interactionOptions(interaction));
   if (selected === undefined) return undefined;
   const response = responseForOptionText(interaction, selected);
   if (!response) return undefined;
-  if (!interaction.freeText) return { responseId: response.id };
-  const supplied = await ctx.ui.input(interaction.freeText.prompt);
-  const note = supplied?.trim();
-  return { responseId: response.id, ...(note ? { freeText: note } : {}) };
+  return { responseId: response.id };
 };
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
@@ -363,8 +365,8 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
       type: "answer-interaction",
       nodeId: awaiting.nodeId,
       attemptId: awaiting.attemptId,
-      responseId: answer.responseId,
-      ...(answer.freeText ? { freeText: answer.freeText } : {}),
+      ...(answer.responseId ? { responseId: answer.responseId } : {}),
+      ...(answer.openText ? { openText: answer.openText } : {}),
       commandId: randomUUID(),
       at: new Date().toISOString(),
     }]);

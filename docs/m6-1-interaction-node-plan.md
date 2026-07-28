@@ -198,8 +198,8 @@ Slice 1 makes an interaction node wait correctly, but no surface shows the quest
 Scope:
 
 1. Add `hypagraph_ask`. This model tool presents one declared interaction node and accepts one typed answer.
-1a. Add a dialog component. The dialog shows the question, each response with an optional description, an optional recommended mark, an optional note row, and a chat row.
-1b. Add `description` and `recommended` to a response option.
+1a. Add a dialog component. A closed question shows each response with an optional description, an optional recommended mark, and a chat row. An open question shows an editor.
+1b. Add `description` and `recommended` to a response option. Add `openAnswer` to an interaction.
 2. Present an open question from the controller when the controller reaches the waiting-response stop.
 3. Show the question, the response IDs, and the response labels in the waiting surfaces.
 4. Add the `interaction` lane to the selectable history lanes.
@@ -227,9 +227,15 @@ A host which reports no dialog capability must keep the durable wait and must no
 
 Hypagraph must not accept a typed answer from a command. A command which accepts a node ID and a response ID makes the person do the work which the dialog does. Remove `/hypagraph answer`. Keep `/hypagraph ask`, because it presents the declared question and it consumes no model turn.
 
-#### 1.1.6 A note is evidence and never selects a response
+#### 1.1.6 A question is closed or open
 
-The dialog can accept a typed note when the node declares free text. The note does not answer the question. The person must still select one declared response, and the runtime attaches the note to that response as evidence. This rule keeps section 3.4.
+A closed question declares response options. The person selects exactly one option, and the option publishes its declared facts. A closed question shows no typed-answer row, because it has a fixed set of answers.
+
+An open question declares `openAnswer`. Use an open question when a model-backed task needs a clarification which has no fixed set of answers. The person types the answer, and the answer reaches one declared string fact.
+
+A definition must declare one form only. Validation rejects both forms together and rejects neither form.
+
+A gate must not route on an open-answer fact. Validation rejects such a gate. This rule keeps section 3.4.
 
 #### 1.1.7 One response only can carry the recommended mark
 
@@ -251,8 +257,11 @@ Tests:
 - the extension registers no command which accepts a typed answer;
 - the dialog marks and preselects the recommended response;
 - the dialog shows the free-text row only when the node declares free text;
-- a typed note attaches to the response which the person then selects;
-- a note stops at the declared byte limit;
+- an open question publishes the typed answer into its declared string fact;
+- an open question opens the editor at once and shows no response row;
+- a typed answer stops at the declared byte limit;
+- validation rejects a definition which declares responses and an open answer;
+- validation rejects a gate which routes on an open-answer fact;
 - the chat row ends the dialog with no answer;
 - validation rejects more than one recommended response.
 

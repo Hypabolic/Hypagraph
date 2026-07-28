@@ -4,7 +4,8 @@ import type { InteractionDefinition } from "../domain/model.js";
 
 /** What the person chose in the dialog. */
 export type InteractionDialogResult =
-  | { kind: "response"; responseId: string; freeText?: string }
+  | { kind: "response"; responseId: string }
+  | { kind: "open"; openText: string }
   | { kind: "chat" }
   | { kind: "cancelled" };
 
@@ -15,8 +16,6 @@ export interface InteractionDialogRow {
   label: string;
   description?: string;
   recommended: boolean;
-  /** The row opens the free-text editor. */
-  freeText?: boolean;
   /** The row ends the dialog and returns to the conversation. */
   chat?: boolean;
 }
@@ -42,20 +41,19 @@ const wrapText = (text: string, width: number): string[] => {
 };
 
 /**
- * Build every dialog row.
+ * Build every dialog row for a closed question.
  *
- * The declared responses come first, in declaration order. The free-text row
- * appears only when the node declares free text. The chat row always appears
- * last, because it always ends the dialog without an answer.
+ * The declared responses come first, in declaration order. The chat row always
+ * appears last, because it always ends the dialog without an answer. An open
+ * question has no rows. The person types the answer.
  */
 export function interactionDialogRows(interaction: InteractionDefinition): InteractionDialogRow[] {
-  const rows: InteractionDialogRow[] = interaction.responses.map((response) => ({
+  const rows: InteractionDialogRow[] = (interaction.responses ?? []).map((response) => ({
     responseId: response.id,
     label: response.label,
     ...(response.description === undefined ? {} : { description: response.description }),
     recommended: response.recommended === true,
   }));
-  if (interaction.freeText) rows.push({ label: "Type something.", recommended: false, freeText: true });
   rows.push({ label: "Chat about this", recommended: false, chat: true });
   return rows;
 }
@@ -71,9 +69,8 @@ export class InteractionDialogComponent implements Component, Focusable {
   focused = true;
   private index = 0;
   private readonly rows: InteractionDialogRow[];
-  private editing = false;
+  private editing: boolean;
   private buffer = "";
-  private note: string | undefined;
   private finished = false;
 
   constructor(
@@ -83,6 +80,8 @@ export class InteractionDialogComponent implements Component, Focusable {
     private readonly done: (result: InteractionDialogResult) => void,
   ) {
     this.rows = interactionDialogRows(interaction);
+    // An open question needs typed input, so the editor opens at once.
+    this.editing = interaction.openAnswer !== undefined;
     const preferred = this.rows.findIndex((row) => row.recommended);
     if (preferred >= 0) this.index = preferred;
   }
@@ -110,20 +109,18 @@ export class InteractionDialogComponent implements Component, Focusable {
     lines.push("");
 
     if (this.editing) {
-      const prompt = this.interaction.freeText?.prompt ?? "Type something.";
+      const prompt = this.interaction.openAnswer?.prompt ?? "Type your answer.";
       lines.push(`  ${this.theme.fg("muted", truncateToWidth(prompt, inner, "…"))}`);
       lines.push(`  > ${this.buffer}${CURSOR_MARKER}`);
       lines.push("");
-      lines.push(`  ${this.theme.fg("muted", "Enter to submit · Esc to go back")}`);
+      lines.push(`  ${this.theme.fg("muted", "Enter to submit · Esc to cancel")}`);
       return lines;
     }
 
     this.rows.forEach((row, position) => {
       if (row.chat) lines.push(`  ${this.theme.fg("border", "─".repeat(Math.min(inner, 40)))}`);
       const selected = position === this.index;
-      const text = row.freeText && this.note
-        ? `${position + 1}. ${truncateToWidth(`Note: ${this.note}`, Math.max(20, inner - 4), "…")}`
-        : this.rowText(row, position + 1);
+      const text = this.rowText(row, position + 1);
       lines.push(`${selected ? this.theme.fg("accent", "› ") : "  "}${selected ? this.theme.fg("accent", text) : text}`);
       if (row.description) {
         for (const line of wrapText(row.description, Math.max(10, inner - 5))) {
@@ -160,18 +157,14 @@ export class InteractionDialogComponent implements Component, Focusable {
 
   private handleEditingInput(data: string): void {
     if (matchesKey(data, "escape")) {
-      this.editing = false;
-      this.buffer = "";
+      this.finish({ kind: "cancelled" });
     } else if (matchesKey(data, "return")) {
-      // The note is evidence. It never selects a response, so the dialog
-      // returns to the list and the person still chooses a declared response.
-      this.note = this.buffer.trim() || undefined;
-      this.editing = false;
-      this.buffer = "";
+      const text = this.buffer.trim();
+      if (text.length > 0) this.finish({ kind: "open", openText: text });
     } else if (matchesKey(data, "backspace")) {
       this.buffer = this.buffer.slice(0, -1);
     } else if (isPrintable(data)) {
-      const limit = this.interaction.freeText?.maxBytes ?? 0;
+      const limit = this.interaction.openAnswer?.maxBytes ?? 0;
       const next = `${this.buffer}${data}`;
       if (Buffer.byteLength(next, "utf8") <= limit) this.buffer = next;
     }
@@ -186,9 +179,6 @@ export class InteractionDialogComponent implements Component, Focusable {
     const row = this.rows[this.index];
     if (!row) return;
     if (row.chat) this.finish({ kind: "chat" });
-    else if (row.freeText) { this.editing = true; this.buffer = this.note ?? ""; }
-    else if (row.responseId) {
-      this.finish({ kind: "response", responseId: row.responseId, ...(this.note ? { freeText: this.note } : {}) });
-    }
+    else if (row.responseId) this.finish({ kind: "response", responseId: row.responseId });
   }
 }

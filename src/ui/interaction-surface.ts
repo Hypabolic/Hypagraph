@@ -15,7 +15,7 @@ export function waitingQuestionLines(state: HypagraphState): string[] {
   for (const item of awaiting) {
     lines.push(`- ${item.nodeId}: ${item.interaction.question}`);
     for (const option of interactionOptions(item.interaction)) lines.push(`    ${option}`);
-    if (item.interaction.freeText) lines.push(`    free text: ${item.interaction.freeText.prompt}`);
+    if (item.interaction.openAnswer) lines.push(`    ${item.interaction.openAnswer.prompt} (typed answer)`);
   }
   lines.push("Hypagraph presents this question in a dialog. Use /hypagraph ask to show it again.");
   return lines;

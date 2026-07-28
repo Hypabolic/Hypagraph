@@ -14,6 +14,7 @@ import type {
   ReducerResult,
 } from "./model.js";
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
+import type { FactInput } from "./model.js";
 import type { PublishedFact } from "./facts.js";
 import { validatePublishedFact } from "./facts.js";
 import { CONDITION_SEMANTICS_VERSION, evaluateCondition } from "./conditions.js";
@@ -573,7 +574,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         data: {
           question: definitionNode.interaction.question,
           presentation: structuredClone(definitionNode.interaction.presentation),
-          responseIds: definitionNode.interaction.responses.map((response) => response.id),
+          responseIds: (definitionNode.interaction.responses ?? []).map((response) => response.id),
           ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }),
           ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }),
         },
@@ -585,35 +586,40 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if (node.status !== "awaiting_response" || node.currentAttemptId !== command.attemptId) {
         return reject("interaction_not_awaiting", `Interaction '${command.nodeId}' is not awaiting a response for this attempt.`);
       }
-      const response = definitionNode.interaction.responses.find((item) => item.id === command.responseId);
-      if (!response) return reject("unknown_interaction_response", `Interaction '${command.nodeId}' has no response '${command.responseId}'.`, "responseId");
-      if (command.freeText !== undefined) {
-        if (!definitionNode.interaction.freeText) return reject("interaction_free_text_not_allowed", `Interaction '${command.nodeId}' does not accept free text.`);
-        const bytes = Buffer.byteLength(command.freeText, "utf8");
-        if (bytes > definitionNode.interaction.freeText.maxBytes) {
-          return reject("interaction_free_text_too_large", `Free text exceeds the maximum of ${definitionNode.interaction.freeText.maxBytes} bytes.`);
-        }
-      }
-      const attempt = node.attempts[command.attemptId]!;
+      const open = definitionNode.interaction.openAnswer;
       const evidence = structuredClone(command.evidence ?? []);
-      if (command.freeText !== undefined) {
-        evidence.push({
-          ref: `interaction:${command.nodeId}:${command.attemptId}:free-text`,
-          kind: "note",
-          summary: command.freeText,
-        });
+      let published: FactInput[];
+      let answeredData: Record<string, unknown>;
+
+      if (open) {
+        if (command.responseId !== undefined) return reject("interaction_response_not_allowed", `Interaction '${command.nodeId}' asks an open question and accepts no response option.`, "responseId");
+        if (command.openText === undefined || command.openText.trim().length === 0) {
+          return reject("interaction_open_text_required", `Interaction '${command.nodeId}' requires a typed answer.`, "openText");
+        }
+        const bytes = Buffer.byteLength(command.openText, "utf8");
+        if (bytes > open.maxBytes) return reject("interaction_open_text_too_large", `The typed answer exceeds the maximum of ${open.maxBytes} bytes.`, "openText");
+        published = [{ name: open.fact, type: "string", value: command.openText }];
+        evidence.push({ ref: `interaction:${command.nodeId}:${command.attemptId}:open-answer`, kind: "note", summary: command.openText });
+        answeredData = { openTextBytes: bytes, evidence: structuredClone(evidence) };
+      } else {
+        if (command.openText !== undefined) return reject("interaction_open_text_not_allowed", `Interaction '${command.nodeId}' asks a closed question and accepts no typed answer.`, "openText");
+        const response = (definitionNode.interaction.responses ?? []).find((item) => item.id === command.responseId);
+        if (!response) {
+          const known = (definitionNode.interaction.responses ?? []).map((item) => `'${item.id}'`).join(", ");
+          return reject("unknown_interaction_response", `Interaction '${command.nodeId}' has no response '${command.responseId}'. It declares ${known}.`, "responseId");
+        }
+        published = structuredClone(response.publish);
+        answeredData = { responseId: response.id, evidence: structuredClone(evidence) };
       }
+
+      const attempt = node.attempts[command.attemptId]!;
       next = append(next, events, command, {
         type: "hypagraph.interaction.answered",
         nodeId: command.nodeId,
         attemptId: command.attemptId,
-        data: {
-          responseId: response.id,
-          ...(command.freeText === undefined ? {} : { freeTextBytes: Buffer.byteLength(command.freeText, "utf8") }),
-          evidence: structuredClone(evidence),
-        },
+        data: answeredData,
       });
-      for (const input of response.publish) {
+      for (const input of published) {
         const fact: PublishedFact = {
           name: input.name,
           type: input.type,
@@ -644,7 +650,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         type: "hypagraph.verification.passed",
         nodeId: command.nodeId,
         attemptId: command.attemptId,
-        data: { reason: `Interaction response '${response.id}' was accepted.` },
+        data: { reason: open ? "The typed answer was accepted." : `Interaction response '${command.responseId}' was accepted.` },
       });
       next = appendReadyEvents(next, events, command);
       next = appendCompletionIfNeeded(next, events, command);

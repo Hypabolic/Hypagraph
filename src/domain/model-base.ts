@@ -182,13 +182,29 @@ export interface InteractionResponseOption {
   publish: FactInput[];
 }
 
+/**
+ * An open question. The person types the answer.
+ *
+ * Use an open question when a model-backed task needs a clarification which has
+ * no fixed set of answers. The typed answer reaches one declared string fact.
+ * A gate must never route on that fact.
+ */
+export interface InteractionOpenAnswer {
+  prompt: string;
+  maxBytes: number;
+  /** The declared string fact which receives the typed answer. */
+  fact: string;
+}
+
 export interface InteractionDefinition {
   kind: "interaction";
   version: 1;
   presentation: InteractionPresentation;
   question: string;
-  responses: InteractionResponseOption[];
-  freeText?: { prompt: string; maxBytes: number };
+  /** A closed question. The person selects exactly one declared response. */
+  responses?: InteractionResponseOption[];
+  /** An open question. The person types the answer. */
+  openAnswer?: InteractionOpenAnswer;
 }
 
 export type EvidenceVisibility = "public" | "protected";
@@ -691,7 +707,7 @@ export type HypagraphCommand =
   | (CommandBase & { type: "start-check"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
   | (CommandBase & { type: "request-interaction"; nodeId: string; attemptId: string })
-  | (CommandBase & { type: "answer-interaction"; nodeId: string; attemptId: string; responseId: string; freeText?: string; evidence?: EvidenceReference[] })
+  | (CommandBase & { type: "answer-interaction"; nodeId: string; attemptId: string; responseId?: string; openText?: string; evidence?: EvidenceReference[] })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })

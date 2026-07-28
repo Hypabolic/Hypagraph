@@ -21,7 +21,7 @@ export const interactionOptionText = (response: InteractionResponseOption): stri
 
 /** Build the option text for every response, in declaration order. */
 export const interactionOptions = (interaction: InteractionDefinition): string[] =>
-  interaction.responses.map(interactionOptionText);
+  (interaction.responses ?? []).map(interactionOptionText);
 
 /**
  * Find the response which produced one option text.
@@ -33,7 +33,7 @@ export function responseForOptionText(
   optionText: string,
 ): InteractionResponseOption | undefined {
   const index = interactionOptions(interaction).indexOf(optionText);
-  return index === -1 ? undefined : interaction.responses[index];
+  return index === -1 ? undefined : (interaction.responses ?? [])[index];
 }
 
 /** List every interaction which waits for an answer, in definition order. */

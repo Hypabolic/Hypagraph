@@ -8,6 +8,7 @@ import {
 import type { HypagraphState, InteractionDefinition } from "../src/domain/model.js";
 import { waitingQuestionLines } from "../src/ui/interaction-surface.js";
 import { InteractionDialogComponent, interactionDialogRows } from "../src/pi/interaction-dialog.js";
+import { validateDefinition } from "../src/domain/validate.js";
 
 interface ToolDefinition {
   name: string;
@@ -234,7 +235,15 @@ describe("M6.1 Slice 1.1 interaction dialog", () => {
       { id: "bug-fix", label: "Bug fix", description: "Patch a production issue with minimal risk.", recommended: true, publish: [] as any },
       { id: "new-feature", label: "New feature", description: "Implement a user-facing capability.", publish: [] as any },
     ],
-    ...(freeText ? { freeText: { prompt: "Describe the task.", maxBytes: 200 } } : {}),
+    ...(freeText ? {} : {}),
+  });
+
+  const openInteraction = (maxBytes = 200): InteractionDefinition => ({
+    kind: "interaction",
+    version: 1,
+    presentation: { class: "deterministic", kind: "none" },
+    question: "What should the retry policy do?",
+    openAnswer: { prompt: "Describe the change you want.", maxBytes, fact: "clarify.answer" },
   });
 
   const dialog = (interaction: InteractionDefinition) => {
@@ -244,18 +253,18 @@ describe("M6.1 Slice 1.1 interaction dialog", () => {
     return { component: new InteractionDialogComponent(tui, theme, interaction, done), done };
   };
 
-  it("builds declared rows, then the free-text row, then the chat row", () => {
+  it("builds declared rows, then the chat row", () => {
     const rows = interactionDialogRows(richInteraction());
 
-    expect(rows.map((row) => row.label)).toEqual(["Bug fix", "New feature", "Type something.", "Chat about this"]);
+    expect(rows.map((row) => row.label)).toEqual(["Bug fix", "New feature", "Chat about this"]);
     expect(rows[0]!.recommended).toBe(true);
     expect(rows.at(-1)!.chat).toBe(true);
   });
 
-  it("omits the free-text row when the node declares no free text", () => {
-    const rows = interactionDialogRows(richInteraction(false));
+  it("shows no response row for an open question", () => {
+    const rows = interactionDialogRows(openInteraction());
 
-    expect(rows.map((row) => row.label)).toEqual(["Bug fix", "New feature", "Chat about this"]);
+    expect(rows.map((row) => row.label)).toEqual(["Chat about this"]);
   });
 
   it("marks and preselects the recommended response", () => {
@@ -279,34 +288,28 @@ describe("M6.1 Slice 1.1 interaction dialog", () => {
   it("returns the chat result without an answer", () => {
     const { component, done } = dialog(richInteraction());
 
-    component.handleInput("4");
+    component.handleInput("3");
 
     expect(done).toHaveBeenCalledWith({ kind: "chat" });
   });
 
-  it("attaches a typed note to the response which the person then selects", () => {
-    const { component, done } = dialog(richInteraction());
+  it("opens the editor at once for an open question and returns the typed answer", () => {
+    const { component, done } = dialog(openInteraction());
 
-    component.handleInput("3");
-    for (const character of "needs care") component.handleInput(character);
+    expect(component.render(80).join("\n")).toContain("Describe the change you want.");
+    for (const character of "use a retry") component.handleInput(character);
     component.handleInput("\r");
-    expect(done).not.toHaveBeenCalled();
-    component.handleInput("1");
 
-    expect(done).toHaveBeenCalledWith({ kind: "response", responseId: "bug-fix", freeText: "needs care" });
+    expect(done).toHaveBeenCalledWith({ kind: "open", openText: "use a retry" });
   });
 
-  it("stops the note at the declared byte limit", () => {
-    const interaction = richInteraction();
-    interaction.freeText!.maxBytes = 4;
-    const { component, done } = dialog(interaction);
+  it("stops the typed answer at the declared byte limit", () => {
+    const { component, done } = dialog(openInteraction(4));
 
-    component.handleInput("3");
     for (const character of "abcdefgh") component.handleInput(character);
     component.handleInput("\r");
-    component.handleInput("1");
 
-    expect(done).toHaveBeenCalledWith({ kind: "response", responseId: "bug-fix", freeText: "abcd" });
+    expect(done).toHaveBeenCalledWith({ kind: "open", openText: "abcd" });
   });
 });
 
@@ -339,5 +342,88 @@ describe("M6.1 Slice 1.1 waiting surface and option identity", () => {
     await createRoot(value, soleInteractionInput());
 
     expect(waitingQuestionLines(currentState(value))).toEqual([]);
+  });
+});
+
+describe("M6.1 Slice 1.1 open questions", () => {
+  const openNode = () => ({
+    id: "clarify",
+    title: "Clarify the retry policy",
+    kind: "interaction",
+    requires: [],
+    acceptance: [],
+    produces: [{ name: "clarify.answer", type: "string", required: true }],
+    interaction: {
+      kind: "interaction",
+      version: 1,
+      presentation: { class: "deterministic", kind: "none" },
+      question: "What should the retry policy do?",
+      openAnswer: { prompt: "Describe the change you want.", maxBytes: 200, fact: "clarify.answer" },
+    },
+  });
+
+  const openInput = () => ({
+    objective,
+    definition: {
+      title: "Clarify then implement",
+      goal: "The model cannot replace the objective.",
+      nodes: [openNode(), { id: "implement", title: "Implement it", requires: ["clarify"], acceptance: [] }],
+      loops: [],
+      policy: { mode: "guided", requireEvidence: false },
+    },
+  });
+
+  it("publishes the typed answer into the declared string fact", async () => {
+    const value = harness({ input: vi.fn().mockResolvedValue("retry three times") });
+    await createRoot(value, openInput());
+
+    await value.tools.get("hypagraph_ask")!.execute("ask", { nodeId: "clarify" }, undefined, undefined, value.ctx);
+
+    expect(value.input).toHaveBeenCalledWith("Describe the change you want.");
+    expect(statusOf(value, "clarify")).toBe("succeeded");
+    expect(currentState(value).runtime.facts["clarify.answer"]?.value).toBe("retry three times");
+  });
+
+  it("keeps the durable wait when the person types nothing", async () => {
+    const value = harness({ input: vi.fn().mockResolvedValue("   ") });
+    await createRoot(value, openInput());
+
+    await value.tools.get("hypagraph_ask")!.execute("ask", { nodeId: "clarify" }, undefined, undefined, value.ctx);
+
+    expect(statusOf(value, "clarify")).toBe("awaiting_response");
+  });
+
+  it("rejects a definition which declares responses and an open answer", () => {
+    const node: any = openNode();
+    node.interaction.responses = [{ id: "yes", label: "Yes", publish: [] }];
+
+    const diagnostics = validateDefinition({
+      title: "t", goal: "g", nodes: [node], loops: [], policy: { mode: "guided", requireEvidence: true },
+    } as any);
+
+    expect(diagnostics.map((item) => item.code)).toContain("interaction_answer_kind_conflict");
+  });
+
+  it("rejects a gate which routes on an open-answer fact", () => {
+    const diagnostics = validateDefinition({
+      title: "t",
+      goal: "g",
+      nodes: [
+        openNode() as any,
+        {
+          id: "route", title: "Route", kind: "gate", requires: ["clarify"], acceptance: [],
+          gate: {
+            condition: { kind: "compare", left: { kind: "fact", name: "clarify.answer" }, operator: "eq", right: { kind: "literal", value: "x" } },
+            onTrue: ["yes"], onFalse: ["no"],
+          },
+        },
+        { id: "yes", title: "Yes", requires: ["route"], acceptance: [] },
+        { id: "no", title: "No", requires: ["route"], acceptance: [] },
+      ],
+      loops: [],
+      policy: { mode: "guided", requireEvidence: true },
+    } as any);
+
+    expect(diagnostics.map((item) => item.code)).toContain("gate_routes_on_open_answer");
   });
 });

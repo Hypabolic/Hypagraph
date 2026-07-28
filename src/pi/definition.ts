@@ -179,11 +179,15 @@ const interactionSchema = Type.Object({
     kind: Type.Literal("none"),
   }),
   question: Type.String(),
-  responses: Type.Array(interactionResponseSchema, { minItems: 1 }),
-  freeText: Type.Optional(Type.Object({
-    prompt: Type.String(),
-    maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
+  responses: Type.Optional(Type.Array(interactionResponseSchema, {
+    minItems: 1,
+    description: "A closed question. The person selects exactly one option. Do not set openAnswer with this field.",
   })),
+  openAnswer: Type.Optional(Type.Object({
+    prompt: Type.String({ description: "What the person must type" }),
+    maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
+    fact: Type.String({ description: "The declared string fact which receives the typed answer" }),
+  }, { description: "An open question for a model-backed task which needs a clarification. A gate must not route on the fact." })),
 });
 const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
