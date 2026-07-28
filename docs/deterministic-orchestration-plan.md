@@ -40,9 +40,15 @@ This plan uses these terms, and it uses no other word for them.
 | **Decision reduction** | The quorum aggregate node whose published fact a loop success condition or a gate condition reads. |
 | **Evaluator** | A node which holds an M5A evaluation contract: purpose, trust level, integrity, feedback mode, and a budget claim. |
 
-The three are separate. One node can be a loop boundary and hold no evaluation
-contract. One node can be an evaluator and decide nothing. In the closed loop of
-section 3, all three are different nodes.
+The three mechanisms are separate. The three nodes are not necessarily separate.
+
+In the closed loop of section 3, the loop boundary is one node, and the decision
+reduction and the evaluator are the same quorum node.
+
+An evaluation contract governs the trust, the feedback mode, and the budget of a
+judgement. It does not select a route. The quorum node therefore holds a
+contract and publishes the fact which a success condition reads, and those are
+two different properties of one node.
 
 The existing validator uses "evaluator" for the loop boundary in
 `invalid_loop_evaluator`, `loop_evaluator_cannot_be_gate`, and
@@ -257,8 +263,6 @@ event history: `success`, `max_iterations`, `no_progress`, and
 The loop boundary is the last node of an iteration. It is not the node which
 supplies the success condition, and it holds no evaluation contract.
 
-Three existing validator rules decide this:
-
 Three existing validator rules decide this. Each diagnostic name uses
 "evaluator" in the structural sense which section 1.1 records:
 
@@ -312,9 +316,8 @@ aggregate node inside the loop publishes the progress fact.
 
 **The evaluation contract sits on the quorum node.** Section 6.4 puts the M5A
 contract there, because the quorum is the node which judges. The reviewers are
-the model evaluators which the contract governs, and they claim the evaluation
-budget. The synthesis node and the boundary claim none, and section 7.2 states
-that.
+the model-executor branch nodes whose attempts the contract budgets. The
+synthesis node claims none, and section 7.2 states that.
 
 The `evaluation_budget` loop exit therefore means one thing: the reviewers
 exhausted the declared budget before the quorum reached its threshold. The loop
@@ -405,6 +408,20 @@ export interface RegionDefinition {
   nodes: string[];
 }
 ```
+
+A region hangs at the definition root, beside `loops`:
+
+```ts
+export interface HypagraphDefinition {
+  // ...
+  loops: LoopDefinition[];
+  regions: RegionDefinition[];
+}
+```
+
+A region is not loop-local. A wide discovery workflow uses a region with no
+loop, and the closed loop of section 3 puts a region inside a loop. The two are
+independent, so neither one contains the other.
 
 ```jsonc
 { "id": "code-review",
@@ -512,21 +529,54 @@ node, and use it for wide discovery.
    the most important item, and it loses a different item on each run.
 6. A `collect` node must publish the number of items which `maximumItems`
    removed. A reader must not read a truncated list as a complete list.
-7. An aggregate node may **carry** free text, and it must not **decide** by free
-   text. A payload which the node copies without inspection has no type limit.
-   A field which the node compares, counts, ranks, or sorts by must be a
-   boolean, a number, or a closed value list.
+7. An aggregate node may **carry** any field, and it must not **decide** by a
+   prose field. A payload which the node copies without inspection has no
+   limit. A field which the node compares, counts, ranks, or sorts by must not
+   be prose. Section 6.3.1 makes this decidable.
 8. `quorum` and `ranked` therefore name a scalar fact only. `collect` names an
-   array fact whose items may hold free text, and every key in its `orderBy`
-   must satisfy rule 7.
+   array fact whose items may hold prose, and every key in its `orderBy` must
+   satisfy rule 7.
 9. An `orderBy` key must give a total order. A closed value list orders by the
-   position of the value in the list. A string field orders by code point, and
-   the plan states no other collation. A key which leaves two items equal falls
-   to the next key, and the branch identifier is the final key.
+   position of the value in the list, not by its text. An identifier orders by
+   code point, and the plan states no other collation. A key which leaves two
+   items equal falls to the next key, and the branch identifier is the final
+   key.
 
 Rules 7 to 9 draw one line. The `message` field of a finding travels through a
 `collect` node untouched and reaches the synthesis node. No strategy reads it,
 because reading it is interpretation. Section 6.5 states why.
+
+#### 6.3.1 Which fields a strategy may name
+
+"Free text" is not a decidable test. A path is a string, and a sentence is a
+string. The fact contract must therefore declare the kind of each field, and the
+validator decides from the declaration:
+
+| Field kind | Example | A strategy may name it |
+| --- | --- | --- |
+| `boolean` | `review.ready` | Yes |
+| `number` | `score` | Yes |
+| `enum` | `severity`, `category` | Yes |
+| `identifier` | `file`, `symbol`, a branch id | Order only |
+| `prose` | `message`, a rationale | No |
+
+An `identifier` is a string which names a thing. A model does not compose it, it
+reports it, and two reports of one thing are the same string. It orders by code
+point, which is deterministic and total.
+
+A `prose` field is a string which a model composes. Two reports of one thing are
+different strings. An order over it is deterministic and meaningless, and a
+meaningless order in front of `maximumItems` drops items by alphabet. That is
+the reason for the ban, and it is a different reason from the ban on semantic
+comparison.
+
+`orderBy` accepts `boolean`, `number`, `enum`, and `identifier`. The `equals` of
+a quorum and the numeric fact of a `ranked` accept `boolean`, `number`, and
+`enum` only, because an order over identifiers is meaningful and an equality
+test between composed identifiers is not reliable.
+
+The `orderBy` of section 3.3 is therefore valid. `severity` is an `enum` and
+`file` is an `identifier`.
 
 ### 6.4 Why a quorum node holds the evaluation contract
 
@@ -542,6 +592,28 @@ new mechanism.
 
 The contract does not go on the loop boundary. Section 3.5 states the result for
 the `evaluation_budget` exit reason.
+
+#### 6.4.1 This is a schema extension, not pure reuse
+
+The M5A policy applies with no new mechanism. The M5A **schema** does not.
+
+Today an evaluation contract lives on a metric-report check
+(`MetricReportCheckDefinition.evaluation`), and the node which holds the
+contract is the node which runs. In this pattern the holder and the runner are
+different: the quorum node holds the contract, and the branch nodes run.
+
+Slice 3 must therefore add two bindings:
+
+1. An `aggregate` node may carry an evaluation contract. `assessEvaluationAuthoring`
+   collects contracts from metric-report checks only, so it must also collect
+   them from aggregate nodes.
+2. Budget accounting charges the model-executor attempts of the region which the
+   aggregate reduces. One iteration of a five-reviewer region claims five
+   evaluations, not one.
+
+Do not read section 6.4 as "no code changes". Read it as "no new policy". The
+trust levels, the protected feedback rule, and the redaction policy need no new
+design, and the binding between a contract and the attempts it governs does.
 
 Validation already reports `isolated_evaluator_unavailable` with the text
 "Isolated evaluator trust is unavailable until an isolated evaluator adapter
@@ -566,8 +638,8 @@ The failure modes are not equal:
 
 A reduction must therefore never drop an item. `collect` keeps every item, and a
 synthesis node merges them, because a synthesis node understands them. Rule 7 of
-section 6.3 follows from the same argument: a strategy which reads free text
-must interpret it, and interpretation is not a reduction.
+section 6.3 follows from the same argument: a strategy which decides by a
+`prose` field must interpret it, and interpretation is not a reduction.
 
 ## 7. Model-executor node (M7)
 
@@ -674,7 +746,7 @@ Rule 4 matters for sequencing. A fixed-width quorum needs sections 5 and 6 only.
 | --- | --- | --- |
 | 1 | Branch-scoped facts and the fixed region of section 5.4 | none |
 | 2 | Aggregate node with the three strategies | 1 |
-| 3 | Fixed-width quorum region, its evaluation contract, the `routes_on_synthesis_fact` diagnostic, and the widened progress advisory of section 3.5 | 1, 2 |
+| 3 | Fixed-width quorum region, the contract bindings of section 6.4.1, the `routes_on_synthesis_fact` diagnostic, and the widened progress advisory of section 3.5 | 1, 2 |
 | 4 | Model-executor node and the executor contract | 3 |
 | 5 | Synthesis node and the closed feedback loop end to end | 4 |
 | 6 | Bounded concurrent selection and workspace leases | 4 |
@@ -708,9 +780,12 @@ result.
   `evaluateAfter` and the quorum fact in `successWhen`.
 - A loop whose progress fact comes from an aggregate node inside the loop does
   not report `progress_source_not_metric_report`.
-- A `collect` node carries a free-text field through to the synthesis node, and
-  no strategy reads it.
-- An `orderBy` key which names a free-text field fails validation.
+- A `collect` node carries a `prose` field through to the synthesis node, and no
+  strategy reads it.
+- An `orderBy` key which names an `identifier` field passes validation. A key
+  which names a `prose` field fails it.
+- A quorum `equals` which names a `prose` or an `identifier` field fails
+  validation.
 - A best-of-N region selects one branch by a numeric fact with no model turn.
 - A `collect` region keeps every item, orders the result before it applies
   `maximumItems`, and reports the removed count.
