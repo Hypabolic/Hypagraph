@@ -345,9 +345,10 @@ These items improve Hypagraph without copying the script model.
    Hypagoal.
 4. Add a run dashboard and phase-style progress for multi-node goals.
 5. Codify adversarial review and deep-research as graph recipes once M7 and
-   aggregate exist. The first named built-in design is **The Gauntlet**:
-   discover and user-confirm references, specialised implementers, blind
-   critics, and reference-grade gates. See `docs/gauntlet-built-in-hypagoal.md`.
+   aggregate exist. One product idea is **The Gauntlet**: specialised
+   implementers, discover and user-confirm references, blind critique against
+   real examples. Exact topology is open. See
+   `docs/gauntlet-built-in-hypagoal.md`.
 6. Expand the skill with cold-agent prompt rules, fail-closed verification, and
    work-list filtering now, even before full concurrency ships.
 

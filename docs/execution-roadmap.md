@@ -230,10 +230,10 @@ All repository text must follow `AGENTS.md`.
 
 Release markers are planning values. Acceptance criteria control milestone completion.
 
-Built-in recipe note: **The Gauntlet** is a designed named Hypagoal (discover and
-user-confirm references, specialised implementers, blind critics, reference-grade
-gates). It is not a milestone row. It needs aggregate quorum, M7 model-executors,
-and a recipe launch path. See `docs/gauntlet-built-in-hypagoal.md`.
+Built-in recipe note: **The Gauntlet** is a product idea for a named Hypagoal
+(specialised implementers, discover and user-confirm references, blind critique
+against real examples). Exact graph shape is open. See
+`docs/gauntlet-built-in-hypagoal.md`.
 
 M6A, M6.1, M6.2, M6.3, and M8.1 are new. `docs/graph-capability-review.md` gives the analysis which added them. The milestone numbers of M7, M8, and M9 do not change, and their content does not change. This keeps every existing cross-reference correct.
 

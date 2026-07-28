@@ -206,7 +206,7 @@ These are not blockers for starting M7:
 
 1. **M6.3 live GitHub dogfood** — the suite and `docs/m6-3-dogfood.md` use an in-memory host. A live pull-request dogfood can wait until credentials and a safe repository exist.
 2. **M6.2 non-pure workspace handlers** — pure code programs ship end to end. Broader workspace host handlers remain available to grow with effect and M8 surfaces as needed.
-3. **Named recipe library** — Grok-style built-in Hypagoals are not shipped yet. The first designed built-in is **The Gauntlet** (`docs/gauntlet-built-in-hypagoal.md`, example `docs/gauntlet-loop-example.png`): discover and user-confirm references; per-piece and whole-result dual-critic loops; honest budget stop. It needs aggregate quorum, M7 model-executors, and a recipe launch path.
+3. **Named recipe library** — Grok-style built-in Hypagoals are not shipped yet. The first product idea is **The Gauntlet** (`docs/gauntlet-built-in-hypagoal.md`; optional sketch `docs/gauntlet-loop-example.png`): specialised implementers, discover and user-confirm references, blind critique against real examples, honest budget stop. Exact topology is open.
 4. **Dependabot** — GitHub reports one high vulnerability on the default branch. Review and fix when convenient; it is outside the M7 domain path.
 
 ## 7. Suggested first M7 steps
