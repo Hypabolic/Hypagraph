@@ -198,6 +198,8 @@ Slice 1 makes an interaction node wait correctly, but no surface shows the quest
 Scope:
 
 1. Add `hypagraph_ask`. This model tool presents one declared interaction node and accepts one typed answer.
+1a. Add a dialog component. The dialog shows the question, each response with an optional description, an optional recommended mark, an optional note row, and a chat row.
+1b. Add `description` and `recommended` to a response option.
 2. Present an open question from the controller when the controller reaches the waiting-response stop.
 3. Show the question, the response IDs, and the response labels in the waiting surfaces.
 4. Add the `interaction` lane to the selectable history lanes.
@@ -225,9 +227,17 @@ A host which reports no dialog capability must keep the durable wait and must no
 
 Hypagraph must not accept a typed answer from a command. A command which accepts a node ID and a response ID makes the person do the work which the dialog does. Remove `/hypagraph answer`. Keep `/hypagraph ask`, because it presents the declared question and it consumes no model turn.
 
-#### 1.1.6 Each dialog option must contain its response ID
+#### 1.1.6 A note is evidence and never selects a response
 
-Response labels are not unique. The dialog returns the option text. Each option must therefore start with its response ID, so the runtime can map the option text back to exactly one response.
+The dialog can accept a typed note when the node declares free text. The note does not answer the question. The person must still select one declared response, and the runtime attaches the note to that response as evidence. This rule keeps section 3.4.
+
+#### 1.1.7 One response only can carry the recommended mark
+
+The recommended mark moves the initial selection. More than one mark makes the initial selection unclear, so validation rejects it.
+
+#### 1.1.8 Each plain selector option must contain its response ID
+
+A host such as RPC reports dialog capability but supports no custom component. That host uses the plain selector, which returns the option text. Response labels are not unique, so each plain selector option must start with its response ID. The runtime then maps the option text back to exactly one response. The dialog component returns a response ID directly and needs no such text.
 
 Tests:
 
@@ -238,7 +248,13 @@ Tests:
 - the controller presents an open question when no other action is runnable;
 - the waiting surface shows the question and every response ID;
 - two responses with the same label map to different response IDs;
-- the extension registers no command which accepts a typed answer.
+- the extension registers no command which accepts a typed answer;
+- the dialog marks and preselects the recommended response;
+- the dialog shows the free-text row only when the node declares free text;
+- a typed note attaches to the response which the person then selects;
+- a note stops at the declared byte limit;
+- the chat row ends the dialog with no answer;
+- validation rejects more than one recommended response.
 
 Exit: a person answers a question through a dialog and never types a node ID or a response ID.
 

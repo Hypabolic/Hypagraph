@@ -401,12 +401,24 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
   }
   const responseIds = new Set<string>();
   const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
+  const recommended = interaction.responses.filter((response) => response.recommended === true);
+  if (recommended.length > 1) {
+    diagnostics.push({
+      code: "multiple_recommended_interaction_responses",
+      message: `Interaction node '${node.id}' recommends more than one response: ${recommended.map((response) => `'${response.id}'`).join(", ")}.`,
+      location: `${interactionLocation}.responses`,
+      suggestion: "Set recommended on one response only.",
+    });
+  }
   interaction.responses.forEach((response, index) => {
     const responseLocation = `${interactionLocation}.responses[${index}]`;
     if (!ID_PATTERN.test(response.id)) diagnostics.push({ code: "invalid_interaction_response_id", message: `Response ID '${response.id}' is not valid.`, location: `${responseLocation}.id` });
     if (responseIds.has(response.id)) diagnostics.push({ code: "duplicate_interaction_response_id", message: `Response ID '${response.id}' occurs more than one time.`, location: `${responseLocation}.id` });
     responseIds.add(response.id);
     if (!response.label?.trim()) diagnostics.push({ code: "interaction_response_label_required", message: `Response '${response.id}' requires a label.`, location: `${responseLocation}.label` });
+    if (response.description !== undefined && !response.description.trim()) {
+      diagnostics.push({ code: "interaction_response_description_empty", message: `Response '${response.id}' has an empty description. Remove the field or write one short sentence.`, location: `${responseLocation}.description` });
+    }
     if (!Array.isArray(response.publish) || response.publish.length === 0) {
       diagnostics.push({ code: "interaction_response_publish_required", message: `Response '${response.id}' must publish at least one fact.`, location: `${responseLocation}.publish` });
       return;

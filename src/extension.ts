@@ -8,7 +8,8 @@ import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
 import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
-import type { DomainEvent, HypagraphCommand, HypagraphState, PersistedHypagraph } from "./domain/model.js";
+import type { DomainEvent, HypagraphCommand, HypagraphState, InteractionDefinition, PersistedHypagraph } from "./domain/model.js";
+import { InteractionDialogComponent, type InteractionDialogResult } from "./pi/interaction-dialog.js";
 import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
 import { isReadyCheckDecision, type ReadyCheckDecision } from "./domain/deterministic-check-dispatch.js";
@@ -74,6 +75,45 @@ import {
 import { renderRevisionHistory } from "./history/revisions.js";
 
 export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
+
+interface InteractionAnswer {
+  responseId: string;
+  freeText?: string;
+}
+
+/** Present the rich dialog. TUI mode supports a custom overlay component. */
+const presentInteractionDialog = async (
+  ctx: ExtensionContext,
+  interaction: InteractionDefinition,
+): Promise<InteractionAnswer | undefined> => {
+  const result = await ctx.ui.custom<InteractionDialogResult>(
+    (tui, theme, _keybindings, done) => new InteractionDialogComponent(tui, theme, interaction, done),
+    { overlay: true, overlayOptions: { width: "80%", minWidth: 48, maxHeight: "70%" } },
+  );
+  if (result.kind !== "response") return undefined;
+  return { responseId: result.responseId, ...(result.freeText ? { freeText: result.freeText } : {}) };
+};
+
+/**
+ * Present the question through the plain selector.
+ *
+ * A host such as RPC reports dialog capability but supports no custom
+ * component. Each option starts with its response ID, so the runtime maps the
+ * returned text back to exactly one response.
+ */
+const presentInteractionSelect = async (
+  ctx: ExtensionContext,
+  interaction: InteractionDefinition,
+): Promise<InteractionAnswer | undefined> => {
+  const selected = await ctx.ui.select(interaction.question, interactionOptions(interaction));
+  if (selected === undefined) return undefined;
+  const response = responseForOptionText(interaction, selected);
+  if (!response) return undefined;
+  if (!interaction.freeText) return { responseId: response.id };
+  const supplied = await ctx.ui.input(interaction.freeText.prompt);
+  const note = supplied?.trim();
+  return { responseId: response.id, ...(note ? { freeText: note } : {}) };
+};
 
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
   throw new Error(`Hypagraph rejected the operation:\n${formatDiagnostics(diagnostics)}`);
@@ -314,24 +354,17 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   ): Promise<"answered" | "dismissed" | "unavailable"> => {
     if (!ctx.hasUI) return "unavailable";
     const { interaction } = awaiting;
-    const selected = await ctx.ui.select(interaction.question, interactionOptions(interaction));
-    if (selected === undefined) return "dismissed";
-    const response = responseForOptionText(interaction, selected);
-    if (!response) return "dismissed";
-
-    let freeText: string | undefined;
-    if (interaction.freeText) {
-      const supplied = await ctx.ui.input(interaction.freeText.prompt);
-      const trimmed = supplied?.trim();
-      if (trimmed) freeText = trimmed;
-    }
+    const answer = ctx.mode === "tui"
+      ? await presentInteractionDialog(ctx, interaction)
+      : await presentInteractionSelect(ctx, interaction);
+    if (answer === undefined) return "dismissed";
 
     await runCommands([{
       type: "answer-interaction",
       nodeId: awaiting.nodeId,
       attemptId: awaiting.attemptId,
-      responseId: response.id,
-      ...(freeText ? { freeText } : {}),
+      responseId: answer.responseId,
+      ...(answer.freeText ? { freeText: answer.freeText } : {}),
       commandId: randomUUID(),
       at: new Date().toISOString(),
     }]);

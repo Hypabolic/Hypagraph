@@ -175,6 +175,10 @@ export interface InteractionPresentation {
 export interface InteractionResponseOption {
   id: string;
   label: string;
+  /** One short sentence which explains the effect of this response. */
+  description?: string;
+  /** The author recommends this response. At most one response can set it. */
+  recommended?: boolean;
   publish: FactInput[];
 }
 

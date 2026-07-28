@@ -151,6 +151,8 @@ const checkSchema = Type.Union([
 const interactionResponseSchema = Type.Object({
   id: Type.String(),
   label: Type.String(),
+  description: Type.Optional(Type.String({ description: "One short sentence which explains the effect of this response" })),
+  recommended: Type.Optional(Type.Boolean({ description: "Mark the response which the author recommends. At most one response can set it." })),
   publish: Type.Array(Type.Object({
     name: Type.String(),
     type: factTypeSchema,

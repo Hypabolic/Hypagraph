@@ -7,6 +7,7 @@ import {
 } from "../src/domain/interaction-presentation.js";
 import type { HypagraphState, InteractionDefinition } from "../src/domain/model.js";
 import { waitingQuestionLines } from "../src/ui/interaction-surface.js";
+import { InteractionDialogComponent, interactionDialogRows } from "../src/pi/interaction-dialog.js";
 
 interface ToolDefinition {
   name: string;
@@ -220,6 +221,92 @@ describe("M6.1 Slice 1.1 interactive presentation", () => {
 
     expect(select).toHaveBeenCalledTimes(2);
     expect(statusOf(value, "approve-plan")).toBe("succeeded");
+  });
+});
+
+describe("M6.1 Slice 1.1 interaction dialog", () => {
+  const richInteraction = (freeText = true): InteractionDefinition => ({
+    kind: "interaction",
+    version: 1,
+    presentation: { class: "deterministic", kind: "none" },
+    question: "Which real development task are we planning right now?",
+    responses: [
+      { id: "bug-fix", label: "Bug fix", description: "Patch a production issue with minimal risk.", recommended: true, publish: [] as any },
+      { id: "new-feature", label: "New feature", description: "Implement a user-facing capability.", publish: [] as any },
+    ],
+    ...(freeText ? { freeText: { prompt: "Describe the task.", maxBytes: 200 } } : {}),
+  });
+
+  const dialog = (interaction: InteractionDefinition) => {
+    const done = vi.fn();
+    const tui = { requestRender: vi.fn() } as any;
+    const theme = { fg: (_color: string, text: string) => text } as any;
+    return { component: new InteractionDialogComponent(tui, theme, interaction, done), done };
+  };
+
+  it("builds declared rows, then the free-text row, then the chat row", () => {
+    const rows = interactionDialogRows(richInteraction());
+
+    expect(rows.map((row) => row.label)).toEqual(["Bug fix", "New feature", "Type something.", "Chat about this"]);
+    expect(rows[0]!.recommended).toBe(true);
+    expect(rows.at(-1)!.chat).toBe(true);
+  });
+
+  it("omits the free-text row when the node declares no free text", () => {
+    const rows = interactionDialogRows(richInteraction(false));
+
+    expect(rows.map((row) => row.label)).toEqual(["Bug fix", "New feature", "Chat about this"]);
+  });
+
+  it("marks and preselects the recommended response", () => {
+    const { component } = dialog(richInteraction());
+
+    const rendered = component.render(80).join("\n");
+
+    expect(rendered).toContain("1. Bug fix (Recommended)");
+    expect(rendered).toContain("Patch a production issue with minimal risk.");
+    expect(rendered).toContain("› 1. Bug fix (Recommended)");
+  });
+
+  it("returns the declared response which the person selects", () => {
+    const { component, done } = dialog(richInteraction());
+
+    component.handleInput("2");
+
+    expect(done).toHaveBeenCalledWith({ kind: "response", responseId: "new-feature" });
+  });
+
+  it("returns the chat result without an answer", () => {
+    const { component, done } = dialog(richInteraction());
+
+    component.handleInput("4");
+
+    expect(done).toHaveBeenCalledWith({ kind: "chat" });
+  });
+
+  it("attaches a typed note to the response which the person then selects", () => {
+    const { component, done } = dialog(richInteraction());
+
+    component.handleInput("3");
+    for (const character of "needs care") component.handleInput(character);
+    component.handleInput("\r");
+    expect(done).not.toHaveBeenCalled();
+    component.handleInput("1");
+
+    expect(done).toHaveBeenCalledWith({ kind: "response", responseId: "bug-fix", freeText: "needs care" });
+  });
+
+  it("stops the note at the declared byte limit", () => {
+    const interaction = richInteraction();
+    interaction.freeText!.maxBytes = 4;
+    const { component, done } = dialog(interaction);
+
+    component.handleInput("3");
+    for (const character of "abcdefgh") component.handleInput(character);
+    component.handleInput("\r");
+    component.handleInput("1");
+
+    expect(done).toHaveBeenCalledWith({ kind: "response", responseId: "bug-fix", freeText: "abcd" });
   });
 });
 
