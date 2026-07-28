@@ -3,7 +3,7 @@
 - Status: proposed
 - Spans: a new aggregate node, a synthesis node, M7 executor abstraction, M8 bounded concurrency, M8.1 derived fan-out
 - Roadmap source: `docs/execution-roadmap.md` sections 8 and 18
-- Comparison source: `docs/research/pi-dynamic-workflows-comparison.md`
+- Comparison sources: `docs/research/pi-dynamic-workflows-comparison.md`, `docs/research/grok-build-workflows-comparison.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -28,6 +28,27 @@ model turn.
 
 A model still does the thinking, and a wide workflow still spends many model
 turns. Section 2.2 states the exact claim.
+
+### 1.1 Terms
+
+Three different mechanisms attracted the word "evaluator" in earlier drafts.
+This plan uses these terms, and it uses no other word for them.
+
+| Term | Meaning |
+| --- | --- |
+| **Loop boundary** | The node which `evaluateAfter` names. It is the last node of an iteration and the source of the feedback edge. It makes no decision. |
+| **Decision reduction** | The quorum aggregate node whose published fact a loop success condition or a gate condition reads. |
+| **Evaluator** | A node which holds an M5A evaluation contract: purpose, trust level, integrity, feedback mode, and a budget claim. |
+
+The three are separate. One node can be a loop boundary and hold no evaluation
+contract. One node can be an evaluator and decide nothing. In the closed loop of
+section 3, all three are different nodes.
+
+The existing validator uses "evaluator" for the loop boundary in
+`invalid_loop_evaluator`, `loop_evaluator_cannot_be_gate`, and
+`loop_node_cannot_reach_evaluator`. Those names stay, because a diagnostic code
+is a compatibility surface. Read them as "loop boundary". Do not add a new
+diagnostic which uses the word in the structural sense.
 
 ## 2. Governing rule
 
@@ -92,7 +113,7 @@ with no orchestration turn:
 This is the primary shape. Result 1 is one instance of it, and a deep research
 loop or a design loop is another.
 
-A closed loop needs four separate parts, and they must not be confused:
+A closed loop needs five separate parts, and they must not be confused:
 
 | Part | Node kind | Turns | Answers |
 | --- | --- | --- | --- |
@@ -135,7 +156,17 @@ states the diagnostic.
 
 ### 3.3 A worked example
 
-An implementation loop with five reviewers. The loop region:
+An implementation loop with five reviewers.
+
+The region which the aggregates reduce, as section 5.4 defines it:
+
+```jsonc
+{ "id": "code-review",
+  "nodes": ["review-correctness", "review-security", "review-tests",
+            "review-api", "review-performance"] }
+```
+
+The loop:
 
 ```jsonc
 {
@@ -156,12 +187,12 @@ An implementation loop with five reviewers. The loop region:
 }
 ```
 
-The five reviewer nodes have no dependency edge between them, so they are
-runnable together. Each one publishes `review.ready`, which is a boolean, and
-`review.findings`, which is an array.
+Each reviewer publishes `review.ready`, which is a boolean, and
+`review.findings`, which is an array. The five nodes have no dependency edge
+between them, so they are runnable together.
 
-The synthesis node is the loop evaluator, and the quorum node is not. Section
-3.4 states why.
+The synthesis node is the loop boundary, and the quorum node is not. Section 3.4
+states why.
 
 The decision:
 
@@ -221,39 +252,74 @@ The loop can stop four ways, and each way is a separate `LoopExitReason` in the
 event history: `success`, `max_iterations`, `no_progress`, and
 `evaluation_budget`. A script which writes `while (!approved)` records one.
 
-### 3.4 The evaluator is the synthesis node
+### 3.4 The loop boundary is the synthesis node
 
-The loop evaluator is the last node of an iteration. It is not the node which
-supplies the success condition.
+The loop boundary is the last node of an iteration. It is not the node which
+supplies the success condition, and it holds no evaluation contract.
 
 Three existing validator rules decide this:
 
+Three existing validator rules decide this. Each diagnostic name uses
+"evaluator" in the structural sense which section 1.1 records:
+
 | Rule | Diagnostic | Result |
 | --- | --- | --- |
-| Feedback must go from the evaluator to the entry | `invalid_feedback_boundary` | The evaluator must be the feedback source |
-| Every loop node must reach the evaluator | `loop_node_cannot_reach_evaluator` | The evaluator must be last |
-| An external consumer must leave through the evaluator | `loop_external_output_not_evaluator` | The evaluator is the one exit |
+| Feedback must go from the boundary to the entry | `invalid_feedback_boundary` | The boundary is the feedback source |
+| Every loop node must reach the boundary | `loop_node_cannot_reach_evaluator` | The boundary is last |
+| An external consumer must leave through the boundary | `loop_external_output_not_evaluator` | The boundary is the one exit |
 
 The synthesis node is the only node which satisfies all three. It produces the
-feedback, and every other node in the region comes before it.
+feedback, and every other node of the iteration comes before it.
 
-A quorum node as the evaluator fails the second rule. The synthesis node is in
-the region and it cannot reach the quorum node, because it comes after it.
+A quorum node as the boundary fails the second rule. The synthesis node is in
+the loop and it cannot reach the quorum node, because it comes after it.
 
 The success condition still reads the quorum fact. This is the separation rule
 of section 3.2 in structural form: the node which closes an iteration is not the
 node which decides whether another iteration runs.
 
 One cost follows. The final iteration passes the quorum and still spends a
-synthesis turn, because the evaluator runs before the loop evaluates. One turn
+synthesis turn, because the boundary runs before the loop evaluates. One turn
 for each completed loop is an acceptable cost. Do not add a gate to avoid it,
-because a gate inside the region adds a route which the loop must then reason
+because a gate inside the loop adds a route which the loop must then reason
 about.
 
 One validator message needs an update. `loop_evaluator_cannot_be_gate` reads
 "must be a task or check node", and a model-executor node is neither. The test
 rejects a gate only, so the behaviour is correct and the text is not. Slice 4
 must correct it.
+
+### 3.5 What this pattern changes in the current loop rules
+
+The pattern reads a progress fact which the boundary node does not produce, and
+it puts the evaluation contract on a node which is not the boundary. Both extend
+current assumptions. State the delta here, so an implementer does not read
+silence as agreement.
+
+**A progress fact may come from any node of the iteration.**
+`assessEvaluationAuthoring` reports `progress_source_not_metric_report` when a
+loop declares numeric progress and its boundary is not a metric-report check.
+The advisory text asks the author to confirm that a deterministic instrument
+produces the progress fact.
+
+In this pattern the answer is yes, and the instrument is the quorum aggregate.
+`review.readyCount` is a count over typed facts, which is more deterministic
+than a metric-report check, because a metric-report check runs a command.
+
+The advisory assumes that the boundary node produces the progress fact. Slice 3
+must widen the test: the advisory must pass when a metric-report check **or** an
+aggregate node inside the loop publishes the progress fact.
+
+**The evaluation contract sits on the quorum node.** Section 6.4 puts the M5A
+contract there, because the quorum is the node which judges. The reviewers are
+the model evaluators which the contract governs, and they claim the evaluation
+budget. The synthesis node and the boundary claim none, and section 7.2 states
+that.
+
+The `evaluation_budget` loop exit therefore means one thing: the reviewers
+exhausted the declared budget before the quorum reached its threshold. The loop
+stops with no verdict rather than continue with a partial branch set, which
+rule 1 of section 6.3 forbids in any case.
 
 ## 4. Parity with a script orchestrator
 
@@ -262,7 +328,7 @@ must correct it.
 | Bounded repeat until dry | Loop region with typed success, iteration limit, and patience | Complete, and stronger |
 | Conditional gate | Gate on typed facts | Complete |
 | Retry | Check retry policy with backoff and retry statuses | Complete |
-| Human approval | Interaction node, closed or open | Complete |
+| Human approval | Interaction node, closed or open | M6.1 Slice 1.1, in progress |
 | Structured output | Fact contracts and validation | Wire executor output to contracts |
 | Phase grouping | A barrier node which requires the previous set | Expressible today |
 | Concurrent branches | Independent nodes with no dependency edge | Modelled, not executed |
@@ -323,6 +389,45 @@ current behaviour.
 
 Rule 4 keeps routing deterministic. A gate must never depend on which branch
 finished first.
+
+### 5.4 The fixed region
+
+Sections 5.1 to 5.3 use the word "region" and do not define it. Define it here,
+because an aggregate node names one and the worked example needs it.
+
+A fixed region is a declared set of nodes. Each node in the set is one branch,
+and the node identifier is the branch identifier:
+
+```ts
+export interface RegionDefinition {
+  id: string;
+  /** The branch nodes. Each one is one branch. */
+  nodes: string[];
+}
+```
+
+```jsonc
+{ "id": "code-review",
+  "nodes": ["review-correctness", "review-security", "review-tests",
+            "review-api", "review-performance"] }
+```
+
+Rules:
+
+1. The branch identifier of a fact is the identifier of the node which published
+   it. Replay reproduces it with no counter and no clock.
+2. A region must declare two or more nodes.
+3. The nodes of a region must have no dependency edge between them, so they are
+   runnable together.
+4. A node belongs to one region only.
+5. A region needs no new execution mechanism. The controller already returns
+   every runnable action, and the nodes of a fixed region are runnable together
+   because nothing orders them.
+
+Rule 5 is the reason a fixed region costs so little. The width is known when the
+author writes the graph, so the region is a naming construct over nodes which
+the graph already contains. Section 9 adds the derived form, where the width is
+known only at run time, and only that form needs new execution machinery.
 
 ## 6. The aggregate node
 
@@ -402,24 +507,41 @@ node, and use it for wide discovery.
    branch set, or validation must reject an empty set.
 4. An aggregate node must publish a declared fact contract, exactly as any other
    producer does. This applies to `publishesCount`.
-5. A `collect` result must have a total order before the runtime applies
-   `maximumItems`. `orderBy` supplies it, and the branch identifier is the final
-   tie-break. A list which is cut at a bound with no order can lose the most
-   important item, and it loses a different item on each run.
+5. A `collect` result must have the total order of rule 9 before the runtime
+   applies `maximumItems`. A list which is cut at a bound with no order can lose
+   the most important item, and it loses a different item on each run.
 6. A `collect` node must publish the number of items which `maximumItems`
    removed. A reader must not read a truncated list as a complete list.
-7. An aggregate node must not read free text. Every fact which a strategy names
-   must be a boolean, a number, or a closed value list. Section 6.5 states why.
+7. An aggregate node may **carry** free text, and it must not **decide** by free
+   text. A payload which the node copies without inspection has no type limit.
+   A field which the node compares, counts, ranks, or sorts by must be a
+   boolean, a number, or a closed value list.
+8. `quorum` and `ranked` therefore name a scalar fact only. `collect` names an
+   array fact whose items may hold free text, and every key in its `orderBy`
+   must satisfy rule 7.
+9. An `orderBy` key must give a total order. A closed value list orders by the
+   position of the value in the list. A string field orders by code point, and
+   the plan states no other collation. A key which leaves two items equal falls
+   to the next key, and the branch identifier is the final key.
 
-### 6.4 Why a quorum is an evaluation
+Rules 7 to 9 draw one line. The `message` field of a finding travels through a
+`collect` node untouched and reaches the synthesis node. No strategy reads it,
+because reading it is interpretation. Section 6.5 states why.
 
-M5A already provides evaluation contracts. A contract declares evaluator
-purpose, trust level, integrity, version, and fingerprint. It also declares the
-feedback mode, and it applies an evaluation budget.
+### 6.4 Why a quorum node holds the evaluation contract
 
-A review quorum is an evaluator whose trust is model-based. Reuse the M5A
-contract for it. The budget limits, the protected feedback rule, and the
-redaction policy then apply with no new mechanism.
+M5A already provides evaluation contracts. A contract declares purpose, trust
+level, integrity, version, and fingerprint. It also declares the feedback mode,
+and it applies an evaluation budget.
+
+The quorum node is the evaluator of the loop, in the section 1.1 sense. It is
+the node which judges, its trust is model-based, and its branch nodes are the
+model calls which the budget must limit. Put the M5A contract there. The budget
+limits, the protected feedback rule, and the redaction policy then apply with no
+new mechanism.
+
+The contract does not go on the loop boundary. Section 3.5 states the result for
+the `evaluation_budget` exit reason.
 
 Validation already reports `isolated_evaluator_unavailable` with the text
 "Isolated evaluator trust is unavailable until an isolated evaluator adapter
@@ -485,9 +607,13 @@ The definition adds two requirements to section 7.1:
    the truncation count with it.
 2. The node must publish a declared fact which only a feedback edge reads.
 
-A synthesis node is not an evaluator. It publishes no verdict, so it needs no
-M5A evaluation contract and it draws on no evaluation budget. The quorum node is
-the evaluator, and section 6.4 covers it.
+A synthesis node holds no M5A evaluation contract, and it claims no evaluation
+budget. It publishes no verdict, so there is nothing for a contract to govern.
+The quorum node holds the contract, and section 6.4 covers it.
+
+A synthesis node is normally the loop boundary. Section 1.1 keeps the two ideas
+apart: the boundary closes an iteration, and an evaluation contract governs a
+judgement. The synthesis node does the first and not the second.
 
 ### 7.3 The routing ban
 
@@ -546,9 +672,9 @@ Rule 4 matters for sequencing. A fixed-width quorum needs sections 5 and 6 only.
 
 | Slice | Result | Depends on |
 | --- | --- | --- |
-| 1 | Branch-scoped facts | none |
+| 1 | Branch-scoped facts and the fixed region of section 5.4 | none |
 | 2 | Aggregate node with the three strategies | 1 |
-| 3 | Fixed-width quorum region, its evaluation contract, and the `routes_on_synthesis_fact` diagnostic | 1, 2 |
+| 3 | Fixed-width quorum region, its evaluation contract, the `routes_on_synthesis_fact` diagnostic, and the widened progress advisory of section 3.5 | 1, 2 |
 | 4 | Model-executor node and the executor contract | 3 |
 | 5 | Synthesis node and the closed feedback loop end to end | 4 |
 | 6 | Bounded concurrent selection and workspace leases | 4 |
@@ -580,6 +706,11 @@ result.
   validation with `routes_on_synthesis_fact`.
 - A closed loop passes the existing loop validator with the synthesis node as
   `evaluateAfter` and the quorum fact in `successWhen`.
+- A loop whose progress fact comes from an aggregate node inside the loop does
+  not report `progress_source_not_metric_report`.
+- A `collect` node carries a free-text field through to the synthesis node, and
+  no strategy reads it.
+- An `orderBy` key which names a free-text field fails validation.
 - A best-of-N region selects one branch by a numeric fact with no model turn.
 - A `collect` region keeps every item, orders the result before it applies
   `maximumItems`, and reports the removed count.
@@ -589,7 +720,8 @@ result.
 - Replay reproduces every branch identity, every reduction, and every route.
 - A gate outside a region cannot read a branch-scoped fact.
 - Two branches can publish the same fact name. Two nodes outside a region cannot.
-- A model evaluator uses the M5A evaluation contract and its budget.
+- The quorum node holds the M5A evaluation contract, and its branch nodes claim
+  the evaluation budget. The loop boundary claims none.
 
 ## 12. Out of scope
 
