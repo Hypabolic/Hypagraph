@@ -397,6 +397,117 @@ const validateMetricReport = (node: NodeDefinition, check: MetricReportCheckDefi
   return diagnostics;
 };
 
+const DEFAULT_PRESENTATION_MAX_BYTES = 1_048_576;
+const MAX_PRESENTATION_TIMEOUT_MS = 86_400_000;
+
+const validateInteractionPresentation = (
+  nodeId: string,
+  presentation: InteractionDefinition["presentation"] | undefined,
+  location: string,
+): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  if (!presentation || (presentation.class !== "deterministic" && presentation.class !== "semantic")) {
+    diagnostics.push({ code: "interaction_presentation_required", message: `Interaction node '${nodeId}' requires a presentation class.`, location });
+    return diagnostics;
+  }
+  if (presentation.class === "semantic") {
+    diagnostics.push({
+      code: "semantic_presentation_requires_m7",
+      message: `Interaction node '${nodeId}' declares semantic presentation. Semantic presentation requires the M7 model executor.`,
+      location: `${location}.class`,
+    });
+  }
+  if (presentation.kind === "none") return diagnostics;
+  if (presentation.kind === "report") {
+    if (presentation.mediaType !== undefined
+      && presentation.mediaType !== "text/markdown; charset=utf-8"
+      && presentation.mediaType !== "text/plain; charset=utf-8") {
+      diagnostics.push({
+        code: "invalid_interaction_report_media_type",
+        message: `Interaction node '${nodeId}' report media type must be text/markdown or text/plain.`,
+        location: `${location}.mediaType`,
+      });
+    }
+    if (presentation.maxBytes !== undefined
+      && (!Number.isInteger(presentation.maxBytes) || presentation.maxBytes < 1 || presentation.maxBytes > MAX_ASSERTION_BYTES)) {
+      diagnostics.push({
+        code: "invalid_interaction_report_limit",
+        message: `Interaction report maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`,
+        location: `${location}.maxBytes`,
+      });
+    }
+    return diagnostics;
+  }
+  if (presentation.kind === "command") {
+    if (!presentation.command?.trim()) {
+      diagnostics.push({
+        code: "interaction_presentation_command_required",
+        message: `Interaction node '${nodeId}' requires a presentation command.`,
+        location: `${location}.command`,
+      });
+    }
+    if (!Number.isInteger(presentation.timeoutMs) || presentation.timeoutMs <= 0 || presentation.timeoutMs > MAX_PRESENTATION_TIMEOUT_MS) {
+      diagnostics.push({
+        code: "invalid_interaction_presentation_timeout",
+        message: `Interaction presentation timeout must be between 1 and ${MAX_PRESENTATION_TIMEOUT_MS} milliseconds.`,
+        location: `${location}.timeoutMs`,
+      });
+    }
+    if (presentation.workingDirectory !== undefined && relativePathInvalid(presentation.workingDirectory)) {
+      diagnostics.push({
+        code: "interaction_presentation_working_directory_outside_workspace",
+        message: `Interaction presentation working directory '${presentation.workingDirectory}' must remain inside the workspace.`,
+        location: `${location}.workingDirectory`,
+      });
+    }
+    if (presentation.expectedExitCodes) {
+      if (presentation.expectedExitCodes.length === 0 || presentation.expectedExitCodes.some((value) => !Number.isInteger(value))) {
+        diagnostics.push({
+          code: "invalid_interaction_presentation_exit_codes",
+          message: `Interaction presentation requires integer expected exit codes.`,
+          location: `${location}.expectedExitCodes`,
+        });
+      }
+      if (new Set(presentation.expectedExitCodes).size !== presentation.expectedExitCodes.length) {
+        diagnostics.push({
+          code: "duplicate_interaction_presentation_exit_code",
+          message: `Interaction presentation repeats an expected exit code.`,
+          location: `${location}.expectedExitCodes`,
+        });
+      }
+    }
+    if (presentation.environmentVariables) {
+      const names = new Set<string>();
+      presentation.environmentVariables.forEach((name, index) => {
+        const itemLocation = `${location}.environmentVariables[${index}]`;
+        if (!ENVIRONMENT_VARIABLE_PATTERN.test(name)) {
+          diagnostics.push({ code: "invalid_environment_variable", message: `Environment variable '${name}' is not valid.`, location: itemLocation });
+        }
+        const key = name.toUpperCase();
+        if (names.has(key)) {
+          diagnostics.push({ code: "duplicate_environment_variable", message: `Interaction presentation repeats environment variable '${name}'.`, location: itemLocation });
+        }
+        names.add(key);
+      });
+    }
+    if (presentation.maxOutputBytes !== undefined
+      && (!Number.isInteger(presentation.maxOutputBytes) || presentation.maxOutputBytes < 1 || presentation.maxOutputBytes > MAX_ASSERTION_BYTES)) {
+      diagnostics.push({
+        code: "invalid_interaction_presentation_output_limit",
+        message: `Interaction presentation maxOutputBytes must be between 1 and ${MAX_ASSERTION_BYTES}. Default is ${DEFAULT_PRESENTATION_MAX_BYTES}.`,
+        location: `${location}.maxOutputBytes`,
+      });
+    }
+    return diagnostics;
+  }
+  diagnostics.push({
+    code: "unsupported_interaction_presentation",
+    message: `Interaction node '${nodeId}' supports presentation kinds 'none', 'report', and 'command'.`,
+    location: `${location}.kind`,
+  });
+  return diagnostics;
+};
+
 const validateInteraction = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.interaction) {
     return [{ code: "interaction_definition_required", message: `Interaction node '${node.id}' requires an interaction definition.`, location: `${location}.interaction` }];
@@ -407,13 +518,7 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
   if (interaction.kind !== "interaction") diagnostics.push({ code: "invalid_interaction_kind", message: `Interaction node '${node.id}' must set interaction.kind to 'interaction'.`, location: `${interactionLocation}.kind` });
   if (interaction.version !== 1) diagnostics.push({ code: "invalid_interaction_version", message: `Interaction node '${node.id}' must use interaction version 1.`, location: `${interactionLocation}.version` });
   if (!interaction.question?.trim()) diagnostics.push({ code: "interaction_question_required", message: `Interaction node '${node.id}' requires a question.`, location: `${interactionLocation}.question` });
-  if (!interaction.presentation || (interaction.presentation.class !== "deterministic" && interaction.presentation.class !== "semantic")) {
-    diagnostics.push({ code: "interaction_presentation_required", message: `Interaction node '${node.id}' requires a presentation class.`, location: `${interactionLocation}.presentation` });
-  } else if (interaction.presentation.class === "semantic") {
-    diagnostics.push({ code: "semantic_presentation_requires_m7", message: `Interaction node '${node.id}' declares semantic presentation. Semantic presentation requires the M7 model executor.`, location: `${interactionLocation}.presentation.class` });
-  } else if (interaction.presentation.kind !== "none") {
-    diagnostics.push({ code: "unsupported_interaction_presentation", message: `Interaction node '${node.id}' supports only presentation kind 'none' in this milestone slice.`, location: `${interactionLocation}.presentation.kind` });
-  }
+  diagnostics.push(...validateInteractionPresentation(node.id, interaction.presentation, `${interactionLocation}.presentation`));
   const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
   const hasResponses = Array.isArray(interaction.responses) && interaction.responses.length > 0;
   const hasOpenAnswer = interaction.openAnswer !== undefined;

@@ -119,8 +119,12 @@ const interactionSummary = ({ event }: SummaryContext): string | undefined => {
   switch (event.type) {
     case "hypagraph.interaction.requested":
       return `Interaction '${event.nodeId}' requested an answer.`;
-    case "hypagraph.interaction.presented":
-      return `Interaction '${event.nodeId}' presented its question.`;
+    case "hypagraph.interaction.presented": {
+      const status = typeof data.status === "string" ? data.status : "unknown";
+      return status === "succeeded"
+        ? `Interaction '${event.nodeId}' presented its question.`
+        : `Interaction '${event.nodeId}' presentation ${status}.`;
+    }
     case "hypagraph.interaction.answered":
       return `Interaction '${event.nodeId}' received response '${String(data.responseId ?? "unknown")}'.`;
     case "hypagraph.interaction.expired":

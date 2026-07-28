@@ -7,6 +7,8 @@ import type {
   DomainEvent,
   HypagraphDefinition,
   HypagraphState,
+  InteractionPresentationKind,
+  InteractionPresentationStatus,
   LegacyLoopPredicate,
   LoopDefinition,
   LoopRuntime,
@@ -406,8 +408,44 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       }
       break;
     case "hypagraph.interaction.presented":
-      // Slice 2 stores presentation observation. Slice 1 keeps the node awaiting a response.
-      if (node && node.status === "running") node.status = "awaiting_response";
+      if (node && attempt) {
+        const rawStatus = event.data.status;
+        const rawKind = event.data.kind;
+        const status: InteractionPresentationStatus =
+          rawStatus === "succeeded" || rawStatus === "failed" || rawStatus === "timed_out" || rawStatus === "cancelled" || rawStatus === "error"
+            ? rawStatus
+            : "error";
+        const kind: InteractionPresentationKind =
+          rawKind === "none" || rawKind === "report" || rawKind === "command" ? rawKind : "none";
+        const presentedAt = typeof event.data.presentedAt === "string" ? event.data.presentedAt : event.timestamp;
+        const observation = {
+          status,
+          kind,
+          presentedAt,
+          ...(typeof event.data.artifactRef === "string" ? { artifactRef: event.data.artifactRef } : {}),
+          ...(typeof event.data.error === "string" ? { error: event.data.error } : {}),
+          ...(Array.isArray(event.data.evidence)
+            ? { evidence: structuredClone(event.data.evidence as AttemptRuntime["evidence"]) }
+            : {}),
+        };
+        attempt.presentation = observation;
+        if (observation.evidence?.length) {
+          attempt.evidence = structuredClone(observation.evidence);
+          node.evidence = structuredClone(observation.evidence);
+        }
+        if (observation.status === "succeeded") {
+          // Keep the node awaiting an answer after a successful presentation.
+          node.status = "awaiting_response";
+        } else {
+          // A failed presentation is an explicit failure, not a silent wait.
+          attempt.status = "failed";
+          attempt.completedAt = event.timestamp;
+          attempt.failureReason = observation.error ?? "The interaction presentation failed.";
+          node.status = "failed";
+        }
+      }
+      // A presented event without a matching attempt is a no-op. Do not promote
+      // node status to awaiting_response without a stored observation.
       break;
     case "hypagraph.interaction.answered":
       if (node && attempt) {

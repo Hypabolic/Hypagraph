@@ -1,10 +1,9 @@
-# Session handoff: M6.1 Slice 1.1 complete
+# Session handoff: M6.1 Slice 2 complete
 
 - Handoff date: 2026-07-28
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
 - Release baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
-- Current baseline: `8fc2b50fddef06fb279f78af74bf3b544e39604a`
 - Published release: `v0.7`
 - Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
 - Current milestone: M6.1 interaction and approval nodes
@@ -51,8 +50,6 @@ M6B provides:
 - revision segments, discarded results, and future-namespace projection seams;
 - one presentation redaction policy for protected evaluator detail.
 
-The suite after M6B Slice 7 is 109 test files and 586 tests.
-
 ## 3. Preserved invariants
 
 Do not weaken these invariants during M6.1 and later work:
@@ -85,6 +82,8 @@ Let the graph return to the user for a decision, and let a typed answer control 
 - The answer is typed and durable.
 - The model cannot invent an answer as a completion claim.
 - Replay and restore must not re-prompt for a stored answer.
+- A presentation effect runs only after the request event is stored.
+- A successful presentation observation must not re-run the external effect.
 
 ### Slice status
 
@@ -92,30 +91,22 @@ Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, th
 
 Slice 1.1 is complete. It adds `hypagraph_ask` and the closed and open dialog surfaces. It adds `/hypagraph ask` and waiting status and widget surfaces. A dialog opens only when no other action is runnable. Independent branches and loops keep running while a question waits. `tests/m6-1-interaction-slice-1-1.test.ts` holds the tests.
 
-Slice 2 deterministic presentation effects is the next work. Validation accepts only presentation kind `none` at this time. `src/domain/validate.ts` holds the rule.
+Slice 2 is complete. It adds deterministic presentation kinds `none`, `report`, and `command`. Durable order is request, presentation effect, `present-interaction` observation, then dialog. Artifacts use `.hypagraph/check-artifacts` through `FileCheckArtifactStore`. A failed effect stores an explicit failed node. Semantic presentation still fails validation with a diagnostic which names M7. Evidence:
+
+- `src/checks/presentation-executor.ts`
+- `src/domain/presentation-report.ts`
+- `src/domain/model-base.ts`
+- `src/domain/reducer.ts`
+- `src/domain/projection-base.ts`
+- `src/domain/validate.ts`
+- `src/extension.ts`
+- `tests/m6-1-interaction-slice-2.test.ts`
+
+### Next work
+
+Slice 3 is next: routing through existing gates, free-text evidence bounds, structured feedback artifacts, and level-triggered deadlines.
 
 ## 5. Release evidence
 
 - M6A dogfood: `docs/m6a-dogfood.md`
 - M6B dogfood: `docs/m6b-dogfood.md`
-- Live Pi evidence: `docs/dogfood-evidence/m6b-live/` and `docs/dogfood-evidence/m6b-live-loop-revision/`
-- Release notes: `docs/v0.7-release-notes.md`
-- Release baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
-- Suite: 109 test files and 586 tests
-- Release: https://github.com/Hypabolic/Hypagraph/releases/tag/v0.7
-
-## 6. Deferred product direction
-
-The following work remains accepted but deferred beyond M6.1:
-
-- code nodes and the sandbox executor adapter;
-- external effects and reconciliation;
-- goal-family persistence;
-- recursive child Hypagoals;
-- executor abstraction and isolated Pi execution;
-- worktree leases and integration;
-- bounded physical concurrency;
-- dynamic fan-out regions, only when a branch count is derived at run time;
-- ACP and named direct agent adapters.
-
-Rejected direction: a resident supervisor, a trigger service, or any persistent host process. Roadmap design rule 3.9 rejects them. A monitor node inside the graph meets the monitoring need.

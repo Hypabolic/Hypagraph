@@ -165,11 +165,58 @@ export type AttemptStatus = "running" | "submitted" | "verifying" | "succeeded" 
 export type EnforcementMode = "guided" | "strict";
 export type NodeKind = "task" | "gate" | "check" | "interaction";
 export type InteractionPresentationClass = "deterministic" | "semantic";
+export type InteractionPresentationKind = "none" | "report" | "command";
+export type InteractionPresentationStatus = "succeeded" | "failed" | "timed_out" | "cancelled" | "error";
 
-export interface InteractionPresentation {
+/** No external presentation effect. The question alone is the surface. */
+export interface InteractionPresentationNone {
   class: InteractionPresentationClass;
-  /** Slice 1 supports only the none presentation effect. Later slices add artifact and command effects. */
   kind: "none";
+}
+
+/**
+ * Render a Markdown or plain-text report from a canonical projection of workflow state.
+ * The report content is a pure function of the state and the interaction node.
+ */
+export interface InteractionPresentationReport {
+  class: InteractionPresentationClass;
+  kind: "report";
+  /** Default is text/markdown. */
+  mediaType?: "text/markdown; charset=utf-8" | "text/plain; charset=utf-8";
+  /** Maximum artifact size in bytes. Default is 1_048_576. */
+  maxBytes?: number;
+}
+
+/**
+ * Run a bounded command which produces a presentation artifact.
+ * The command uses the same bounds as a command check: no shell, timeout, workspace root.
+ */
+export interface InteractionPresentationCommand {
+  class: InteractionPresentationClass;
+  kind: "command";
+  command: string;
+  arguments?: string[];
+  workingDirectory?: string;
+  timeoutMs: number;
+  expectedExitCodes?: number[];
+  environmentVariables?: string[];
+  /** Maximum captured stdout and stderr size in bytes. Default is 1_048_576. */
+  maxOutputBytes?: number;
+}
+
+export type InteractionPresentation =
+  | InteractionPresentationNone
+  | InteractionPresentationReport
+  | InteractionPresentationCommand;
+
+/** Observation which the present-interaction command stores on an attempt. */
+export interface InteractionPresentationObservation {
+  status: InteractionPresentationStatus;
+  kind: InteractionPresentationKind;
+  presentedAt: string;
+  artifactRef?: string;
+  error?: string;
+  evidence?: EvidenceReference[];
 }
 
 export interface InteractionResponseOption {
@@ -570,6 +617,8 @@ export interface AttemptRuntime {
   evidence: EvidenceReference[];
   failureReason?: string;
   checkResult?: CheckResult;
+  /** Presentation observation for an interaction attempt. */
+  presentation?: InteractionPresentationObservation;
   loopId?: string;
   iteration?: number;
 }
@@ -707,6 +756,12 @@ export type HypagraphCommand =
   | (CommandBase & { type: "start-check"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "record-check-result"; nodeId: string; attemptId: string; result: CheckResult })
   | (CommandBase & { type: "request-interaction"; nodeId: string; attemptId: string })
+  | (CommandBase & {
+    type: "present-interaction";
+    nodeId: string;
+    attemptId: string;
+    result: InteractionPresentationObservation;
+  })
   | (CommandBase & { type: "answer-interaction"; nodeId: string; attemptId: string; responseId?: string; openText?: string; evidence?: EvidenceReference[] })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })

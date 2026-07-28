@@ -171,13 +171,40 @@ const interactionResponseSchema = Type.Object({
     }))),
   }), { minItems: 1 }),
 });
+const presentationClassSchema = Type.Union([
+  Type.Literal("deterministic"),
+  Type.Literal("semantic"),
+]);
+const interactionPresentationSchema = Type.Union([
+  Type.Object({
+    class: presentationClassSchema,
+    kind: Type.Literal("none"),
+  }),
+  Type.Object({
+    class: presentationClassSchema,
+    kind: Type.Literal("report"),
+    mediaType: Type.Optional(Type.Union([
+      Type.Literal("text/markdown; charset=utf-8"),
+      Type.Literal("text/plain; charset=utf-8"),
+    ])),
+    maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  }),
+  Type.Object({
+    class: presentationClassSchema,
+    kind: Type.Literal("command"),
+    command: Type.String(),
+    arguments: Type.Optional(Type.Array(Type.String())),
+    workingDirectory: Type.Optional(Type.String()),
+    timeoutMs: Type.Integer({ minimum: 1, maximum: 86_400_000 }),
+    expectedExitCodes: Type.Optional(Type.Array(Type.Integer())),
+    environmentVariables: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }), { uniqueItems: true })),
+    maxOutputBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 16_777_216 })),
+  }),
+]);
 const interactionSchema = Type.Object({
   kind: Type.Literal("interaction"),
   version: Type.Literal(1),
-  presentation: Type.Object({
-    class: StringEnum(["deterministic", "semantic"] as const),
-    kind: Type.Literal("none"),
-  }),
+  presentation: interactionPresentationSchema,
   question: Type.String(),
   responses: Type.Optional(Type.Array(interactionResponseSchema, {
     minItems: 1,

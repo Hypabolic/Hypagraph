@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { ActiveCheckExecutionRegistry } from "./checks/active-executions.js";
 import { CommandCheckExecutor } from "./checks/command-executor.js";
 import { FileCheckArtifactStore } from "./checks/file-artifact-store.js";
+import { DefaultPresentationExecutor } from "./checks/presentation-executor.js";
 import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { DomainEvent, HypagraphCommand, HypagraphState, InteractionDefinition, PersistedHypagraph } from "./domain/model.js";
@@ -18,6 +19,8 @@ import {
   awaitingInteractions,
   interactionOptions,
   interactionPresentationIsAllowed,
+  interactionPresentationNeedsEffect,
+  interactionPresentationObservation,
   responseForOptionText,
   type AwaitingInteraction,
 } from "./domain/interaction-presentation.js";
@@ -242,12 +245,20 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const graphPane = new GraphPaneController(() => events);
   const eventStore = new PiSessionWorkflowEventStore(pi);
   const activeExecutions = new ActiveCheckExecutionRegistry();
+  /** In-flight presentation effects keyed by workflow, node, and attempt. */
+  const activePresentations = new Map<string, Promise<"ready" | "failed" | "unavailable">>();
+
+  const presentationExecutionKey = (workflowId: string, nodeId: string, attemptId: string): string =>
+    `${workflowId}\u0000${nodeId}\u0000${attemptId}`;
 
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
 
   const ensureNoActiveExecution = (): void => {
     if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
+    if (activePresentations.size > 0) {
+      throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
+    }
   };
 
   const restoreContinuationTools = (): void => {
@@ -370,16 +381,121 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   };
 
   /**
+   * Run the presentation effect after the request event is stored.
+   *
+   * Durable order:
+   * 1. request-interaction is already committed;
+   * 2. run the presentation effect outside the reducer;
+   * 3. store present-interaction with the observation;
+   * 4. open the dialog only after a successful observation.
+   *
+   * A successful observation must not re-run the external effect on reload.
+   * Concurrent callers for the same attempt share one in-flight promise so the
+   * external effect runs at most one time.
+   */
+  const ensureInteractionPresentation = async (
+    _ctx: ExtensionContext,
+    awaiting: AwaitingInteraction,
+  ): Promise<"ready" | "failed" | "unavailable"> => {
+    if (!state) return "unavailable";
+    if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
+      const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
+      if (observation?.status === "succeeded") return "ready";
+      return "failed";
+    }
+
+    const key = presentationExecutionKey(state.workflowId, awaiting.nodeId, awaiting.attemptId);
+    const inFlight = activePresentations.get(key);
+    if (inFlight) return inFlight;
+
+    const run = (async (): Promise<"ready" | "failed" | "unavailable"> => {
+      if (!state) return "unavailable";
+      // Another concurrent path may have stored the observation after this run
+      // was scheduled. Re-check before the external effect.
+      if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
+        const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
+        if (observation?.status === "succeeded") return "ready";
+        return "failed";
+      }
+
+      const presentation = awaiting.interaction.presentation;
+      const executor = new DefaultPresentationExecutor({
+        rootDirectory: _ctx.cwd,
+        artifactStore: new FileCheckArtifactStore(resolve(_ctx.cwd, ".hypagraph", "check-artifacts")),
+      });
+      const controller = new AbortController();
+      let result;
+      try {
+        result = await executor.execute({
+          state,
+          nodeId: awaiting.nodeId,
+          attemptId: awaiting.attemptId,
+          presentation,
+          requestedAt: new Date().toISOString(),
+        }, controller.signal);
+      } catch (error) {
+        result = {
+          status: "error" as const,
+          kind: presentation.kind,
+          presentedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      // A concurrent commit may already hold the observation. Treat that as
+      // authoritative instead of throwing a second hard failure.
+      if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
+        const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
+        if (observation?.status === "succeeded") return "ready";
+        return "failed";
+      }
+
+      try {
+        await runCommands([{
+          type: "present-interaction",
+          nodeId: awaiting.nodeId,
+          attemptId: awaiting.attemptId,
+          result,
+          commandId: randomUUID(),
+          at: new Date().toISOString(),
+        }]);
+      } catch (error) {
+        // Race: another host stored the observation first. Prefer the stored state.
+        if (!state) return "unavailable";
+        const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
+        if (observation?.status === "succeeded") return "ready";
+        if (observation) return "failed";
+        throw error;
+      }
+
+      if (result.status !== "succeeded") return "failed";
+      return "ready";
+    })();
+
+    activePresentations.set(key, run);
+    try {
+      return await run;
+    } finally {
+      if (activePresentations.get(key) === run) activePresentations.delete(key);
+    }
+  };
+
+  /**
    * Present one waiting interaction and store the selected answer.
    *
    * The caller must commit the request event first. Rule 1.1.2 requires a
    * durable `awaiting_response` node before a dialog opens, so a reload during
    * the dialog keeps the question.
+   *
+   * Slice 2 also requires a presentation observation before the dialog.
    */
   const presentAwaitingInteraction = async (
     ctx: ExtensionContext,
     awaiting: AwaitingInteraction,
-  ): Promise<"answered" | "dismissed" | "unavailable"> => {
+  ): Promise<"answered" | "dismissed" | "unavailable" | "presentation-failed"> => {
+    const presentationOutcome = await ensureInteractionPresentation(ctx, awaiting);
+    if (presentationOutcome === "failed") return "presentation-failed";
+    if (presentationOutcome === "unavailable") return "unavailable";
     if (!ctx.hasUI) return "unavailable";
     const { interaction } = awaiting;
     const answer = ctx.mode === "tui"
@@ -509,7 +625,7 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
   };
 
   const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
-    if (pendingContinuation || deliveredContinuation || !state || activeExecutions.hasActive()) return;
+    if (pendingContinuation || deliveredContinuation || !state || activeExecutions.hasActive() || activePresentations.size > 0) return;
     let deterministicDispatches = 0;
 
     while (true) {
@@ -526,8 +642,19 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
               continue;
             }
             updateUi(state, ctx, graphPane);
-            // Keep the wait durable. Split recovery text by outcome. A host
-            // without dialog capability cannot use /hypagraph ask either.
+            // Keep the wait durable on dismiss or missing dialog. A failed
+            // presentation leaves an explicit failed node instead of a wait.
+            if (outcome === "presentation-failed") {
+              const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
+              const detail = observation?.error
+                ? `${observation.status}: ${observation.error}`
+                : (observation?.status ?? "failed");
+              ctx.ui.notify(
+                `Interaction '${awaiting.nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
+                "warning",
+              );
+              return;
+            }
             if (outcome === "unavailable") {
               ctx.ui.notify(
                 waitingUnavailableNote(state)
@@ -1295,6 +1422,16 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       if (outcome === "answered") {
         return textResult(`${renderWorkflow(state!)}\n\nHypagraph stored the answer for interaction '${nodeId}'.`);
       }
+      if (outcome === "presentation-failed") {
+        const observation = interactionPresentationObservation(state!, nodeId, awaiting.attemptId);
+        const detail = observation?.error
+          ? `${observation.status}: ${observation.error}`
+          : (observation?.status ?? "failed");
+        return textResult(
+          `${renderWorkflow(state!)}\n\nInteraction '${nodeId}' presentation ${detail}. `
+          + `The node is failed and does not wait for an answer.`,
+        );
+      }
       // Rules 1.1.3 and 1.1.4. The question stays open and durable.
       if (outcome === "unavailable") {
         return textResult(
@@ -1567,6 +1704,15 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           // The person often recovers with /hypagraph ask after a dismiss. Resume
           // the controller so ready follow-on work does not stall until a later turn.
           await queueGoalContinuation(ctx);
+        } else if (outcome === "presentation-failed") {
+          const observation = interactionPresentationObservation(state!, awaiting.nodeId, awaiting.attemptId);
+          const detail = observation?.error
+            ? `${observation.status}: ${observation.error}`
+            : (observation?.status ?? "failed");
+          ctx.ui.notify(
+            `Interaction '${awaiting.nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
+            "warning",
+          );
         } else if (outcome === "unavailable") {
           ctx.ui.notify(
             waitingUnavailableNote(state!)

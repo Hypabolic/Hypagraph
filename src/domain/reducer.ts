@@ -581,10 +581,67 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       });
       break;
     }
+    case "present-interaction": {
+      if ((definitionNode.kind ?? "task") !== "interaction" || !definitionNode.interaction) return reject("node_not_interaction", `Node '${command.nodeId}' is not an interaction.`);
+      if (node.status !== "awaiting_response" || node.currentAttemptId !== command.attemptId) {
+        return reject("interaction_not_awaiting", `Interaction '${command.nodeId}' is not awaiting a response for this attempt.`);
+      }
+      const existing = node.attempts[command.attemptId]?.presentation;
+      if (existing) return reject("interaction_already_presented", `Interaction '${command.nodeId}' already has a presentation observation for this attempt.`);
+      const result = command.result;
+      if (!result || typeof result !== "object") return reject("interaction_presentation_result_required", "A presentation result is required.", "result");
+      if (result.status !== "succeeded" && result.status !== "failed" && result.status !== "timed_out" && result.status !== "cancelled" && result.status !== "error") {
+        return reject("invalid_interaction_presentation_status", `Presentation status '${String(result.status)}' is not valid.`, "result.status");
+      }
+      if (result.kind !== "none" && result.kind !== "report" && result.kind !== "command") {
+        return reject("invalid_interaction_presentation_kind", `Presentation kind '${String(result.kind)}' is not valid.`, "result.kind");
+      }
+      const declaredKind = definitionNode.interaction.presentation.kind;
+      if (result.kind !== declaredKind) {
+        return reject(
+          "interaction_presentation_kind_mismatch",
+          `Presentation kind '${result.kind}' does not match the declared kind '${declaredKind}'.`,
+          "result.kind",
+        );
+      }
+      if (!result.presentedAt?.trim()) return reject("interaction_presentation_time_required", "A presentation timestamp is required.", "result.presentedAt");
+      if (result.status === "succeeded" && declaredKind === "report" && !result.artifactRef?.trim()) {
+        return reject(
+          "interaction_presentation_artifact_required",
+          `A successful report presentation requires an artifact reference.`,
+          "result.artifactRef",
+        );
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.interaction.presented",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          status: result.status,
+          kind: result.kind,
+          presentedAt: result.presentedAt,
+          ...(result.artifactRef === undefined ? {} : { artifactRef: result.artifactRef }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+          ...(result.evidence === undefined ? {} : { evidence: structuredClone(result.evidence) }),
+        },
+      });
+      break;
+    }
     case "answer-interaction": {
       if ((definitionNode.kind ?? "task") !== "interaction" || !definitionNode.interaction) return reject("node_not_interaction", `Node '${command.nodeId}' is not an interaction.`);
       if (node.status !== "awaiting_response" || node.currentAttemptId !== command.attemptId) {
         return reject("interaction_not_awaiting", `Interaction '${command.nodeId}' is not awaiting a response for this attempt.`);
+      }
+      // A failed presentation ends the wait through node status (projection sets failed).
+      // Report and command presentations require a successful observation before answer.
+      // Kind "none" may skip the observation for Slice 1 compatibility.
+      const presentationKind = definitionNode.interaction.presentation.kind;
+      const presentation = node.attempts[command.attemptId]?.presentation;
+      if (presentationKind !== "none" && presentation?.status !== "succeeded") {
+        return reject(
+          "interaction_presentation_observation_required",
+          `Interaction '${command.nodeId}' requires a successful presentation observation before an answer.`,
+        );
       }
       const open = definitionNode.interaction.openAnswer;
       const evidence = structuredClone(command.evidence ?? []);

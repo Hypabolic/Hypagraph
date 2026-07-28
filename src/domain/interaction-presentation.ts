@@ -1,5 +1,10 @@
 import { enumerateGoalContinuationCandidates } from "./goal-continuation.js";
-import type { HypagraphState, InteractionDefinition, InteractionResponseOption } from "./model.js";
+import type {
+  HypagraphState,
+  InteractionDefinition,
+  InteractionPresentationObservation,
+  InteractionResponseOption,
+} from "./model.js";
 
 /** One interaction node which waits for an answer. */
 export interface AwaitingInteraction {
@@ -7,6 +12,38 @@ export interface AwaitingInteraction {
   attemptId: string;
   title: string;
   interaction: InteractionDefinition;
+}
+
+/** Report whether this attempt already stores a presentation observation. */
+export function interactionPresentationObservation(
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+): InteractionPresentationObservation | undefined {
+  return state.runtime.nodes[nodeId]?.attempts[attemptId]?.presentation;
+}
+
+/**
+ * Report whether the external presentation effect still needs to run.
+ *
+ * A successful observation means the effect must not run again.
+ * A failed observation is an explicit terminal presentation state.
+ */
+export function interactionPresentationNeedsEffect(
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+): boolean {
+  return interactionPresentationObservation(state, nodeId, attemptId) === undefined;
+}
+
+/** Report whether a successful presentation observation exists for this attempt. */
+export function interactionPresentationSucceeded(
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+): boolean {
+  return interactionPresentationObservation(state, nodeId, attemptId)?.status === "succeeded";
 }
 
 /**
