@@ -10,6 +10,8 @@
   `docs/research/grok-build-workflows-comparison.md`,
   `docs/goal-family-and-concurrent-execution-plan.md`,
   `docs/m6-1-interaction-node-plan.md`
+- Pattern source: public “gauntlet loop” graphs (plain-language specialist build
+  with two-level critics). Example diagram: `docs/gauntlet-loop-example.png`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -19,12 +21,18 @@ set of arguments. The recipe is fixed. The graph is not invented ad hoc on each
 run. The controller owns orchestration after the recipe materialises.
 
 The Gauntlet is that recipe. It turns one user goal into specialised implementer
-work, then forces **blind** critic verification against real work and
-best-in-class reference examples before the goal can complete.
+pieces, verifies **each piece** with blind critics against confirmed references,
+then verifies the **assembled whole** the same way before the goal can complete.
 
 The graph **finds** candidate references when the user does not already pin a
 complete set. The graph then **confirms** the reference set with the user
 before any implementer or critic uses it as the quality bar.
+
+Public gauntlet-loop diagrams state the product idea in plain language: goal,
+rules, real examples, break into pieces, specialist build, user-perspective
+check, separate flaw critic, separate reference reviewer, piece gate, assemble,
+test, whole-result critics, and honest stop on budget. Hypagraph must encode
+that idea as typed nodes, facts, loops, and budgets.
 
 ## 2. Product shape
 
@@ -55,18 +63,49 @@ A validated workflow that:
    (from seed inputs, repository search, and declared hints);
 2. **Confirms** the proposed reference set with the user through an interaction
    node before implementers or critics consume it;
-3. **Decomposes** the goal into specialised implementer nodes (for example API,
-   data model, UI, tests, docs) according to the work, not one monolithic task;
-4. **Implements** each specialisation as a bounded task (or child Hypagoal when
-   M7 lands) with explicit produces and evidence;
-5. **Assembles** a candidate result (working tree change, design artifact, or
-   package surface);
-6. **Blind-verifies** that candidate with independent critic nodes that do not
-   see implementer chain-of-thought or self-justifying narrative;
-7. **Gates** progress on critic facts and deterministic checks that compare the
-   candidate to the **confirmed** references and acceptance criteria;
-8. **Loops** only when the quorum fails, with a synthesis brief that carries
-   fixable defects, not free-form chat.
+3. **Locks rules and limits** (scope, acceptance, budgets) as durable inputs
+   that every piece must respect;
+4. **Decomposes** the goal into connected specialised pieces (for example API,
+   data model, UI, tests, docs), not one monolithic task;
+5. **Implements** each piece with a specialist, then runs a **piece-level
+   gauntlet** (user-perspective check, flaw critic, reference reviewer, piece
+   gate) before the piece is kept;
+6. **Assembles** all accepted pieces into one complete result;
+7. **Tests** the complete result with deterministic checks;
+8. **Runs a whole-result gauntlet** (flaw critic, reference reviewer, whole
+   gate) on the assembled product;
+9. **Stops with proof** on pass, or routes failure to the offending piece, a
+   plan rework, or an honest budget stop — never a silent success.
+
+### 2.3 Mapping from the public gauntlet-loop diagram
+
+The example diagram is stored at `docs/gauntlet-loop-example.png`. Map its
+plain labels to Hypagraph concepts as follows.
+
+| Diagram label | Hypagraph role |
+| --- | --- |
+| What are we trying to make | Goal / objective fact |
+| Real examples that set the bar | Seed references + discovery candidates |
+| Figure out what great actually looks like | Reference discovery + quality-bar brief |
+| Rules and limits we must respect | Scope, acceptance, budgets, policy facts |
+| (User confirms the bar) | Interaction: confirm references (Hypagraph addition) |
+| Break the job into connected pieces | Planner / specialisation decomposition |
+| Give each piece to a specialist | Specialised implementer nodes (or child goals) |
+| Build or improve that piece | Implementer attempt inside a piece loop |
+| See it the way the user will | User-perspective review task (blind to implementer rationale) |
+| Have a separate critic find the flaws | Flaw-critic model-executor branch |
+| Have another reviewer compare it with the examples | Reference-reviewer model-executor branch |
+| Is this piece truly good enough? | Piece gate / piece quorum on typed facts |
+| Explain what falls short and try again | Synthesis brief + piece loop feedback edge |
+| Keep the piece and save the evidence | Persist piece evidence; mark piece accepted |
+| Put all the accepted pieces together | Assembler |
+| Test the complete result | Deterministic checks (test, typecheck, scope) |
+| Separate critic / reference reviewer on the whole | Whole-result critic region |
+| Does the complete result truly hold up? | Whole gate / whole quorum |
+| Finished with proof | Goal complete with evidence |
+| One piece failed / find the piece or connection | Route back to piece loop or connection fix |
+| The overall plan failed | Route back to re-plan specialisations (bounded) |
+| Time or budget ran out | Budget / patience stop with explicit report |
 
 ## 3. Reference discovery and user confirmation
 
@@ -163,29 +202,76 @@ not run. The goal does not pretend to have a bar.
 6. External URL fetch, if any, is an effect or bounded check with clear evidence.
    Lost knowledge follows M6.3 rules. Confirmation still requires the user.
 
-## 4. Blind verification
+## 4. Two-level gauntlet loops
+
+The public diagram is **not** a single whole-product review after one build. It
+has two closed loops.
+
+### 4.1 Piece-level loop (per specialist piece)
+
+For each connected piece:
+
+1. Build or improve that piece (specialist implementer).
+2. See it the way the user will (user-perspective review).
+3. Have a separate flaw critic find defects.
+4. Have a separate reference reviewer compare the piece to the confirmed examples.
+5. Gate: is this piece truly good enough?
+   - **No** → explain what falls short and try again (feedback to the same piece).
+   - **Yes** → keep the piece and save the evidence.
+
+A piece does not enter the assemble step until its piece gate passes.
+
+### 4.2 Whole-result loop (after assemble)
+
+After all accepted pieces are kept:
+
+1. Put all accepted pieces together (assembler).
+2. Test the complete result (deterministic checks).
+3. Have a separate flaw critic look at the whole.
+4. Have a separate reference reviewer compare the whole to the confirmed examples.
+5. Gate: does the complete result truly hold up?
+   - **Yes** → finished with proof.
+   - **One piece failed** → find the piece or connection that failed; return to
+     that piece loop (or a connection-fix task).
+   - **Overall plan failed** → return to re-plan specialisations (bounded).
+   - **Time or budget ran out** → stop honestly and report why.
+
+### 4.3 Dual critic roles (both levels)
+
+At piece level and whole level, keep at least two **distinct** critic roles:
+
+| Role | Job |
+| --- | --- |
+| Flaw critic | Find defects, risks, and missing work without implementer rationale |
+| Reference reviewer | Compare the candidate to the confirmed best-in-class / equivalent-code set |
+
+Roles must not share drafts before they publish facts. Reduction of their facts
+is deterministic (aggregate / gate). Optional extra critics can widen the
+quorum; the dual-role split is the minimum product shape from the diagram.
+
+## 5. Blind verification
 
 Blind means:
 
-1. A critic node receives the **candidate work product** and the **confirmed
-   reference set**.
+1. A critic node receives the **candidate work product** (piece or whole) and
+   the **confirmed reference set**.
 2. A critic node does not receive implementer rationales, prompt transcripts, or
    “why this is correct” narrative from the implementer lane.
-3. Critics run as independent branches. They do not see each other’s drafts
-   before they publish review facts.
-4. The aggregate quorum reduces critic facts deterministically. The reduction
+3. Flaw critic and reference reviewer run as independent branches. They do not
+   see each other’s drafts before they publish review facts.
+4. The aggregate or gate reduces critic facts deterministically. The reduction
    spends no model turn.
 5. A synthesis node may collate defects for the next implementer attempt. The
-   synthesis fact does not route the loop. The quorum fact routes the loop.
-   See `docs/deterministic-orchestration-plan.md` section 3.
+   synthesis fact does not route the loop. The quorum or gate fact routes the
+   loop. See `docs/deterministic-orchestration-plan.md` section 3.
 
 Blind verification is the product difference from “ask another model to review
 the same chat”. The graph enforces separation of roles and evidence.
 
 Blind does **not** mean the user is blind to references. The user confirms the
-bar before critics run.
+bar before piece work starts.
 
-## 5. Reference-grade gate
+## 6. Reference-grade gate
 
 Critics do not only score style. They gate against **real work** using the
 confirmed set:
@@ -194,130 +280,164 @@ confirmed set:
 | --- | --- |
 | Confirmed references | Best-in-class examples and equivalent code the user accepted |
 | Acceptance criteria | Typed or command-backed checks the candidate must satisfy |
+| Rules and limits | Scope, budgets, and policy the piece and whole must respect |
 | Deterministic checks | Compilers, tests, linters, scope, and contract checks already in Hypagraph |
 
 A critic fact family must distinguish at least:
 
+- `gauntlet.user_perspective_ok` — piece is acceptable from the user view;
+- `gauntlet.flaws_clear` — flaw critic found no blocking defect (or inverted risk);
 - `gauntlet.structure_match` — candidate structure is comparable to references;
-- `gauntlet.quality_bar` — quality is at or above the reference bar for the stated goal;
-- `gauntlet.regression_risk` — critic flags a real defect (boolean inverted for quorum);
-- `gauntlet.ready` — critic would accept the candidate for the goal.
+- `gauntlet.quality_bar` — quality is at or above the reference bar for the goal;
+- `gauntlet.ready` — critic would accept this piece or whole for the goal.
 
 Exact fact names can change at authoring time. The recipe must keep them typed
 and branch-scoped. Free-text prose is feedback for synthesis only. Free-text
 prose must not select a route.
 
-## 6. Graph topology (conceptual)
+## 7. Graph topology (conceptual)
 
-Fixed recipe shape. Counts can be recipe defaults. Width of implementer
-specialisations can be fixed after a planner step, or fixed small (for example
-three specialisations) until M8.1 derived fan-out exists.
+Fixed recipe shape. Piece count can be fixed after the planner step, or fixed
+small until M8.1 derived fan-out exists. Each piece has its own bounded loop.
 
 ```
 start
-  → discover-references            // model task + optional deterministic search
-  → confirm-references             // interaction: user approves / edits / rejects
-       reject+rediscover → discover-references (bounded)
-       abort → stop
-       confirm → continue
-  → plan-specialisations           // model task or interaction-approved plan
-  → [implementer-A, implementer-B, …]
-  → assemble-candidate
-  → deterministic-checks
-  → [critic-1 … critic-N]          // blind; confirmed references only
-  → critic-quorum
-  → (optional) critic-synthesis
-  → gate on quorum.ready
-       pass → (optional) human-gate → complete
-       fail → loop back to implementers with synthesis brief
+  → discover-references
+  → confirm-references                 // interaction (mandatory)
+       rediscover (bounded) | abort | confirm
+  → lock-rules-and-limits              // acceptance, scope, budgets
+  → plan-specialisations               // break into connected pieces
+       ← overall plan failed (bounded re-plan)
+  → for each piece (specialist region / child goal):
+       loop:
+         build-or-improve-piece
+         user-perspective-review       // blind
+         flaw-critic                   // blind
+         reference-reviewer            // blind; confirmed examples only
+         piece-gate
+           no  → synthesis-brief → build-or-improve-piece
+           yes → keep-piece-and-evidence
+  → assemble-accepted-pieces
+  → test-complete-result               // deterministic checks
+  → whole-flaw-critic                  // blind
+  → whole-reference-reviewer           // blind
+  → whole-gate
+       pass            → finished-with-proof (optional human ship gate)
+       one piece failed → localise piece/connection → piece loop
+       plan failed     → plan-specialisations (bounded)
+       budget exhausted → stop-honestly-and-report
 ```
 
 Rules that keep this Hypagraph-native:
 
-1. Discovery, confirmation, implementers, and critics are **nodes**, not script
-   steps.
-2. Confirmation is an **interaction** node. Independent work must not starve
-   while it waits (M6.1). In The Gauntlet, implementers and critics depend on
-   confirmation by design, so they stay blocked until the user answers.
-3. Critic fan-out is a **fixed-width region** until M8.1. Default N in the recipe.
-4. Quorum is an **aggregate** node. Counting is deterministic.
-5. Synthesis is a **model leaf**. It does not decide pass or fail.
-6. Deterministic checks stay on the check / code lanes. They do not consume
-   model turns.
-7. Final human approval, if any, is a separate interaction after a pass.
+1. Every step above is a **node** or a fixed region of nodes, not a script step.
+2. Reference confirmation is an **interaction** node. Piece work depends on it.
+3. Piece loops are **bounded iteration regions** with evaluation budgets.
+4. Flaw critic and reference reviewer are independent **model-executor** nodes
+   (M7). A code node is not enough for semantic critique.
+5. Piece gate and whole gate read **typed facts** only. Synthesis does not route.
+6. Assemble waits until each piece is accepted. Partial assemble is not success.
+7. Deterministic whole tests fail closed without a model turn.
+8. Budget stop is an explicit terminal path with a report. It is not a pass.
+9. Final human ship gate, if any, runs only after whole-gate pass.
 
-## 7. Role contracts
+## 8. Role contracts
 
-### 7.1 Reference discoverer
+### 8.1 Reference discoverer
 
 - Input: goal, scope, seed references, reference hints.
 - Output: structured candidate reference list with locators and reasons.
 - Must not mark candidates as confirmed.
 - Must not start product implementation.
 
-### 7.2 Reference confirmation (interaction)
+### 8.2 Reference confirmation (interaction)
 
 - Input: candidate list (presentation report or structured dialog content).
 - Output: typed confirmation facts and the durable confirmed set.
 - User is the only authority that promotes candidates to the bar.
 - Restore re-presents when the answer is not yet stored (M6.1).
 
-### 7.3 Planner
+### 8.3 Rules lock
 
-- Input: user goal, scope, **confirmed** references.
-- Output: specialisation list with titles, scopes, and acceptance per implementer.
+- Input: acceptance, scope, budgets, policy.
+- Output: durable rules facts every piece and whole gate can read.
+- Does not invent references.
+
+### 8.4 Planner
+
+- Input: user goal, scope, **confirmed** references, rules.
+- Output: connected specialisation list with titles, scopes, and acceptance per
+  piece.
 - May require a human interaction when the plan is high risk.
+- Re-plan is a separate bounded entry from whole-gate “plan failed”.
 
-### 7.4 Specialised implementer
+### 8.5 Specialised implementer
 
-- Input: specialisation contract, repository context, confirmed references as
-  quality bar, prior failure brief if any.
-- Output: scoped changes and declared evidence.
-- Must not self-certify completion for the whole goal.
+- Input: piece contract, repository context, confirmed references as quality
+  bar, prior piece failure brief if any.
+- Output: scoped changes and declared evidence for **that piece only**.
+- Must not self-certify the piece or the whole goal.
 - Must not write critic facts.
 - Must not invent a private reference set that critics never saw confirmed.
 
-### 7.5 Assembler
+### 8.6 User-perspective reviewer
 
-- Input: implementer outputs.
-- Output: one candidate artifact set for critics and checks.
-- Can be a task, a code node, or a deterministic merge check depending on medium.
+- Input: piece candidate, user-facing acceptance, confirmed references as needed.
+- Output: typed user-perspective facts and optional defect notes for synthesis.
+- Blind to implementer rationale.
+- Distinct from the flaw critic and the reference reviewer.
 
-### 7.6 Critic
+### 8.7 Flaw critic
 
-- Input: candidate, **confirmed** references, acceptance.
-- No implementer transcript.
-- No unconfirmed discovery candidates.
-- Output: only the declared critic fact set and optional structured defect list
-  for synthesis.
-- Runs under the M7 executor (semantic judgement). A code node is not enough.
+- Input: piece or whole candidate; rules and acceptance; no implementer transcript.
+- Output: flaw / risk facts and structured defects for synthesis.
+- Does not alone decide pass. The gate or quorum decides.
 
-### 7.7 Quorum aggregate
+### 8.8 Reference reviewer
 
-- Strategy: `quorum` (or `ranked` if the recipe uses scored quality).
-- Publishes the only decision fact the gate or loop may read.
+- Input: piece or whole candidate; **confirmed** references only.
+- Output: structure and quality-bar facts against the examples.
+- Does not alone decide pass. The gate or quorum decides.
 
-## 8. Mandatory rules
+### 8.9 Assembler
+
+- Input: all accepted piece outputs and their evidence.
+- Output: one complete candidate for whole tests and whole critics.
+- Must not accept a piece that failed its piece gate.
+
+### 8.10 Piece gate and whole gate
+
+- Input: typed facts from the dual critics (and user-perspective at piece level),
+  plus deterministic check facts at whole level when present.
+- Output: pass / fail decision facts only.
+- On fail, publish enough structure for synthesis or localisation (which piece,
+  which connection) without free-text routing.
+
+## 9. Mandatory rules
 
 1. The recipe is named and versioned. A run always starts a Hypagoal.
 2. The model does not invent completion for the goal. Only graph terminal state
-   completes the goal.
+   completes the goal. “Finished with proof” requires whole-gate pass and green
+   deterministic tests.
 3. The graph discovers candidate references when seeds are missing or incomplete.
-4. The user confirms the reference set before implementers and critics use it.
+4. The user confirms the reference set before piece implementers and critics run.
 5. Unconfirmed candidates never reach critic context as the bar.
-6. Critic context is sealed: no implementer rationale channel.
-7. Confirmed references are durable. Replay uses the same confirmed set.
-8. Free-text critic prose does not route. Typed facts route.
-9. Deterministic checks run before or beside critics and can fail closed without
-   a model turn.
-10. A failed quorum does not re-plan the whole goal by default. It returns a
-    synthesis brief to implementers inside the bounded loop.
-11. Evaluation budgets and attempt limits apply. Discovery rediscover and
-    implementer loops both stop.
-12. When M7 child Hypagoals exist, a heavy specialisation can be a child goal.
-    The family controller remains the only dispatch authority.
+6. Every piece passes a piece-level gauntlet before assemble.
+7. The assembled whole passes a whole-level gauntlet before complete.
+8. Flaw critic and reference reviewer stay separate roles at both levels.
+9. Critic context is sealed: no implementer rationale channel.
+10. Confirmed references are durable. Replay uses the same confirmed set.
+11. Free-text critic prose does not route. Typed facts route.
+12. Deterministic checks fail closed without a model turn.
+13. Piece fail defaults to the same piece loop with a synthesis brief.
+14. Whole fail may localise to a piece, re-plan, or stop on budget — never silent
+    success.
+15. Evaluation budgets and attempt limits apply to discovery rediscover, piece
+    loops, re-plan, and whole retries. Exhaustion stops honestly with a report.
+16. When M7 child Hypagoals exist, a heavy piece can be a child goal. The family
+    controller remains the only dispatch authority.
 
-## 9. Launch surface (future product)
+## 10. Launch surface (future product)
 
 Examples only. Exact command names wait for a recipe-library milestone.
 
@@ -335,68 +455,79 @@ Discovery should match the Grok Build idea of built-ins plus project recipes:
 See gap “Named graph recipe library” in
 `docs/research/grok-build-workflows-comparison.md`.
 
-## 10. Dependency map
+## 11. Dependency map
 
 | Capability | Status | Gauntlet need |
 | --- | --- | --- |
 | Task / check / gate | Shipped | Core structure |
+| Bounded iteration regions | Shipped (M4) | Piece loops and budgets |
 | Interaction (confirm references) | Shipped (M6.1) | Mandatory reference confirmation |
 | Interaction (optional ship gate) | Shipped (M6.1) | Optional final human gate |
-| Code / deterministic checks | Shipped (M6.2) | Locator checks and hard fail-closed bar |
+| Code / deterministic checks | Shipped (M6.2) | Locator checks and whole-result tests |
 | Effect / external publish | Shipped (M6.3) | Optional external reference fetch; optional PR after pass |
-| Branch-scoped facts + aggregate quorum | Planned (orchestration slices 1–3) | Critic reduction |
-| Model-executor nodes | Planned (M7) | Discovery, implementers, critics |
-| Synthesis node | Planned (orchestration) | Failure brief to loop |
+| Branch-scoped facts + aggregate quorum | Planned (orchestration slices 1–3) | Dual-critic reduction at piece and whole |
+| Model-executor nodes | Planned (M7) | Discovery, implementers, all critic roles |
+| Synthesis node | Planned (orchestration) | Piece failure brief; localisation brief |
 | Named recipe library + launch args | Planned (product gap) | Built-in install and start |
-| Concurrent critic branches | Planned (M8) | Parallel critics; sequential is enough for first dogfood |
-| Derived fan-out of specialisations | Planned (M8.1) | Dynamic implementer width |
+| Concurrent piece or critic branches | Planned (M8) | Parallel pieces/critics; sequential first dogfood |
+| Derived fan-out of specialisations | Planned (M8.1) | Dynamic piece width |
 
-**Earliest useful dogfood:** orchestration slices 1–3 + M7 model-executor + this
-recipe with sequential critics, fixed specialisation width, discovery task, and
-reference confirmation interaction.
+**Earliest useful dogfood:** orchestration slices 1–3 + M7 model-executor + one
+fixed piece count, piece loop with dual critics, whole loop with dual critics,
+discovery + reference confirmation.
 
-**Full product shape:** recipe library launch + parallel critics + optional
-child Hypagoals per specialisation.
+**Full product shape:** recipe library launch + parallel pieces + parallel
+critics + optional child Hypagoals per piece.
 
-## 11. Difference from a plain review quorum
+## 12. Difference from a plain review quorum
 
 | Plain review quorum | The Gauntlet |
 | --- | --- |
-| One worker product | Specialised implementer decomposition |
+| One worker product | Specialised pieces with per-piece gates |
+| One review stage | Piece gauntlet **and** whole gauntlet |
+| One reviewer style | Flaw critic **and** reference reviewer |
 | Reviewers may share full context | Blind critics; sealed implementer narrative |
 | Review against abstract quality | Confirmed reference and equivalent-code bar |
 | User must bring examples alone | Graph discovers candidates; user confirms |
-| Optional checks | Deterministic checks are part of the gate |
+| Optional checks | Deterministic whole tests are part of the gate |
+| Vague failure | Localise piece, re-plan, or honest budget stop |
 | Ad-hoc graph | Named built-in recipe with stable topology |
 
-## 12. Out of scope for this note
+## 13. Out of scope for this note
 
 - Implementation of the recipe library launcher;
 - Choice of default model per role;
 - Full web-scale search product;
 - Live marketing copy;
 - Replacing M7 family design — The Gauntlet consumes it;
-- Claiming the recipe exists in the package before it is authored and tested.
+- Claiming the recipe exists in the package before it is authored and tested;
+- Treating the public diagram as a normative Hypagraph schema — it is the
+  product pattern source; this note is the Hypagraph encoding.
 
-## 13. Acceptance sketch (when built)
+## 14. Acceptance sketch (when built)
 
 1. A user starts The Gauntlet with a goal. Seed references may be empty.
 2. The run discovers candidate references and presents them for confirmation.
-3. Implementers and critics do not run until `gauntlet.references_confirmed`.
-4. Critics receive only the confirmed reference set, never unconfirmed candidates
-   and never implementer rationale artifacts.
-5. Quorum reduction is deterministic and uses no model turn.
-6. A failed quorum returns a synthesis brief and retries inside budget.
-7. A pass requires quorum ready and deterministic checks green.
-8. Replay reproduces the same confirmed references, node set, facts, and
-   terminal decision without re-running completed external effects.
+3. Piece implementers and piece critics do not run until references are confirmed.
+4. Each piece passes user-perspective, flaw critic, and reference reviewer facts
+   before assemble.
+5. Critics never receive unconfirmed candidates or implementer rationale.
+6. Whole-gate pass requires dual whole critics, green deterministic tests, and
+   typed ready facts.
+7. Piece fail returns a synthesis brief to the same piece inside budget.
+8. Whole fail can localise a piece, re-plan, or stop on budget with a report.
+9. “Finished with proof” is the only success terminal. Budget stop is not success.
+10. Replay reproduces the confirmed references, piece decisions, whole decision,
+    and terminal state without re-running completed external effects.
 
-## 14. Next documentation steps
+## 15. Next documentation steps
 
 1. Keep this note linked from the session handoff and the Grok comparison.
 2. When recipe-library work starts, add `gauntlet` as the first built-in recipe
-   id and pin default `critic_count`, discovery budget, and specialisation policy.
-3. When aggregate ships, author a fixture graph that matches section 6 and add a
+   id and pin default piece count, discovery budget, and piece/whole loop budgets.
+3. When aggregate ships, author a fixture graph that matches section 7 and add a
    dogfood doc under `docs/`.
 4. Specify the interaction presentation kind for the confirmation step (report
    list plus closed approve / edit / rediscover / abort outcomes).
+5. Keep `docs/gauntlet-loop-example.png` next to this note as the plain-language
+   pattern reference.
