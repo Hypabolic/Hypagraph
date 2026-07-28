@@ -6,6 +6,8 @@
 - Current implementation baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
 - Current published release: `v0.7`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
+- Deterministic orchestration plan, which spans a new aggregate node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
+- Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -222,7 +224,7 @@ All repository text must follow `AGENTS.md`.
 | M6.3 | v0.10 | External effects and reconciliation | Planned |
 | M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
 | M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
-| M8.1 | v0.13 | Dynamic fan-out regions | Planned |
+| M8.1 | v0.13 | Dynamic fan-out regions | Planned; use case confirmed in section 18 |
 | M9 | v0.14 | ACP and named direct agent adapters | Planned |
 | Exit | v1.0 | Hardened agent-independent execution kernel | Planned |
 
@@ -983,6 +985,8 @@ Hypagraph can release version 1.0 when:
 
 1. Start M6.1 interaction and approval nodes. `docs/m6-1-interaction-node-plan.md` gives the plan.
 2. Close stale tracking issues for completed milestones when their evidence is accepted.
-3. Treat a reviewer or branch count as fixed at definition time, unless a use case explicitly requires the runtime to derive branches from a collection. Under that default M8.1 is not on the critical path of reference workflow B. Confirm the intended case before you plan M8.1.
-4. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
-5. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.
+3. Treat a reviewer count as fixed at definition time. A fixed-width review quorum needs branch-scoped facts and the aggregate node only, so it does not need M8.1.
+4. M8.1 now has a confirmed use case. A review across the changed files of a diff derives its branch count at run time. M8.1 is therefore on the critical path, and `docs/deterministic-orchestration-plan.md` gives its position in the slice sequence.
+5. Add the aggregate node and branch-scoped facts before M7. Both are domain work, they need no executor, and they make a fixed-width review quorum available early.
+6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
+7. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.

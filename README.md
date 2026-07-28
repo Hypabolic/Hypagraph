@@ -383,6 +383,8 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
 - [Product and technical specification](docs/product-spec.md)
 - [Execution roadmap](docs/execution-roadmap.md)
+- [Deterministic orchestration plan](docs/deterministic-orchestration-plan.md)
+- [Trigger and command surface plan](docs/trigger-and-command-surface-plan.md)
 - [Automatic graph authoring model](docs/automatic-graph-authoring.md)
 - [Trusted evaluation contracts](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal vertical slices](docs/hypagoal-vertical-slice-plan.md)
@@ -397,3 +399,4 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 - [M6B dogfood record](docs/m6b-dogfood.md)
 - [v0.7 release notes](docs/v0.7-release-notes.md)
 - [M6.1 interaction and approval nodes plan](docs/m6-1-interaction-node-plan.md)
+- [Comparison with script orchestration products](docs/research/pi-dynamic-workflows-comparison.md)
