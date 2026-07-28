@@ -1,4 +1,10 @@
-import type { Diagnostic } from "./model.js";
+import type {
+  Diagnostic,
+  GoalBlockerIdentity,
+  GoalBlockerKind,
+  GoalContinuationAction,
+  GoalWorkContinuationActionKind,
+} from "./model.js";
 
 /**
  * Schema version for goal-family runtime and persisted family records.
@@ -8,6 +14,27 @@ export const GOAL_FAMILY_SCHEMA_VERSION = 1 as const;
 
 /** Event payload version for family-level events. */
 export const GOAL_FAMILY_EVENT_VERSION = 1 as const;
+
+const GOAL_WORK_ACTION_KINDS = new Set<GoalWorkContinuationActionKind>([
+  "continue-active-task",
+  "start-ready-task",
+  "run-ready-check",
+  "run-ready-code",
+  "run-ready-effect",
+  "reconcile-indeterminate-effect",
+  "evaluate-ready-gate",
+  "request-ready-interaction",
+]);
+
+const GOAL_BLOCKER_KINDS = new Set<GoalBlockerKind>([
+  "blocked-node",
+  "blocked-loop",
+  "loop-dependants",
+  "legacy-definition",
+  "definition-no-path",
+  "external-dependency",
+  "terminal-policy",
+]);
 
 export interface GoalParentBinding {
   parentGoalId: string;
@@ -24,19 +51,95 @@ export interface GoalFamilyMember {
   childGoalIds: string[];
 }
 
+/**
+ * Identity for one family-scheduled action.
+ * The family scheduler records this identity on selection so replay does not recompute the choice.
+ * attemptId is deferred until executor attempt identity lands in a later slice.
+ */
+export interface ScheduledActionIdentity {
+  familyId: string;
+  goalId: string;
+  workflowId: string;
+  revision: number;
+  nodeId?: string;
+  loopId?: string;
+}
+
+/**
+ * Selected family action with the continuation payload and selection reason.
+ * Timestamps and IDs are pure inputs from the selection event.
+ */
+export interface FamilySelectedAction extends ScheduledActionIdentity {
+  action: GoalContinuationAction;
+  reason: string;
+  selectedSequence: number;
+  selectedSnapshotHash: string;
+  memberContinuationOrdinal: number;
+}
+
+export type FamilyDispatchPendingStatus = "selected" | "dispatched";
+export type FamilyDispatchTerminalStatus = "completed" | "failed" | "interrupted";
+
+/**
+ * In-flight family-level selection or dispatch.
+ * Sequential policy permits at most one pending family dispatch.
+ */
+export interface FamilyPendingDispatch {
+  dispatchId: string;
+  selection: FamilySelectedAction;
+  status: FamilyDispatchPendingStatus;
+  selectedAt: string;
+  dispatchedAt?: string;
+  /** Family event sequence when this selection was recorded. */
+  schedulerOrdinal: number;
+}
+
+/**
+ * Terminal outcome of one family-level dispatch.
+ * dispatchedAt is absent when the action is interrupted while still selected.
+ */
+export interface FamilyDispatchOutcome {
+  dispatchId: string;
+  selection: FamilySelectedAction;
+  status: FamilyDispatchTerminalStatus;
+  selectedAt: string;
+  dispatchedAt?: string;
+  completedAt: string;
+  reason?: string;
+  schedulerOrdinal: number;
+}
+
 export interface GoalFamilyRuntime {
   schemaVersion: typeof GOAL_FAMILY_SCHEMA_VERSION;
   familyId: string;
   rootGoalId: string;
   members: Record<string, GoalFamilyMember>;
+  /**
+   * Contiguous family event sequence.
+   * Membership events and family scheduler lifecycle events share this ordinal.
+   */
   schedulerOrdinal: number;
   createdAt: string;
   updatedAt: string;
+  /** At most one pending family-level selection or dispatch. */
+  pendingDispatch?: FamilyPendingDispatch;
+  /**
+   * Most recent terminal family dispatch outcome.
+   * Dispatch ID uniqueness is bounded: a new selection rejects a dispatchId that
+   * equals pendingDispatch.dispatchId (already exclusive) or lastDispatchOutcome.dispatchId.
+   * The family does not retain a full historical set of dispatch IDs on the snapshot.
+   */
+  lastDispatchOutcome?: FamilyDispatchOutcome;
 }
 
 export type GoalFamilyEventType =
   | "hypagraph.family.created"
-  | "hypagraph.family.member-added";
+  | "hypagraph.family.member-added"
+  | "hypagraph.family.action-selected"
+  | "hypagraph.family.action-dispatched"
+  | "hypagraph.family.action-completed"
+  | "hypagraph.family.action-failed"
+  | "hypagraph.family.action-interrupted";
 
 interface GoalFamilyEventBase {
   eventId: string;
@@ -63,6 +166,26 @@ export type GoalFamilyEvent =
       workflowId: string;
       parent: GoalParentBinding;
       depth: number;
+    };
+  })
+  | (GoalFamilyEventBase & {
+    type: "hypagraph.family.action-selected";
+    data: {
+      dispatchId: string;
+      selection: FamilySelectedAction;
+    };
+  })
+  | (GoalFamilyEventBase & {
+    type: "hypagraph.family.action-dispatched";
+    data: {
+      dispatchId: string;
+    };
+  })
+  | (GoalFamilyEventBase & {
+    type: "hypagraph.family.action-completed" | "hypagraph.family.action-failed" | "hypagraph.family.action-interrupted";
+    data: {
+      dispatchId: string;
+      reason?: string;
     };
   });
 
@@ -110,20 +233,125 @@ export class GoalFamilyRestoreError extends Error {
   }
 }
 
-const reject = (code: string, message: string, location?: string): GoalFamilyResult => ({
-  ok: false,
-  diagnostics: [{ code, message, ...(location ? { location } : {}) }],
-});
+/** Build a failed GoalFamilyResult. Shared by membership and scheduler command helpers. */
+export function rejectGoalFamily(code: string, message: string, location?: string): GoalFamilyResult {
+  return {
+    ok: false,
+    diagnostics: [{ code, message, ...(location ? { location } : {}) }],
+  };
+}
 
-const requireNonEmpty = (value: string, name: string): string | undefined => {
+/** Return an error message when the value is empty. Shared by command helpers. */
+export function requireGoalFamilyNonEmpty(value: string, name: string): string | undefined {
   if (typeof value !== "string" || !value.trim()) return `The ${name} must be a non-empty string.`;
   return undefined;
-};
+}
 
-const requireTimestamp = (value: string): string | undefined => {
+/** Return an error message when the timestamp is not a valid date-time string. */
+export function requireGoalFamilyTimestamp(value: string): string | undefined {
   if (!Number.isFinite(Date.parse(value))) return "The timestamp must be a valid date-time string.";
   return undefined;
-};
+}
+
+const reject = rejectGoalFamily;
+const requireNonEmpty = requireGoalFamilyNonEmpty;
+const requireTimestamp = requireGoalFamilyTimestamp;
+
+/**
+ * Parse and validate a goal continuation action payload.
+ * Rejects unknown kinds, missing nodeId on work actions, and incomplete revision blockers.
+ */
+export function parseGoalContinuationActionPayload(
+  value: unknown,
+): { ok: true; action: GoalContinuationAction } | { ok: false; message: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, message: "The continuation action must be a plain object." };
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.kind !== "string" || !raw.kind.trim()) {
+    return { ok: false, message: "The continuation action must include a non-empty kind." };
+  }
+
+  if (raw.kind === "request-revision") {
+    if (!raw.blocker || typeof raw.blocker !== "object" || Array.isArray(raw.blocker)) {
+      return { ok: false, message: "A request-revision action requires a blocker object." };
+    }
+    const blockerRaw = raw.blocker as Record<string, unknown>;
+    if (typeof blockerRaw.kind !== "string" || !GOAL_BLOCKER_KINDS.has(blockerRaw.kind as GoalBlockerKind)) {
+      return { ok: false, message: "A request-revision action requires a known blocker kind." };
+    }
+    if (typeof blockerRaw.id !== "string" || !blockerRaw.id.trim()) {
+      return { ok: false, message: "A request-revision action requires a non-empty blocker id." };
+    }
+    if (typeof blockerRaw.reason !== "string" || !blockerRaw.reason.trim()) {
+      return { ok: false, message: "A request-revision action requires a non-empty blocker reason." };
+    }
+    if (!Number.isSafeInteger(blockerRaw.sourceRevision) || (blockerRaw.sourceRevision as number) < 0) {
+      return { ok: false, message: "A request-revision action requires a non-negative safe integer sourceRevision." };
+    }
+    if (!Number.isSafeInteger(blockerRaw.sourceSequence) || (blockerRaw.sourceSequence as number) < 0) {
+      return { ok: false, message: "A request-revision action requires a non-negative safe integer sourceSequence." };
+    }
+    if (typeof blockerRaw.sourceSnapshotHash !== "string" || !blockerRaw.sourceSnapshotHash.trim()) {
+      return { ok: false, message: "A request-revision action requires a non-empty sourceSnapshotHash." };
+    }
+    const blocker: GoalBlockerIdentity = {
+      kind: blockerRaw.kind as GoalBlockerKind,
+      id: blockerRaw.id,
+      reason: blockerRaw.reason,
+      sourceRevision: blockerRaw.sourceRevision as number,
+      sourceSequence: blockerRaw.sourceSequence as number,
+      sourceSnapshotHash: blockerRaw.sourceSnapshotHash,
+    };
+    return { ok: true, action: { kind: "request-revision", blocker } };
+  }
+
+  if (!GOAL_WORK_ACTION_KINDS.has(raw.kind as GoalWorkContinuationActionKind)) {
+    return {
+      ok: false,
+      message: `Unsupported continuation action kind '${raw.kind}'.`,
+    };
+  }
+  if (typeof raw.nodeId !== "string" || !raw.nodeId.trim()) {
+    return {
+      ok: false,
+      message: `Continuation action kind '${raw.kind}' requires a non-empty nodeId.`,
+    };
+  }
+  const action: GoalContinuationAction = {
+    kind: raw.kind as GoalWorkContinuationActionKind,
+    nodeId: raw.nodeId,
+  };
+  if (raw.loopId !== undefined) {
+    if (typeof raw.loopId !== "string" || !raw.loopId.trim()) {
+      return { ok: false, message: "A continuation action loopId must be a non-empty string when present." };
+    }
+    action.loopId = raw.loopId;
+  }
+  return { ok: true, action };
+}
+
+/**
+ * Serialize a value with sorted object keys so restore equality ignores key order.
+ */
+export function canonicalJsonStringify(value: unknown): string {
+  return JSON.stringify(canonicalizeJsonValue(value));
+}
+
+function canonicalizeJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeJsonValue);
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      next[key] = canonicalizeJsonValue(record[key]);
+    }
+    return next;
+  }
+  return value;
+}
 
 function restoreFail(code: string, message: string): never {
   throw new GoalFamilyRestoreError(code, message);
@@ -311,6 +539,7 @@ export function addFamilyMember(input: {
  * Apply one family event to a family projection.
  * The first event must create the family. Later events require an existing projection.
  * Replay and restore throw typed errors for integrity failures.
+ * Membership events and family scheduler lifecycle events share one sequence.
  */
 export function applyFamilyEvent(
   family: GoalFamilyRuntime | undefined,
@@ -363,17 +592,10 @@ export function applyFamilyEvent(
     };
   }
 
-  if (event.type !== "hypagraph.family.member-added") {
-    restoreFail(
-      "unsupported_goal_family_event_type",
-      `Unsupported goal-family event type '${String((event as { type?: unknown }).type)}'.`,
-    );
-  }
-
   if (!family) {
     restoreFail(
       "goal_family_projection_missing",
-      "A family member-added event requires an existing goal-family projection.",
+      `A family event of type '${event.type}' requires an existing goal-family projection.`,
     );
   }
   const current = family;
@@ -395,6 +617,36 @@ export function applyFamilyEvent(
     );
   }
 
+  if (event.type === "hypagraph.family.member-added") {
+    return applyMemberAddedEvent(current, event);
+  }
+
+  if (event.type === "hypagraph.family.action-selected") {
+    return applyActionSelectedEvent(current, event);
+  }
+
+  if (event.type === "hypagraph.family.action-dispatched") {
+    return applyActionDispatchedEvent(current, event);
+  }
+
+  if (
+    event.type === "hypagraph.family.action-completed"
+    || event.type === "hypagraph.family.action-failed"
+    || event.type === "hypagraph.family.action-interrupted"
+  ) {
+    return applyActionTerminalEvent(current, event);
+  }
+
+  restoreFail(
+    "unsupported_goal_family_event_type",
+    `Unsupported goal-family event type '${String((event as { type?: unknown }).type)}'.`,
+  );
+}
+
+function applyMemberAddedEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<GoalFamilyEvent, { type: "hypagraph.family.member-added" }>,
+): GoalFamilyRuntime {
   const goalId = requireIdentity(event.data.goalId, "member goal ID");
   const workflowId = requireIdentity(event.data.workflowId, "member workflow ID");
   const parentGoalId = requireIdentity(event.data.parent.parentGoalId, "parent goal ID");
@@ -471,6 +723,290 @@ export function applyFamilyEvent(
     parent.childGoalIds = [...parent.childGoalIds, goalId];
   }
 
+  return next;
+}
+
+function requireSelectedAction(value: FamilySelectedAction | undefined, location: string): FamilySelectedAction {
+  if (!value || typeof value !== "object") {
+    restoreFail("invalid_goal_family_selection", `${location} must include a selection object.`);
+  }
+  const familyId = requireIdentity(value.familyId, "selection family ID");
+  const goalId = requireIdentity(value.goalId, "selection goal ID");
+  const workflowId = requireIdentity(value.workflowId, "selection workflow ID");
+  const reason = requireIdentity(value.reason, "selection reason");
+  if (!Number.isSafeInteger(value.revision) || value.revision < 0) {
+    restoreFail("invalid_goal_family_selection", `${location} revision must be a non-negative safe integer.`);
+  }
+  if (!Number.isSafeInteger(value.selectedSequence) || value.selectedSequence < 0) {
+    restoreFail("invalid_goal_family_selection", `${location} selectedSequence must be a non-negative safe integer.`);
+  }
+  if (!Number.isSafeInteger(value.memberContinuationOrdinal) || value.memberContinuationOrdinal < 0) {
+    restoreFail(
+      "invalid_goal_family_selection",
+      `${location} memberContinuationOrdinal must be a non-negative safe integer.`,
+    );
+  }
+  requireIdentity(value.selectedSnapshotHash, "selection snapshot hash");
+  const parsedAction = parseGoalContinuationActionPayload(value.action);
+  if (!parsedAction.ok) {
+    restoreFail(
+      "invalid_goal_family_continuation_action",
+      `${location}: ${parsedAction.message}`,
+    );
+  }
+
+  const selection: FamilySelectedAction = {
+    familyId,
+    goalId,
+    workflowId,
+    revision: value.revision,
+    action: parsedAction.action,
+    reason,
+    selectedSequence: value.selectedSequence,
+    selectedSnapshotHash: value.selectedSnapshotHash,
+    memberContinuationOrdinal: value.memberContinuationOrdinal,
+  };
+
+  // Derive identity node fields from the action. Reject stored identity that disagrees.
+  if (parsedAction.action.kind === "request-revision") {
+    if (value.nodeId !== undefined) {
+      restoreFail(
+        "invalid_goal_family_selection",
+        `${location} request-revision selection must not declare nodeId.`,
+      );
+    }
+    if (value.loopId !== undefined) {
+      restoreFail(
+        "invalid_goal_family_selection",
+        `${location} request-revision selection must not declare loopId.`,
+      );
+    }
+  } else {
+    selection.nodeId = parsedAction.action.nodeId;
+    if (parsedAction.action.loopId !== undefined) {
+      selection.loopId = parsedAction.action.loopId;
+    }
+    if (value.nodeId !== undefined) {
+      if (typeof value.nodeId !== "string" || !value.nodeId.trim()) {
+        restoreFail(
+          "invalid_goal_family_selection",
+          `${location} nodeId must be a non-empty string when present.`,
+        );
+      }
+      if (value.nodeId !== parsedAction.action.nodeId) {
+        restoreFail(
+          "invalid_goal_family_selection",
+          `${location} nodeId '${value.nodeId}' does not match action nodeId '${parsedAction.action.nodeId}'.`,
+        );
+      }
+    }
+    if (value.loopId !== undefined) {
+      if (typeof value.loopId !== "string" || !value.loopId.trim()) {
+        restoreFail(
+          "invalid_goal_family_selection",
+          `${location} loopId must be a non-empty string when present.`,
+        );
+      }
+      if ((parsedAction.action.loopId ?? undefined) !== value.loopId) {
+        restoreFail(
+          "invalid_goal_family_selection",
+          `${location} loopId does not match the continuation action loopId.`,
+        );
+      }
+    }
+  }
+  return selection;
+}
+
+function applyActionSelectedEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<GoalFamilyEvent, { type: "hypagraph.family.action-selected" }>,
+): GoalFamilyRuntime {
+  if (current.pendingDispatch) {
+    restoreFail(
+      "goal_family_dispatch_pending",
+      `Goal family '${current.familyId}' still has pending dispatch '${current.pendingDispatch.dispatchId}'.`,
+    );
+  }
+
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  // Bounded reuse policy: reject only the most recent terminal dispatch ID.
+  // Pending is already exclusive. Full historical dispatch ID lists are not retained.
+  if (current.lastDispatchOutcome?.dispatchId === dispatchId) {
+    restoreFail(
+      "goal_family_dispatch_id_reused",
+      `Goal family '${current.familyId}' already used dispatch ID '${dispatchId}' `
+      + "as the last terminal dispatch outcome.",
+    );
+  }
+
+  const selection = requireSelectedAction(event.data.selection, "Family action-selected event");
+  if (selection.familyId !== current.familyId) {
+    restoreFail(
+      "goal_family_id_mismatch",
+      `Selection family '${selection.familyId}' does not match projection family '${current.familyId}'.`,
+    );
+  }
+  if (!current.members[selection.goalId]) {
+    restoreFail(
+      "goal_family_member_missing",
+      `Goal family '${current.familyId}' does not contain selected member '${selection.goalId}'.`,
+    );
+  }
+  const member = current.members[selection.goalId]!;
+  if (member.workflowId !== selection.workflowId) {
+    restoreFail(
+      "goal_family_selection_workflow_mismatch",
+      `Selected member '${selection.goalId}' belongs to workflow '${member.workflowId}', `
+      + `not '${selection.workflowId}'.`,
+    );
+  }
+
+  const next: GoalFamilyRuntime = structuredClone(current);
+  next.schedulerOrdinal = event.sequence;
+  next.updatedAt = event.timestamp;
+  next.pendingDispatch = {
+    dispatchId,
+    selection: structuredClone(selection),
+    status: "selected",
+    selectedAt: event.timestamp,
+    schedulerOrdinal: event.sequence,
+  };
+  return next;
+}
+
+function applyActionDispatchedEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<GoalFamilyEvent, { type: "hypagraph.family.action-dispatched" }>,
+): GoalFamilyRuntime {
+  const pending = current.pendingDispatch;
+  if (!pending) {
+    restoreFail(
+      "goal_family_dispatch_missing",
+      `Goal family '${current.familyId}' has no pending dispatch for action-dispatched.`,
+    );
+  }
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  if (dispatchId !== pending.dispatchId) {
+    restoreFail(
+      "goal_family_dispatch_id_mismatch",
+      `Family dispatch event targets '${dispatchId}', but pending dispatch is '${pending.dispatchId}'.`,
+    );
+  }
+  if (pending.status !== "selected") {
+    restoreFail(
+      "goal_family_dispatch_already_dispatched",
+      `Family dispatch '${dispatchId}' was already dispatched.`,
+    );
+  }
+  if (Date.parse(event.timestamp) < Date.parse(pending.selectedAt)) {
+    restoreFail(
+      "goal_family_dispatch_timestamp_order",
+      `Family dispatch '${dispatchId}' cannot be dispatched before it was selected.`,
+    );
+  }
+
+  const next: GoalFamilyRuntime = structuredClone(current);
+  next.schedulerOrdinal = event.sequence;
+  next.updatedAt = event.timestamp;
+  next.pendingDispatch = {
+    ...structuredClone(pending),
+    status: "dispatched",
+    dispatchedAt: event.timestamp,
+  };
+  return next;
+}
+
+function applyActionTerminalEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<
+    GoalFamilyEvent,
+    {
+      type:
+        | "hypagraph.family.action-completed"
+        | "hypagraph.family.action-failed"
+        | "hypagraph.family.action-interrupted";
+    }
+  >,
+): GoalFamilyRuntime {
+  const pending = current.pendingDispatch;
+  if (!pending) {
+    restoreFail(
+      "goal_family_dispatch_missing",
+      `Goal family '${current.familyId}' has no pending dispatch for '${event.type}'.`,
+    );
+  }
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  if (dispatchId !== pending.dispatchId) {
+    restoreFail(
+      "goal_family_dispatch_id_mismatch",
+      `Family dispatch event targets '${dispatchId}', but pending dispatch is '${pending.dispatchId}'.`,
+    );
+  }
+
+  const isInterrupt = event.type === "hypagraph.family.action-interrupted";
+  if (isInterrupt) {
+    if (pending.status !== "selected" && pending.status !== "dispatched") {
+      restoreFail(
+        "goal_family_dispatch_invalid_status",
+        `Family dispatch '${dispatchId}' has an invalid pending status for interrupt.`,
+      );
+    }
+    if (pending.status === "dispatched") {
+      if (!pending.dispatchedAt) {
+        restoreFail(
+          "goal_family_dispatch_not_dispatched",
+          `Family dispatch '${dispatchId}' is marked dispatched without a dispatch timestamp.`,
+        );
+      }
+      if (Date.parse(event.timestamp) < Date.parse(pending.dispatchedAt)) {
+        restoreFail(
+          "goal_family_dispatch_timestamp_order",
+          `Family dispatch '${dispatchId}' cannot complete before it was dispatched.`,
+        );
+      }
+    } else if (Date.parse(event.timestamp) < Date.parse(pending.selectedAt)) {
+      restoreFail(
+        "goal_family_dispatch_timestamp_order",
+        `Family dispatch '${dispatchId}' cannot be interrupted before it was selected.`,
+      );
+    }
+  } else {
+    if (pending.status !== "dispatched" || !pending.dispatchedAt) {
+      restoreFail(
+        "goal_family_dispatch_not_dispatched",
+        `Family dispatch '${dispatchId}' did not reach the dispatched state.`,
+      );
+    }
+    if (Date.parse(event.timestamp) < Date.parse(pending.dispatchedAt)) {
+      restoreFail(
+        "goal_family_dispatch_timestamp_order",
+        `Family dispatch '${dispatchId}' cannot complete before it was dispatched.`,
+      );
+    }
+  }
+
+  const status: FamilyDispatchTerminalStatus =
+    event.type === "hypagraph.family.action-completed"
+      ? "completed"
+      : event.type === "hypagraph.family.action-failed"
+        ? "failed"
+        : "interrupted";
+
+  const next: GoalFamilyRuntime = structuredClone(current);
+  next.schedulerOrdinal = event.sequence;
+  next.updatedAt = event.timestamp;
+  next.lastDispatchOutcome = {
+    dispatchId,
+    selection: structuredClone(pending.selection),
+    status,
+    selectedAt: pending.selectedAt,
+    completedAt: event.timestamp,
+    schedulerOrdinal: pending.schedulerOrdinal,
+    ...(pending.dispatchedAt === undefined ? {} : { dispatchedAt: pending.dispatchedAt }),
+    ...(event.data.reason === undefined ? {} : { reason: event.data.reason }),
+  };
+  delete next.pendingDispatch;
   return next;
 }
 
@@ -599,12 +1135,167 @@ export function validateFamilyMembershipGraph(family: GoalFamilyRuntime): void {
       }
     }
   }
+
+  validateFamilySchedulerState(family);
+}
+
+/**
+ * Validate pending and terminal family scheduler state on a snapshot.
+ * Mirrors root validateActionDispatchRuntime rules for ordinal, status, and timestamps.
+ * Dispatch ID uniqueness is not a full historical set: only pending and last outcome matter.
+ */
+export function validateFamilySchedulerState(family: GoalFamilyRuntime): void {
+  const pending = family.pendingDispatch;
+  if (pending) {
+    if (typeof pending.dispatchId !== "string" || !pending.dispatchId.trim()) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Goal family '${family.familyId}' pending dispatch requires a non-empty dispatch ID.`,
+      );
+    }
+    if (!Number.isSafeInteger(pending.schedulerOrdinal) || pending.schedulerOrdinal < 1) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Pending dispatch '${pending.dispatchId}' has an invalid scheduler ordinal.`,
+      );
+    }
+    // pending.schedulerOrdinal is the selection event sequence.
+    // Later membership or lifecycle events may advance family.schedulerOrdinal.
+    if (pending.schedulerOrdinal > family.schedulerOrdinal) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Pending dispatch '${pending.dispatchId}' scheduler ordinal ${pending.schedulerOrdinal} `
+        + `is ahead of family sequence ${family.schedulerOrdinal}.`,
+      );
+    }
+    if (!Number.isFinite(Date.parse(pending.selectedAt))) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Pending dispatch '${pending.dispatchId}' has an invalid selectedAt timestamp.`,
+      );
+    }
+    requireSelectedAction(pending.selection, "Pending family dispatch selection");
+    if (!family.members[pending.selection.goalId]) {
+      restoreFail(
+        "goal_family_member_missing",
+        `Pending dispatch selects missing member '${pending.selection.goalId}'.`,
+      );
+    }
+    if (pending.status === "dispatched") {
+      if (!pending.dispatchedAt || !Number.isFinite(Date.parse(pending.dispatchedAt))) {
+        restoreFail(
+          "invalid_goal_family_scheduler_state",
+          `Dispatched pending '${pending.dispatchId}' requires a valid dispatchedAt timestamp.`,
+        );
+      }
+      if (Date.parse(pending.dispatchedAt) < Date.parse(pending.selectedAt)) {
+        restoreFail(
+          "goal_family_dispatch_timestamp_order",
+          `Pending dispatch '${pending.dispatchId}' cannot be dispatched before it was selected.`,
+        );
+      }
+    } else if (pending.status === "selected") {
+      if (pending.dispatchedAt !== undefined) {
+        restoreFail(
+          "invalid_goal_family_scheduler_state",
+          `Selected pending '${pending.dispatchId}' must not include dispatchedAt.`,
+        );
+      }
+    } else {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Pending dispatch '${pending.dispatchId}' has an unsupported status.`,
+      );
+    }
+  }
+
+  const outcome = family.lastDispatchOutcome;
+  if (outcome) {
+    if (typeof outcome.dispatchId !== "string" || !outcome.dispatchId.trim()) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Goal family '${family.familyId}' last dispatch outcome requires a non-empty dispatch ID.`,
+      );
+    }
+    if (!Number.isSafeInteger(outcome.schedulerOrdinal) || outcome.schedulerOrdinal < 1) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Last dispatch outcome '${outcome.dispatchId}' has an invalid scheduler ordinal.`,
+      );
+    }
+    if (outcome.schedulerOrdinal > family.schedulerOrdinal) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Last dispatch outcome '${outcome.dispatchId}' is ahead of family sequence `
+        + `${family.schedulerOrdinal}.`,
+      );
+    }
+    if (!Number.isFinite(Date.parse(outcome.selectedAt)) || !Number.isFinite(Date.parse(outcome.completedAt))) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Last dispatch outcome '${outcome.dispatchId}' has an invalid selectedAt or completedAt.`,
+      );
+    }
+    requireSelectedAction(outcome.selection, "Last family dispatch outcome selection");
+    if (outcome.status === "completed" || outcome.status === "failed") {
+      if (!outcome.dispatchedAt || !Number.isFinite(Date.parse(outcome.dispatchedAt))) {
+        restoreFail(
+          "invalid_goal_family_scheduler_state",
+          `Last dispatch outcome '${outcome.dispatchId}' with status '${outcome.status}' `
+          + "requires a valid dispatchedAt timestamp.",
+        );
+      }
+      if (Date.parse(outcome.dispatchedAt) < Date.parse(outcome.selectedAt)) {
+        restoreFail(
+          "goal_family_dispatch_timestamp_order",
+          `Last dispatch outcome '${outcome.dispatchId}' cannot be dispatched before it was selected.`,
+        );
+      }
+      if (Date.parse(outcome.completedAt) < Date.parse(outcome.dispatchedAt)) {
+        restoreFail(
+          "goal_family_dispatch_timestamp_order",
+          `Last dispatch outcome '${outcome.dispatchId}' cannot complete before it was dispatched.`,
+        );
+      }
+    } else if (outcome.status === "interrupted") {
+      if (outcome.dispatchedAt !== undefined) {
+        if (!Number.isFinite(Date.parse(outcome.dispatchedAt))) {
+          restoreFail(
+            "invalid_goal_family_scheduler_state",
+            `Interrupted outcome '${outcome.dispatchId}' has an invalid dispatchedAt timestamp.`,
+          );
+        }
+        if (Date.parse(outcome.dispatchedAt) < Date.parse(outcome.selectedAt)) {
+          restoreFail(
+            "goal_family_dispatch_timestamp_order",
+            `Interrupted outcome '${outcome.dispatchId}' cannot be dispatched before it was selected.`,
+          );
+        }
+        if (Date.parse(outcome.completedAt) < Date.parse(outcome.dispatchedAt)) {
+          restoreFail(
+            "goal_family_dispatch_timestamp_order",
+            `Interrupted outcome '${outcome.dispatchId}' cannot complete before it was dispatched.`,
+          );
+        }
+      } else if (Date.parse(outcome.completedAt) < Date.parse(outcome.selectedAt)) {
+        restoreFail(
+          "goal_family_dispatch_timestamp_order",
+          `Interrupted outcome '${outcome.dispatchId}' cannot complete before it was selected.`,
+        );
+      }
+    } else {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Last dispatch outcome '${outcome.dispatchId}' has an unsupported status.`,
+      );
+    }
+  }
 }
 
 /**
  * Rebuild membership from a stored family snapshot.
  * Rejects an unsupported schema version with a clear error.
- * Validates the membership graph. Product restore must use restoreFamilyProjection.
+ * Validates the membership graph and scheduler state. Product restore must use restoreFamilyProjection.
  * Returns a deep clone so callers do not mutate the stored object.
  */
 export function rebuildFamilyMembershipFromSnapshot(snapshot: GoalFamilyRuntime): GoalFamilyRuntime {
@@ -645,6 +1336,12 @@ export function restoreFamilyProjection(
       `The restored family sequence ${rebuilt.schedulerOrdinal} does not match snapshot sequence ${snapshot.schedulerOrdinal}.`,
     );
   }
+  if (rebuilt.createdAt !== snapshot.createdAt || rebuilt.updatedAt !== snapshot.updatedAt) {
+    restoreFail(
+      "goal_family_timestamp_mismatch",
+      `The restored family timestamps for '${snapshot.familyId}' do not match the stored snapshot.`,
+    );
+  }
 
   const rebuiltMemberIds = Object.keys(rebuilt.members).sort();
   const snapshotMemberIds = Object.keys(snapshot.members).sort();
@@ -663,7 +1360,7 @@ export function restoreFamilyProjection(
       rebuiltMember.workflowId !== snapshotMember.workflowId
       || rebuiltMember.rootGoalId !== snapshotMember.rootGoalId
       || rebuiltMember.depth !== snapshotMember.depth
-      || JSON.stringify(rebuiltMember.parent ?? null) !== JSON.stringify(snapshotMember.parent ?? null)
+      || canonicalJsonStringify(rebuiltMember.parent ?? null) !== canonicalJsonStringify(snapshotMember.parent ?? null)
       || JSON.stringify([...rebuiltMember.childGoalIds].sort()) !== JSON.stringify([...snapshotMember.childGoalIds].sort())
     ) {
       restoreFail(
@@ -671,6 +1368,22 @@ export function restoreFamilyProjection(
         `The restored family member '${goalId}' does not match the stored snapshot for family '${snapshot.familyId}'.`,
       );
     }
+  }
+
+  if (canonicalJsonStringify(rebuilt.pendingDispatch ?? null) !== canonicalJsonStringify(snapshot.pendingDispatch ?? null)) {
+    restoreFail(
+      "goal_family_scheduler_mismatch",
+      `The restored family pending dispatch for '${snapshot.familyId}' does not match the stored snapshot.`,
+    );
+  }
+  if (
+    canonicalJsonStringify(rebuilt.lastDispatchOutcome ?? null)
+    !== canonicalJsonStringify(snapshot.lastDispatchOutcome ?? null)
+  ) {
+    restoreFail(
+      "goal_family_scheduler_mismatch",
+      `The restored family last dispatch outcome for '${snapshot.familyId}' does not match the stored snapshot.`,
+    );
   }
 
   return rebuilt;

@@ -5,6 +5,7 @@ import {
   UnsupportedGoalFamilySchemaError,
   assertSupportedGoalFamilySchemaVersion,
   createRootFamily,
+  parseGoalContinuationActionPayload,
   restoreFamilyProjection,
   type GoalFamilyEvent,
   type GoalFamilyRuntime,
@@ -553,6 +554,154 @@ function assertFamilyEventShape(event: unknown, index: number): void {
     }
     assertParentBindingShape(event.data.parent, `Family member-added event at index ${index}`);
     return;
+  }
+
+  if (event.type === "hypagraph.family.action-selected") {
+    if (typeof event.data.dispatchId !== "string" || !event.data.dispatchId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family action-selected event at index ${index} must include a non-empty dispatchId.`,
+      );
+    }
+    assertFamilySelectionShape(event.data.selection, `Family action-selected event at index ${index}`);
+    return;
+  }
+
+  if (
+    event.type === "hypagraph.family.action-dispatched"
+    || event.type === "hypagraph.family.action-completed"
+    || event.type === "hypagraph.family.action-failed"
+    || event.type === "hypagraph.family.action-interrupted"
+  ) {
+    if (typeof event.data.dispatchId !== "string" || !event.data.dispatchId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family ${String(event.type)} event at index ${index} must include a non-empty dispatchId.`,
+      );
+    }
+    if (event.data.reason !== undefined && typeof event.data.reason !== "string") {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family ${String(event.type)} event at index ${index} reason must be a string when present.`,
+      );
+    }
+    return;
+  }
+
+  throw new GoalFamilyRestoreError(
+    "invalid_goal_family_event",
+    `Family event at index ${index} has unsupported type '${String(event.type)}'.`,
+  );
+}
+
+function assertFamilySelectionShape(selection: unknown, location: string): void {
+  if (!isPlainObject(selection)) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} must include a selection object.`,
+    );
+  }
+  if (typeof selection.familyId !== "string" || !selection.familyId.trim()) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a non-empty familyId.`,
+    );
+  }
+  if (typeof selection.goalId !== "string" || !selection.goalId.trim()) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a non-empty goalId.`,
+    );
+  }
+  if (typeof selection.workflowId !== "string" || !selection.workflowId.trim()) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a non-empty workflowId.`,
+    );
+  }
+  if (typeof selection.revision !== "number" || !Number.isSafeInteger(selection.revision)) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a safe integer revision.`,
+    );
+  }
+  if (typeof selection.selectedSequence !== "number" || !Number.isSafeInteger(selection.selectedSequence)) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a safe integer selectedSequence.`,
+    );
+  }
+  if (typeof selection.selectedSnapshotHash !== "string" || !selection.selectedSnapshotHash.trim()) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a non-empty selectedSnapshotHash.`,
+    );
+  }
+  if (
+    typeof selection.memberContinuationOrdinal !== "number"
+    || !Number.isSafeInteger(selection.memberContinuationOrdinal)
+  ) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a safe integer memberContinuationOrdinal.`,
+    );
+  }
+  if (typeof selection.reason !== "string" || !selection.reason.trim()) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection must include a non-empty reason.`,
+    );
+  }
+  const parsedAction = parseGoalContinuationActionPayload(selection.action);
+  if (!parsedAction.ok) {
+    throw new GoalFamilyRestoreError(
+      "invalid_goal_family_event",
+      `${location} selection action is invalid: ${parsedAction.message}`,
+    );
+  }
+  const action = parsedAction.action;
+  if (action.kind === "request-revision") {
+    if (selection.nodeId !== undefined) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `${location} request-revision selection must not declare nodeId.`,
+      );
+    }
+    if (selection.loopId !== undefined) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `${location} request-revision selection must not declare loopId.`,
+      );
+    }
+  } else {
+    if (selection.nodeId !== undefined) {
+      if (typeof selection.nodeId !== "string" || !selection.nodeId.trim()) {
+        throw new GoalFamilyRestoreError(
+          "invalid_goal_family_event",
+          `${location} selection nodeId must be a non-empty string when present.`,
+        );
+      }
+      if (selection.nodeId !== action.nodeId) {
+        throw new GoalFamilyRestoreError(
+          "invalid_goal_family_event",
+          `${location} selection nodeId does not match action nodeId.`,
+        );
+      }
+    }
+    if (selection.loopId !== undefined) {
+      if (typeof selection.loopId !== "string" || !selection.loopId.trim()) {
+        throw new GoalFamilyRestoreError(
+          "invalid_goal_family_event",
+          `${location} selection loopId must be a non-empty string when present.`,
+        );
+      }
+      if ((action.loopId ?? undefined) !== selection.loopId) {
+        throw new GoalFamilyRestoreError(
+          "invalid_goal_family_event",
+          `${location} selection loopId does not match action loopId.`,
+        );
+      }
+    }
   }
 }
 
