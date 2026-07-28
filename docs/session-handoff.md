@@ -1,4 +1,4 @@
-# Session handoff: M6.1 Slice 1 complete
+# Session handoff: M6.1 Slice 1.1 complete
 
 - Handoff date: 2026-07-28
 - Repository: `Hypabolic/Hypagraph`
@@ -88,11 +88,11 @@ Let the graph return to the user for a decision, and let a typed answer control 
 
 ### Slice status
 
-Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` status, the request and answer lifecycle, declared response facts, and a Pi command which accepts an answer. `tests/m6-1-interaction-slice-1.test.ts` holds the tests.
+Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` status, the request and answer lifecycle, and declared response facts. `tests/m6-1-interaction-slice-1.test.ts` holds the tests.
+
+Slice 1.1 is complete. It adds `hypagraph_ask` and the closed and open dialog surfaces. It adds `/hypagraph ask` and waiting status and widget surfaces. A dialog opens only when no other action is runnable. Independent branches and loops keep running while a question waits. `tests/m6-1-interaction-slice-1-1.test.ts` holds the tests.
 
 Slice 2 deterministic presentation effects is the next work. Validation accepts only presentation kind `none` at this time. `src/domain/validate.ts` holds the rule.
-
-The suite at the current baseline is 110 test files and 595 tests.
 
 ## 5. Release evidence
 

@@ -6,9 +6,20 @@ import {
   responseForOptionText,
 } from "../src/domain/interaction-presentation.js";
 import type { HypagraphState, InteractionDefinition } from "../src/domain/model.js";
-import { waitingQuestionLines } from "../src/ui/interaction-surface.js";
+import {
+  hasIndependentWorkBesideWait,
+  waitingLifecycleNote,
+  waitingQuestionLines,
+  waitingStatusLabel,
+  waitingUnavailableNote,
+  waitingWidgetLines,
+} from "../src/ui/interaction-surface.js";
 import { InteractionDialogComponent, interactionDialogRows } from "../src/pi/interaction-dialog.js";
 import { validateDefinition } from "../src/domain/validate.js";
+import { createWorkflow, handleCommand } from "../src/domain/reducer.js";
+import type { HypagraphDefinition } from "../src/domain/model.js";
+import { renderWidget } from "../src/ui/format.js";
+import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "../src/ui/hypagoal-surface.js";
 
 interface ToolDefinition {
   name: string;
@@ -223,6 +234,68 @@ describe("M6.1 Slice 1.1 interactive presentation", () => {
     expect(select).toHaveBeenCalledTimes(2);
     expect(statusOf(value, "approve-plan")).toBe("succeeded");
   });
+
+  it("queues controller continuation when the person answers through /hypagraph ask", async () => {
+    const select = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce("approve - Approve");
+    const value = harness({ select });
+    await createRoot(value, soleInteractionInput());
+    await ask(value);
+    expect(statusOf(value, "approve-plan")).toBe("awaiting_response");
+
+    await value.commands.get("hypagraph")!.handler("ask", value.ctx);
+
+    expect(statusOf(value, "approve-plan")).toBe("succeeded");
+    // Follow-on work is ready and the controller must re-enter after the command
+    // answer, or the graph stalls until a later turn.
+    const state = currentState(value);
+    expect(state.runtime.nodes["after-approval"]?.status).toBe("ready");
+    expect(state.goal?.pendingContinuation ?? state.goal?.actionDispatch?.pending).toBeTruthy();
+  });
+
+  it("tells the person how to re-open the dialog after a controller dismissal", async () => {
+    const select = vi.fn().mockResolvedValue(undefined);
+    const value = harness({ select });
+    await createRoot(value, soleInteractionInput());
+    await ask(value);
+    value.notify.mockClear();
+
+    // The controller reaches the waiting stop and presents again. The person
+    // dismisses, so the durable wait stays and the surface names /hypagraph ask.
+    await agentEnd(value);
+
+    expect(statusOf(value, "approve-plan")).toBe("awaiting_response");
+    const notes = value.notify.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(notes).toContain("Waiting for a user response");
+    expect(notes).toContain("/hypagraph ask");
+    expect(notes).toContain("approve-plan");
+    expect(value.notify.mock.calls.some((call) => call[1] === "info")).toBe(true);
+  });
+
+  it("does not recommend /hypagraph ask when the host has no dialog capability", async () => {
+    const headless = harness({ hasUI: false });
+    await createRoot(headless, soleInteractionInput());
+    // Sole interaction: presentation is allowed, so the tool stores the request
+    // and then reports unavailable without recommending a dialog recovery path.
+    const result = await ask(headless);
+    expect(String(result.content[0].text)).toContain("no dialog capability");
+    expect(String(result.content[0].text)).not.toContain("Use /hypagraph ask");
+    expect(statusOf(headless, "approve-plan")).toBe("awaiting_response");
+
+    headless.notify.mockClear();
+    await agentEnd(headless);
+    const notes = headless.notify.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(notes).toContain("no dialog capability");
+    expect(notes).not.toContain("Use /hypagraph ask");
+    expect(headless.notify.mock.calls.some((call) => call[1] === "warning")).toBe(true);
+
+    headless.notify.mockClear();
+    await headless.commands.get("hypagraph")!.handler("ask", headless.ctx);
+    const commandNotes = headless.notify.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(commandNotes).toContain("no dialog capability");
+    expect(commandNotes).not.toContain("Use /hypagraph ask");
+  });
 });
 
 describe("M6.1 Slice 1.1 interaction dialog", () => {
@@ -337,11 +410,177 @@ describe("M6.1 Slice 1.1 waiting surface and option identity", () => {
     expect(lines).toContain("reject - Reject");
   });
 
+  it("names the wait in the status label, the widget, and the controls", async () => {
+    const value = harness({ select: vi.fn().mockResolvedValue(undefined) });
+    await createRoot(value, soleInteractionInput());
+    await ask(value);
+    const state = currentState(value);
+
+    expect(waitingStatusLabel(state)).toBe("wait approve-plan");
+    expect(waitingWidgetLines(state)[0]).toContain("approve-plan");
+    expect(waitingWidgetLines(state).join("\n")).toContain("Present the dialog again with /hypagraph ask");
+    expect(waitingWidgetLines(state).join("\n")).not.toContain("Independent ready work continues");
+    expect(waitingLifecycleNote(state)).toContain("/hypagraph ask");
+    expect(waitingUnavailableNote(state)).toContain("no dialog capability");
+    expect(waitingUnavailableNote(state)).not.toContain("/hypagraph ask");
+    expect(renderWidget(state).join("\n")).toContain("Waiting: approve-plan");
+    expect(renderHypagoalLifecycleMessage(state)).toContain("Waiting for a user response");
+    expect(renderHypagoalStatus(state)).toContain("/hypagraph ask");
+  });
+
+  it("wires the wait into setStatus and setWidget", async () => {
+    const value = harness({ select: vi.fn().mockResolvedValue(undefined) });
+    await createRoot(value, soleInteractionInput());
+    value.ctx.ui.setStatus.mockClear();
+    value.ctx.ui.setWidget.mockClear();
+    await ask(value);
+
+    const statusCalls = value.ctx.ui.setStatus.mock.calls.map((call: unknown[]) => String(call[1] ?? ""));
+    expect(statusCalls.some((text: string) => text.includes("wait approve-plan"))).toBe(true);
+    const widgetCalls = value.ctx.ui.setWidget.mock.calls.map((call: unknown[]) => call[1]);
+    const widgetText = widgetCalls.flat().map(String).join("\n");
+    expect(widgetText).toContain("Waiting: approve-plan");
+    expect(widgetText).toContain("/hypagraph ask");
+  });
+
+  it("reports independent ready work only when it exists", () => {
+    const at = "2026-07-28T00:00:00.000Z";
+    const definition: HypagraphDefinition = {
+      title: "Approval with independent branch",
+      goal: "An independent branch stays runnable while approval waits",
+      nodes: [
+        {
+          id: "approve-plan",
+          title: "Approve the plan",
+          kind: "interaction",
+          requires: [],
+          acceptance: [],
+          produces: [{ name: "plan.approved", type: "boolean", required: true }],
+          interaction: {
+            kind: "interaction",
+            version: 1,
+            presentation: { class: "deterministic", kind: "none" },
+            question: "Approve?",
+            responses: [
+              { id: "approve", label: "Approve", publish: [{ name: "plan.approved", type: "boolean", value: true }] },
+            ],
+          },
+        },
+        {
+          id: "independent-work",
+          title: "Independent work",
+          requires: [],
+          acceptance: ["Work continues while approval waits."],
+        },
+      ],
+      loops: [],
+      policy: { mode: "guided", requireEvidence: false },
+    };
+    const created = createWorkflow(definition, at, "workflow-wait-independent");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    let state = created.state;
+    const requested = handleCommand(state, {
+      type: "request-interaction",
+      nodeId: "approve-plan",
+      attemptId: "attempt-approve-1",
+      commandId: "command-request",
+      at,
+    });
+    if (!requested.ok) throw new Error(JSON.stringify(requested.diagnostics));
+    state = requested.state;
+
+    expect(hasIndependentWorkBesideWait(state)).toBe(true);
+    expect(waitingWidgetLines(state).join("\n")).toContain("Independent ready work continues");
+    expect(waitingStatusLabel(state)).toBe("wait approve-plan");
+  });
+
+  it("names multi-wait status and re-open guidance", () => {
+    const at = "2026-07-28T00:00:00.000Z";
+    const definition: HypagraphDefinition = {
+      title: "Two questions",
+      goal: "Two waits",
+      nodes: [
+        {
+          id: "approve-plan",
+          title: "Approve the plan",
+          kind: "interaction",
+          requires: [],
+          acceptance: [],
+          produces: [{ name: "plan.approved", type: "boolean", required: true }],
+          interaction: {
+            kind: "interaction",
+            version: 1,
+            presentation: { class: "deterministic", kind: "none" },
+            question: "Approve?",
+            responses: [
+              { id: "approve", label: "Approve", publish: [{ name: "plan.approved", type: "boolean", value: true }] },
+            ],
+          },
+        },
+        {
+          id: "pick-scope",
+          title: "Pick the scope",
+          kind: "interaction",
+          requires: [],
+          acceptance: [],
+          produces: [{ name: "scope.ready", type: "boolean", required: true }],
+          interaction: {
+            kind: "interaction",
+            version: 1,
+            presentation: { class: "deterministic", kind: "none" },
+            question: "Which scope?",
+            responses: [
+              { id: "small", label: "Small", publish: [{ name: "scope.ready", type: "boolean", value: true }] },
+            ],
+          },
+        },
+      ],
+      loops: [],
+      policy: { mode: "guided", requireEvidence: false },
+    };
+    const created = createWorkflow(definition, at, "workflow-two-waits");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    let state = created.state;
+    for (const command of [
+      {
+        type: "request-interaction" as const,
+        nodeId: "approve-plan",
+        attemptId: "attempt-a",
+        commandId: "command-a",
+        at,
+      },
+      {
+        type: "request-interaction" as const,
+        nodeId: "pick-scope",
+        attemptId: "attempt-b",
+        commandId: "command-b",
+        at,
+      },
+    ]) {
+      const next = handleCommand(state, command);
+      if (!next.ok) throw new Error(JSON.stringify(next.diagnostics));
+      state = next.state;
+    }
+
+    expect(waitingStatusLabel(state)).toBe("wait approve-plan, pick-scope");
+    expect(waitingWidgetLines(state).join("\n")).toContain("/hypagraph ask <nodeId>");
+    expect(waitingLifecycleNote(state)).toContain("user responses");
+    expect(waitingLifecycleNote(state)).toContain("pick-scope");
+    expect(waitingQuestionLines(state).join("\n")).toContain("these questions");
+    expect(waitingUnavailableNote(state)).toContain("approve-plan, pick-scope");
+    expect(waitingUnavailableNote(state)).not.toContain("/hypagraph ask");
+  });
+
   it("reports no waiting question when nothing awaits an answer", async () => {
     const value = harness();
     await createRoot(value, soleInteractionInput());
+    const state = currentState(value);
 
-    expect(waitingQuestionLines(currentState(value))).toEqual([]);
+    expect(waitingQuestionLines(state)).toEqual([]);
+    expect(waitingStatusLabel(state)).toBeUndefined();
+    expect(waitingWidgetLines(state)).toEqual([]);
+    expect(waitingLifecycleNote(state)).toBeUndefined();
+    expect(waitingUnavailableNote(state)).toBeUndefined();
   });
 });
 

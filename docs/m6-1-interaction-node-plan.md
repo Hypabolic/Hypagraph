@@ -347,12 +347,15 @@ Scope:
 | Slice | Result | Evidence |
 | --- | --- | --- |
 | 1 | Node kind, wait state, and selector behaviour | `src/domain/validate.ts`, `src/domain/reducer.ts`, `tests/m6-1-interaction-slice-1.test.ts` |
+| 1.1 | Interactive presentation and the ask tool | `src/pi/interaction-dialog.ts`, `src/ui/interaction-surface.ts`, `src/extension.ts`, `src/ui/format.ts`, `src/ui/hypagoal-surface.ts`, `tests/m6-1-interaction-slice-1-1.test.ts` |
 | 2 | Deterministic presentation effects | Not started |
 | 3 | Routing, structured feedback, and deadlines | Not started |
-| 4 | Reload, restore, and product surface | Not started |
+| 4 | Reload, restore, and product surface | Partial: the controller re-presents when the wait is the only stop; status, widget, and lifecycle surfaces name the wait; reload and graph-pane waiting state remain open |
 | 5 | Dogfood and release | Not started |
 
-Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` node status, the request and answer lifecycle, declared response facts, and a Pi command which accepts an answer. The wait stays node-local, so an independent branch and an independent loop stay runnable.
+Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` node status, the request and answer lifecycle, declared response facts, and the request and answer command path. The wait stays node-local, so an independent branch and an independent loop stay runnable.
+
+Slice 1.1 is complete. It adds `hypagraph_ask` and the closed and open dialog surfaces. It adds `/hypagraph ask` and waiting status and widget lines. A dialog opens only when no other action is runnable. A person answers through a dialog and never types a node ID or a response ID.
 
 Two decisions were recorded during Slice 1.
 

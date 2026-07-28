@@ -65,6 +65,11 @@ import {
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
 import {
+  waitingLifecycleNote,
+  waitingStatusLabel,
+  waitingUnavailableNote,
+} from "./ui/interaction-surface.js";
+import {
   isTimelineLane,
   TIMELINE_LANES,
   projectModelVisibleHistory,
@@ -204,7 +209,15 @@ function updateUi(
     return;
   }
   const active = activeNode(state);
-  ctx.ui.setStatus("hypagraph", `HG ${state.phase}: ${active?.id ?? `${readyNodeIds(state).length} ready`}`);
+  const waiting = waitingStatusLabel(state);
+  const readyCount = readyNodeIds(state).length;
+  const work = active?.id ?? `${readyCount} ready`;
+  // Keep the wait visible in the status bar. Independent ready work stays named
+  // beside it, so a human gate never looks like a full goal stop.
+  const status = waiting === undefined
+    ? `HG ${state.phase}: ${work}`
+    : `HG ${state.phase}: ${waiting}${readyCount > 0 || active ? ` | ${work}` : ""}`;
+  ctx.ui.setStatus("hypagraph", status);
   ctx.ui.setWidget("hypagraph", renderWidget(state));
 }
 
@@ -512,6 +525,23 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
               updateUi(state, ctx, graphPane);
               continue;
             }
+            updateUi(state, ctx, graphPane);
+            // Keep the wait durable. Split recovery text by outcome. A host
+            // without dialog capability cannot use /hypagraph ask either.
+            if (outcome === "unavailable") {
+              ctx.ui.notify(
+                waitingUnavailableNote(state)
+                  ?? `This host has no dialog capability. Interaction '${awaiting.nodeId}' still waits for an answer.`,
+                "warning",
+              );
+            } else {
+              ctx.ui.notify(
+                waitingLifecycleNote(state)
+                  ?? `Waiting for a user response on node '${awaiting.nodeId}'. Use /hypagraph ask to present the dialog again.`,
+                "info",
+              );
+            }
+            return;
           }
         }
         if (decision.kind === "invariant-error") {
@@ -1262,12 +1292,21 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
 
       const outcome = await presentAwaitingInteraction(ctx, awaiting);
       updateUi(state!, ctx, graphPane);
-      if (outcome === "answered") return textResult(`${renderWorkflow(state!)}\n\nHypagraph stored the answer for interaction '${nodeId}'.`);
+      if (outcome === "answered") {
+        return textResult(`${renderWorkflow(state!)}\n\nHypagraph stored the answer for interaction '${nodeId}'.`);
+      }
       // Rules 1.1.3 and 1.1.4. The question stays open and durable.
-      const cause = outcome === "unavailable"
-        ? "This host has no dialog capability."
-        : "The user dismissed the dialog.";
-      return textResult(`Interaction '${nodeId}' waits for an answer. ${cause} Stop and wait for the user. Hypagraph presents the question again on the next controller pass.`);
+      if (outcome === "unavailable") {
+        return textResult(
+          `Interaction '${nodeId}' waits for an answer. This host has no dialog capability. `
+          + `The question stays open and durable. A host with dialog capability can present it later.`,
+        );
+      }
+      return textResult(
+        `Interaction '${nodeId}' waits for an answer. The user dismissed the dialog. `
+        + `Stop and wait for the user. Use /hypagraph ask to present the dialog again, `
+        + `or let the controller present it when no other work is runnable.`,
+      );
     },
   });
 
@@ -1523,8 +1562,24 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         ensureNoActiveExecution();
         const outcome = await presentAwaitingInteraction(ctx, awaiting);
         updateUi(state!, ctx, graphPane);
-        if (outcome === "answered") ctx.ui.notify(renderWorkflow(state!), "info");
-        else ctx.ui.notify(`Interaction '${awaiting.nodeId}' still waits for an answer.`, "info");
+        if (outcome === "answered") {
+          ctx.ui.notify(renderWorkflow(state!), "info");
+          // The person often recovers with /hypagraph ask after a dismiss. Resume
+          // the controller so ready follow-on work does not stall until a later turn.
+          await queueGoalContinuation(ctx);
+        } else if (outcome === "unavailable") {
+          ctx.ui.notify(
+            waitingUnavailableNote(state!)
+              ?? `This host has no dialog capability. Interaction '${awaiting.nodeId}' still waits for an answer.`,
+            "warning",
+          );
+        } else {
+          ctx.ui.notify(
+            waitingLifecycleNote(state!)
+              ?? `Waiting for a user response on node '${awaiting.nodeId}'. Use /hypagraph ask to present the dialog again.`,
+            "info",
+          );
+        }
       } else if (words.length === 0) {
         ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
       } else {

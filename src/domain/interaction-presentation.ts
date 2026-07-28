@@ -14,7 +14,8 @@ export interface AwaitingInteraction {
  *
  * The text starts with the response ID. Response labels are not unique, but
  * response IDs are unique. The option text therefore identifies exactly one
- * response, and it also shows the person the ID which `/hypagraph answer` needs.
+ * response for a plain host selector. The rich dialog returns a response ID
+ * directly and does not need this text.
  */
 export const interactionOptionText = (response: InteractionResponseOption): string =>
   `${response.id} - ${response.label}`;

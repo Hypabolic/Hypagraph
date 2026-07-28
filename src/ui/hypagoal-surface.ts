@@ -7,7 +7,7 @@ import { selectGoalContinuation, type GoalContinuationDecision } from "../domain
 import type { GoalContinuationAction, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopSurfaceSummaries, type LoopSurfaceSummary } from "./loop-surface.js";
-import { waitingQuestionLines } from "./interaction-surface.js";
+import { hasWaitingInteraction, waitingLifecycleNote, waitingQuestionLines } from "./interaction-surface.js";
 
 /**
  * M6A turn accounting. Hypagraph charges a turn for a model-lane action only.
@@ -167,6 +167,7 @@ const controls = (state: HypagraphState): string[] => {
   const goal = state.goal;
   if (!goal) return ["/hypagoal <objective>"];
   const values = ["/hypagoal status", "/hypagoal graph"];
+  if (hasWaitingInteraction(state)) values.push("/hypagraph ask");
   if (goal.status === "active" || goal.status === "blocked") values.push("/hypagoal pause", "/hypagoal cancel");
   else if (goal.status === "paused") values.push("/hypagoal resume", "/hypagoal cancel");
   return values;
@@ -346,7 +347,9 @@ export function renderHypagoalLifecycleMessage(state: HypagraphState): string {
   const surface = projectHypagoalSurface(state);
   if (!surface) return "There is no active Hypagoal.";
   const stop = surface.stopCode ? ` Stop: ${surface.stopCode}${surface.goal.stopReason ? ` — ${surface.goal.stopReason}` : ""}.` : "";
-  return `Hypagoal ${surface.goal.status}; workflow ${surface.workflow.phase}; next ${surface.action.next}; model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}; scheduled actions ${surface.dispatch.scheduledActions}; revision ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}.${stop}`;
+  const waiting = waitingLifecycleNote(state);
+  const wait = waiting === undefined ? "" : ` ${waiting}`;
+  return `Hypagoal ${surface.goal.status}; workflow ${surface.workflow.phase}; next ${surface.action.next}; model turns ${displayBudget(surface.budget.turns)}; tokens ${displayBudget(surface.budget.tokens)}; scheduled actions ${surface.dispatch.scheduledActions}; revision ${surface.automaticRevision.consumed}/${surface.automaticRevision.maximum}.${stop}${wait}`;
 }
 
 /** The presentation view of goal control. Canonical runtime state is not a safe model. */

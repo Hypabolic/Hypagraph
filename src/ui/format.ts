@@ -3,7 +3,7 @@ import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
 import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
-import { waitingQuestionLines } from "./interaction-surface.js";
+import { waitingQuestionLines, waitingWidgetLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 
@@ -94,6 +94,7 @@ export function renderWidget(state: HypagraphState): string[] {
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}${hypagoal?.stopCode ? ` (${hypagoal.stopCode})` : ""}` : ""}`,
     `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${state.goal ? ` | Budget turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "∞"}, tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "∞"} | Revision ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}` : ""}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
+    ...waitingWidgetLines(state),
   ];
 }
 
