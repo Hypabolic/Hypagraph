@@ -338,13 +338,10 @@ current revision and joins them with the attempt history.
 - interaction history, which belongs to M6.1;
 - any change to node, attempt, check, fact, route, loop, evaluation, goal, or dispatch event semantics.
 
-## 9. Open question for the milestone owner
+## 9. Recorded timeline read decision
 
-Section 5.6 requires a paged timeline. The event stream currently reaches Pi through the session branch, and `restoreLatestSession` reads every entry to rebuild the latest snapshot.
+Section 5.6 requires a paged timeline. This section asked for a decision between a session-branch read on each request and a projected timeline in memory.
 
-A long-running goal can produce a large stream. Confirm one of these before Slice 4:
+The implementation uses a third option. The extension holds the event array of the active session in memory. The append path already needs this array, so the timeline adds no new state. The extension projects the timeline again on each history request, and it pages the result after the projection. The extension replaces the array only on session restore and on root replacement.
 
-1. the timeline reads the session branch on each request, which needs no new state and costs one scan for each page;
-2. the extension holds the projected timeline in memory for the active session, which costs memory and needs an invalidation rule on reload and branch change.
-
-Option 1 keeps rule 5.7 and is the recommended default. Option 2 is a performance decision which needs a measured reason.
+This keeps the no-new-state property of option 1 and the no-scan property of option 2. `src/extension.ts` holds the array. `projectEventTimeline` in `src/history/timeline.ts` performs the projection.

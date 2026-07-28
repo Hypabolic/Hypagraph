@@ -1,9 +1,10 @@
-# Session handoff: v0.7 released to M6.1
+# Session handoff: M6.1 Slice 1 complete
 
-- Handoff date: 2026-07-27
+- Handoff date: 2026-07-28
 - Repository: `Hypabolic/Hypagraph`
 - Canonical branch: `main`
 - Release baseline: `fa95046ce021d8ebd7051bbb439bb2d27661ba22`
+- Current baseline: `8fc2b50fddef06fb279f78af74bf3b544e39604a`
 - Published release: `v0.7`
 - Completed milestones: M6A deterministic dispatch lane, M6B event history, replay, and debugger UI
 - Current milestone: M6.1 interaction and approval nodes
@@ -50,7 +51,7 @@ M6B provides:
 - revision segments, discarded results, and future-namespace projection seams;
 - one presentation redaction policy for protected evaluator detail.
 
-The suite after M6B Slice 7 is 109 test files and 582 tests.
+The suite after M6B Slice 7 is 109 test files and 586 tests.
 
 ## 3. Preserved invariants
 
@@ -84,6 +85,14 @@ Let the graph return to the user for a decision, and let a typed answer control 
 - The answer is typed and durable.
 - The model cannot invent an answer as a completion claim.
 - Replay and restore must not re-prompt for a stored answer.
+
+### Slice status
+
+Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` status, the request and answer lifecycle, declared response facts, and a Pi command which accepts an answer. `tests/m6-1-interaction-slice-1.test.ts` holds the tests.
+
+Slice 2 deterministic presentation effects is the next work. Validation accepts only presentation kind `none` at this time. `src/domain/validate.ts` holds the rule.
+
+The suite at the current baseline is 110 test files and 595 tests.
 
 ## 5. Release evidence
 

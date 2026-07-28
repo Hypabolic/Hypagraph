@@ -11,7 +11,7 @@
 - Live loop and revision path: `docs/dogfood-evidence/m6b-live-loop-revision/`
 - Automated product-path test: `tests/m6b-dogfood.test.ts`
 - Recovery tests: `tests/hypagoal-continuation-pi.test.ts`, `tests/hypagoal-revision-pi.test.ts`
-- Suite after this slice: 109 test files and 585 tests
+- Suite after this slice: 109 test files and 586 tests
 
 ## 1. Purpose
 

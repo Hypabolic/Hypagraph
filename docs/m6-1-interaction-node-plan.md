@@ -1,6 +1,6 @@
 # M6.1 interaction and approval nodes vertical-slice plan
 
-- Status: planned
+- Status: in progress
 - Milestone: M6.1
 - Release marker: v0.8
 - Prerequisite: M6A deterministic dispatch, M6B event history
@@ -265,6 +265,23 @@ Scope:
 1. Run one objective which contains a plan approval and one independent loop.
 2. Prove that the loop continues while the approval waits.
 3. Record evidence in `docs/m6-1-dogfood.md`.
+
+## 5.1 Slice status
+
+| Slice | Result | Evidence |
+| --- | --- | --- |
+| 1 | Node kind, wait state, and selector behaviour | `src/domain/validate.ts`, `src/domain/reducer.ts`, `tests/m6-1-interaction-slice-1.test.ts` |
+| 2 | Deterministic presentation effects | Not started |
+| 3 | Routing, structured feedback, and deadlines | Not started |
+| 4 | Reload, restore, and product surface | Not started |
+| 5 | Dogfood and release | Not started |
+
+Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` node status, the request and answer lifecycle, declared response facts, and a Pi command which accepts an answer. The wait stays node-local, so an independent branch and an independent loop stay runnable.
+
+Two decisions were recorded during Slice 1.
+
+1. Validation rejects a semantic presentation with a diagnostic which names the M7 model executor. Slice 2 lists this rule. Slice 1 needed the rule to accept a presentation class. `src/domain/validate.ts` holds it.
+2. A node which waits for an answer is not a blocker. Blockage classification now excludes a wait-only state, so an outstanding question does not start automatic revision.
 
 ## 6. Acceptance criteria
 

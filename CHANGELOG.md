@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+M6.1 Slice 1 adds interaction nodes.
+
+### Added
+
+- the `interaction` node kind with structural validation;
+- the `awaiting_response` node status;
+- the interaction request and answer lifecycle;
+- declared response facts which an answer publishes;
+- a Pi command which accepts a typed answer;
+- validation which rejects a semantic presentation and names the M7 model executor.
+
+### Changed
+
+- an interaction which waits for an answer does not stop an independent branch or an independent loop;
+- blockage classification excludes a wait-only state, so an outstanding question does not start automatic revision.
+
 ## v0.7.0 - 2026-07-27
 
 M6A adds the deterministic dispatch lane. M6B makes the stored event stream inspectable.

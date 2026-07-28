@@ -352,11 +352,12 @@ Implemented:
 - `/hypagraph history`, `/hypagraph explain`, and the matching `hypagraph_read` views;
 - a replay mode of the graph pane;
 - revision segments, discarded-result reporting, and a projection seam for later family and executor namespaces;
-- integrated v0.7 dogfood for deterministic dispatch and inspectable history.
+- integrated v0.7 dogfood for deterministic dispatch and inspectable history;
+- the interaction node kind, the `awaiting_response` status, and a typed answer which publishes declared facts.
 
 Next:
 
-- interaction and approval nodes, so that the graph can return to the user for a typed decision;
+- the remaining interaction and approval node work: presentation effects, typed routing, deadlines, and reload;
 - code nodes which run a definition-time program in a sandbox;
 - external effects with explicit requested, observed, and indeterminate states and restart reconciliation;
 - goal families and bounded child Hypagoals;
@@ -381,6 +382,7 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 ## Documentation
 
 - [Product and technical specification](docs/product-spec.md)
+- [Execution roadmap](docs/execution-roadmap.md)
 - [Automatic graph authoring model](docs/automatic-graph-authoring.md)
 - [Trusted evaluation contracts](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal vertical slices](docs/hypagoal-vertical-slice-plan.md)
@@ -394,3 +396,4 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 - [M6B event history plan](docs/m6b-event-history-plan.md)
 - [M6B dogfood record](docs/m6b-dogfood.md)
 - [v0.7 release notes](docs/v0.7-release-notes.md)
+- [M6.1 interaction and approval nodes plan](docs/m6-1-interaction-node-plan.md)

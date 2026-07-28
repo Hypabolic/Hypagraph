@@ -1,9 +1,9 @@
 # Hypagraph product and technical specification
 
 - Status: active
-- Version: v0.6 release baseline
-- Current baseline: `90a2885bb8f46d61cedd803897ca4d32246bcb44`
-- Current milestone: M6A deterministic dispatch lane. The former M6 is now M6B event history, replay, and debugger UI. See `docs/execution-roadmap.md`.
+- Version: v0.7 release baseline
+- Current baseline: `8fc2b50fddef06fb279f78af74bf3b544e39604a`
+- Current milestone: M6.1 interaction and approval nodes. M6A and M6B are complete and released as v0.7. See `docs/execution-roadmap.md`.
 - Delivery: independent Pi package, designed to support additional agent runtimes
 - Future execution plan: `docs/goal-family-and-concurrent-execution-plan.md`
 
@@ -330,7 +330,7 @@ The implementation provides:
 
 M5A is complete. Its evidence is in `docs/m5a-dogfood.md`.
 
-M5B Slices 1 through 8 are complete in PRs #62, #65, #67, #69, #71, #73, #75, and #77. M5A and M5B are released as v0.6. M6A deterministic dispatch is the current target, and M6B event history follows it.
+M5B Slices 1 through 8 are complete in PRs #62, #65, #67, #69, #71, #73, #75, and #77. M5A and M5B are released as v0.6. M6A deterministic dispatch and M6B event history are complete and released as v0.7. M6.1 interaction and approval nodes is the current target, and its Slice 1 is complete.
 
 ## Delivery sequence
 
@@ -338,9 +338,9 @@ M5B Slices 1 through 8 are complete in PRs #62, #65, #67, #69, #71, #73, #75, an
 2. M3.1 deterministic parser and assertion adapters — complete.
 3. M5A trusted evaluation contracts — complete.
 4. M5B root Hypagoal autonomous controller — complete and released as v0.6.
-5. M6A deterministic dispatch lane — current.
-6. M6B event history, replay, and debugger UI — next.
-7. M6.1 interaction and approval nodes.
+5. M6A deterministic dispatch lane — complete and released as v0.7.
+6. M6B event history, replay, and debugger UI — complete and released as v0.7.
+7. M6.1 interaction and approval nodes — current. Slice 1 is complete.
 8. M6.2 code nodes and the sandbox executor adapter.
 9. M6.3 external effects and reconciliation.
 10. M7 goal families, bounded child Hypagoals, executor abstraction, and isolated Pi execution.
