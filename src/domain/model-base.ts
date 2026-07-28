@@ -157,6 +157,7 @@ export type NodeStatus =
   | "running"
   | "awaiting_evidence"
   | "awaiting_response"
+  | "waiting_for_child"
   | "verifying"
   | "succeeded"
   | "failed"
@@ -1013,6 +1014,7 @@ export type EventType =
   | "hypagraph.interaction.presented"
   | "hypagraph.interaction.answered"
   | "hypagraph.interaction.expired"
+  | "hypagraph.task.waiting-for-child"
   | "hypagraph.fact.published"
   | "hypagraph.route.selected"
   | "hypagraph.verification.started"
@@ -1116,6 +1118,18 @@ export type HypagraphCommand =
    * The reducer does not read the wall clock. The extension passes at.
    */
   | (CommandBase & { type: "expire-interaction"; nodeId: string; attemptId: string })
+  /**
+   * Suspend only this parent task while a bounded child goal runs.
+   * The attempt remains open. Unrelated nodes stay runnable.
+   * Child return is handled in a later family slice.
+   */
+  | (CommandBase & {
+    type: "wait-for-child";
+    nodeId: string;
+    attemptId: string;
+    childGoalId: string;
+    bindingId: string;
+  })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })

@@ -1,7 +1,13 @@
+import {
+  validateChildBindingFacts,
+  validateChildBudgetAgainstFamilyLimits,
+} from "./child-goal-binding.js";
+import type { FactContract } from "./facts.js";
 import type {
   Diagnostic,
   GoalBlockerIdentity,
   GoalBlockerKind,
+  GoalBudgetDefinition,
   GoalContinuationAction,
   GoalWorkContinuationActionKind,
 } from "./model.js";
@@ -9,8 +15,10 @@ import type {
 /**
  * Schema version for goal-family runtime and persisted family records.
  * This version is independent of HYPAGRAPH_SCHEMA_VERSION on workflow aggregates.
+ * Version 2 adds family bounds, child bindings, and family budget reservation.
+ * Before the first external family adoption, unsupported versions are rejected.
  */
-export const GOAL_FAMILY_SCHEMA_VERSION = 1 as const;
+export const GOAL_FAMILY_SCHEMA_VERSION = 2 as const;
 
 /** Event payload version for family-level events. */
 export const GOAL_FAMILY_EVENT_VERSION = 1 as const;
@@ -49,6 +57,72 @@ export interface GoalFamilyMember {
   parent?: GoalParentBinding;
   depth: number;
   childGoalIds: string[];
+}
+
+/**
+ * Recursive creation bounds for one goal family.
+ * All limits are positive safe integers supplied as pure inputs.
+ */
+export interface FamilyBounds {
+  /** Maximum member depth. Root depth is 0. A child at depth maxDepth is allowed. */
+  maxDepth: number;
+  /** Maximum direct children for one parent goal. */
+  maxChildrenPerGoal: number;
+  /** Maximum total members in the family, including the root. */
+  maxGoalsInFamily: number;
+  /** Maximum child-creation operations from one parent node. */
+  maxChildCreationAttemptsPerNode: number;
+}
+
+/**
+ * Default recursive creation bounds.
+ * Callers can override these pure inputs at family creation.
+ */
+export const DEFAULT_FAMILY_BOUNDS: FamilyBounds = {
+  maxDepth: 3,
+  maxChildrenPerGoal: 8,
+  maxGoalsInFamily: 32,
+  maxChildCreationAttemptsPerNode: 8,
+};
+
+/**
+ * Family-level token and turn capacity.
+ * Child allocations reserve capacity. They do not create new unaccounted capacity.
+ */
+export interface FamilyBudgetRuntime {
+  limits: GoalBudgetDefinition;
+  reservedTurns: number;
+  reservedTokens: number;
+}
+
+export type ChildGoalFailurePolicy =
+  | "fail-parent-node"
+  | "block-parent-node"
+  | "return-for-revision";
+
+/**
+ * Binding status for a child goal.
+ * Terminal return handling is out of scope for the creation slice.
+ */
+export type ChildGoalBindingStatus = "active";
+
+/**
+ * Parent-to-child binding recorded on the family aggregate.
+ */
+export interface ChildGoalBinding {
+  bindingId: string;
+  childGoalId: string;
+  parentGoalId: string;
+  parentWorkflowId: string;
+  parentNodeId: string;
+  parentAttemptId: string;
+  inputFacts: string[];
+  outputFacts: FactContract[];
+  budget: GoalBudgetDefinition;
+  failurePolicy: ChildGoalFailurePolicy;
+  scopePaths: string[];
+  status: ChildGoalBindingStatus;
+  createdAt: string;
 }
 
 /**
@@ -121,6 +195,15 @@ export interface GoalFamilyRuntime {
   schedulerOrdinal: number;
   createdAt: string;
   updatedAt: string;
+  /** Recursive creation bounds for this family. */
+  bounds: FamilyBounds;
+  /** Child-goal bindings keyed by binding ID. */
+  bindings: Record<string, ChildGoalBinding>;
+  /**
+   * Family budget capacity and reserved child allocations.
+   * Descendant usage is charged against these limits.
+   */
+  familyBudget: FamilyBudgetRuntime;
   /** At most one pending family-level selection or dispatch. */
   pendingDispatch?: FamilyPendingDispatch;
   /**
@@ -135,6 +218,7 @@ export interface GoalFamilyRuntime {
 export type GoalFamilyEventType =
   | "hypagraph.family.created"
   | "hypagraph.family.member-added"
+  | "hypagraph.family.child-created"
   | "hypagraph.family.action-selected"
   | "hypagraph.family.action-dispatched"
   | "hypagraph.family.action-completed"
@@ -157,6 +241,8 @@ export type GoalFamilyEvent =
     data: {
       rootGoalId: string;
       rootWorkflowId: string;
+      bounds: FamilyBounds;
+      familyBudgetLimits: GoalBudgetDefinition;
     };
   })
   | (GoalFamilyEventBase & {
@@ -166,6 +252,16 @@ export type GoalFamilyEvent =
       workflowId: string;
       parent: GoalParentBinding;
       depth: number;
+    };
+  })
+  | (GoalFamilyEventBase & {
+    type: "hypagraph.family.child-created";
+    data: {
+      goalId: string;
+      workflowId: string;
+      parent: GoalParentBinding;
+      depth: number;
+      binding: ChildGoalBinding;
     };
   })
   | (GoalFamilyEventBase & {
@@ -380,14 +476,52 @@ export function assertSupportedGoalFamilySchemaVersion(schemaVersion: unknown): 
 }
 
 /**
+ * Validate family bounds as pure positive safe integers.
+ * Returns diagnostics without throwing.
+ */
+export function validateFamilyBounds(bounds: FamilyBounds): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const fields: Array<[keyof FamilyBounds, number]> = [
+    ["maxDepth", bounds.maxDepth],
+    ["maxChildrenPerGoal", bounds.maxChildrenPerGoal],
+    ["maxGoalsInFamily", bounds.maxGoalsInFamily],
+    ["maxChildCreationAttemptsPerNode", bounds.maxChildCreationAttemptsPerNode],
+  ];
+  for (const [name, value] of fields) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      diagnostics.push({
+        code: "invalid_goal_family_bounds",
+        message: `Family bound '${name}' must be a positive safe integer.`,
+        location: `bounds.${name}`,
+      });
+    }
+  }
+  if (
+    diagnostics.length === 0
+    && Number.isSafeInteger(bounds.maxGoalsInFamily)
+    && bounds.maxGoalsInFamily < 1
+  ) {
+    diagnostics.push({
+      code: "invalid_goal_family_bounds",
+      message: "Family bound 'maxGoalsInFamily' must allow at least the root member.",
+      location: "bounds.maxGoalsInFamily",
+    });
+  }
+  return diagnostics;
+}
+
+/**
  * Create a one-member goal family for a root goal and its workflow.
  * Timestamps and identifiers are pure inputs. This function does not read the clock.
+ * Optional bounds and family budget limits default to pure constants and empty limits.
  */
 export function createRootFamily(input: {
   familyId: string;
   rootGoalId: string;
   rootWorkflowId: string;
   at: string;
+  bounds?: FamilyBounds;
+  familyBudgetLimits?: GoalBudgetDefinition;
   eventId?: string;
   correlationId?: string;
   causationId?: string;
@@ -403,6 +537,36 @@ export function createRootFamily(input: {
 
   const atError = requireTimestamp(input.at);
   if (atError) return reject("invalid_goal_family_timestamp", atError, "at");
+
+  const bounds = input.bounds ? structuredClone(input.bounds) : structuredClone(DEFAULT_FAMILY_BOUNDS);
+  const boundsDiagnostics = validateFamilyBounds(bounds);
+  if (boundsDiagnostics.length > 0) {
+    return { ok: false, diagnostics: boundsDiagnostics };
+  }
+
+  const familyBudgetLimits = input.familyBudgetLimits
+    ? structuredClone(input.familyBudgetLimits)
+    : {};
+  if (
+    familyBudgetLimits.maximumTurns !== undefined
+    && (!Number.isSafeInteger(familyBudgetLimits.maximumTurns) || familyBudgetLimits.maximumTurns < 1)
+  ) {
+    return reject(
+      "invalid_goal_family_budget",
+      "The family maximum turn budget must be a positive safe integer when present.",
+      "familyBudgetLimits.maximumTurns",
+    );
+  }
+  if (
+    familyBudgetLimits.maximumTokens !== undefined
+    && (!Number.isSafeInteger(familyBudgetLimits.maximumTokens) || familyBudgetLimits.maximumTokens < 1)
+  ) {
+    return reject(
+      "invalid_goal_family_budget",
+      "The family maximum token budget must be a positive safe integer when present.",
+      "familyBudgetLimits.maximumTokens",
+    );
+  }
 
   const correlationId = input.correlationId ?? `family-create:${input.familyId}`;
   const causationId = input.causationId ?? correlationId;
@@ -420,6 +584,8 @@ export function createRootFamily(input: {
     data: {
       rootGoalId: input.rootGoalId,
       rootWorkflowId: input.rootWorkflowId,
+      bounds,
+      familyBudgetLimits,
     },
   };
 
@@ -572,6 +738,11 @@ export function applyFamilyEvent(
 
     const rootGoalId = requireIdentity(event.data?.rootGoalId, "root goal ID");
     const rootWorkflowId = requireIdentity(event.data?.rootWorkflowId, "root workflow ID");
+    const bounds = requireFamilyBounds(event.data?.bounds, "family-created event");
+    const familyBudgetLimits = requireFamilyBudgetLimits(
+      event.data?.familyBudgetLimits,
+      "family-created event",
+    );
 
     const rootMember: GoalFamilyMember = {
       goalId: rootGoalId,
@@ -589,6 +760,13 @@ export function applyFamilyEvent(
       schedulerOrdinal: event.sequence,
       createdAt: event.timestamp,
       updatedAt: event.timestamp,
+      bounds,
+      bindings: {},
+      familyBudget: {
+        limits: familyBudgetLimits,
+        reservedTurns: 0,
+        reservedTokens: 0,
+      },
     };
   }
 
@@ -621,6 +799,10 @@ export function applyFamilyEvent(
     return applyMemberAddedEvent(current, event);
   }
 
+  if (event.type === "hypagraph.family.child-created") {
+    return applyChildCreatedEvent(current, event);
+  }
+
   if (event.type === "hypagraph.family.action-selected") {
     return applyActionSelectedEvent(current, event);
   }
@@ -641,6 +823,131 @@ export function applyFamilyEvent(
     "unsupported_goal_family_event_type",
     `Unsupported goal-family event type '${String((event as { type?: unknown }).type)}'.`,
   );
+}
+
+function requireFamilyBounds(value: unknown, location: string): FamilyBounds {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    restoreFail("invalid_goal_family_bounds", `${location} must include a bounds object.`);
+  }
+  const raw = value as Record<string, unknown>;
+  const fields: Array<keyof FamilyBounds> = [
+    "maxDepth",
+    "maxChildrenPerGoal",
+    "maxGoalsInFamily",
+    "maxChildCreationAttemptsPerNode",
+  ];
+  const bounds = {} as FamilyBounds;
+  for (const field of fields) {
+    const numberValue = raw[field];
+    if (!Number.isSafeInteger(numberValue) || (numberValue as number) < 1) {
+      restoreFail(
+        "invalid_goal_family_bounds",
+        `${location} bound '${field}' must be a positive safe integer.`,
+      );
+    }
+    bounds[field] = numberValue as number;
+  }
+  return bounds;
+}
+
+function requireFamilyBudgetLimits(value: unknown, location: string): GoalBudgetDefinition {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    restoreFail("invalid_goal_family_budget", `${location} familyBudgetLimits must be a plain object.`);
+  }
+  const raw = value as Record<string, unknown>;
+  const limits: GoalBudgetDefinition = {};
+  if (raw.maximumTurns !== undefined) {
+    if (!Number.isSafeInteger(raw.maximumTurns) || (raw.maximumTurns as number) < 1) {
+      restoreFail(
+        "invalid_goal_family_budget",
+        `${location} maximumTurns must be a positive safe integer when present.`,
+      );
+    }
+    limits.maximumTurns = raw.maximumTurns as number;
+  }
+  if (raw.maximumTokens !== undefined) {
+    if (!Number.isSafeInteger(raw.maximumTokens) || (raw.maximumTokens as number) < 1) {
+      restoreFail(
+        "invalid_goal_family_budget",
+        `${location} maximumTokens must be a positive safe integer when present.`,
+      );
+    }
+    limits.maximumTokens = raw.maximumTokens as number;
+  }
+  return limits;
+}
+
+const CHILD_FAILURE_POLICIES = new Set<ChildGoalFailurePolicy>([
+  "fail-parent-node",
+  "block-parent-node",
+  "return-for-revision",
+]);
+
+function requireChildGoalBinding(value: unknown, location: string): ChildGoalBinding {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    restoreFail("invalid_goal_family_binding", `${location} must include a binding object.`);
+  }
+  const raw = value as Record<string, unknown>;
+  const bindingId = requireIdentity(raw.bindingId, "binding ID");
+  const childGoalId = requireIdentity(raw.childGoalId, "child goal ID");
+  const parentGoalId = requireIdentity(raw.parentGoalId, "parent goal ID");
+  const parentWorkflowId = requireIdentity(raw.parentWorkflowId, "parent workflow ID");
+  const parentNodeId = requireIdentity(raw.parentNodeId, "parent node ID");
+  const parentAttemptId = requireIdentity(raw.parentAttemptId, "parent attempt ID");
+  if (raw.status !== "active") {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} binding status must be 'active' for the creation slice.`,
+    );
+  }
+  if (typeof raw.failurePolicy !== "string" || !CHILD_FAILURE_POLICIES.has(raw.failurePolicy as ChildGoalFailurePolicy)) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} binding requires a known failure policy.`,
+    );
+  }
+  const factsValidated = validateChildBindingFacts(raw.inputFacts, raw.outputFacts);
+  if (!factsValidated.ok) {
+    const first = factsValidated.diagnostics[0]!;
+    restoreFail(first.code, `${location}: ${first.message}`);
+  }
+  if (!Array.isArray(raw.scopePaths) || raw.scopePaths.some((item) => typeof item !== "string" || !item.trim())) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} binding scopePaths must be an array of non-empty strings.`,
+    );
+  }
+  if (!raw.budget || typeof raw.budget !== "object" || Array.isArray(raw.budget)) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} binding budget must be a plain object.`,
+    );
+  }
+  const budget = requireFamilyBudgetLimits(raw.budget, `${location} binding budget`);
+  const createdAt = requireIdentity(raw.createdAt, "binding createdAt");
+  if (!Number.isFinite(Date.parse(createdAt))) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} binding createdAt must be a valid date-time string.`,
+    );
+  }
+
+  return {
+    bindingId,
+    childGoalId,
+    parentGoalId,
+    parentWorkflowId,
+    parentNodeId,
+    parentAttemptId,
+    inputFacts: factsValidated.inputFacts,
+    outputFacts: factsValidated.outputFacts,
+    budget,
+    failurePolicy: raw.failurePolicy as ChildGoalFailurePolicy,
+    scopePaths: structuredClone(raw.scopePaths as string[]),
+    status: "active",
+    createdAt,
+  };
 }
 
 function applyMemberAddedEvent(
@@ -723,6 +1030,154 @@ function applyMemberAddedEvent(
     parent.childGoalIds = [...parent.childGoalIds, goalId];
   }
 
+  return next;
+}
+
+/**
+ * Apply a family child-created event.
+ * Enforces creation bounds before membership is added.
+ * Records membership, the parent-child binding, and reserved family budget capacity.
+ */
+function applyChildCreatedEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<GoalFamilyEvent, { type: "hypagraph.family.child-created" }>,
+): GoalFamilyRuntime {
+  const parentGoalId = requireIdentity(event.data.parent?.parentGoalId, "parent goal ID");
+  const parentMember = current.members[parentGoalId];
+  if (!parentMember) {
+    restoreFail(
+      "goal_family_parent_missing",
+      `Goal family '${current.familyId}' does not contain parent goal '${parentGoalId}'.`,
+    );
+  }
+
+  if (!Number.isSafeInteger(event.data.depth) || event.data.depth < 1) {
+    restoreFail(
+      "invalid_goal_family_member_depth",
+      `Child member depth must be a positive safe integer.`,
+    );
+  }
+  if (event.data.depth > current.bounds.maxDepth) {
+    restoreFail(
+      "goal_family_depth_exceeded",
+      `Child goal depth ${event.data.depth} exceeds family maxDepth ${current.bounds.maxDepth}.`,
+    );
+  }
+  const memberCount = Object.keys(current.members).length;
+  if (memberCount + 1 > current.bounds.maxGoalsInFamily) {
+    restoreFail(
+      "goal_family_member_count_exceeded",
+      `Goal family '${current.familyId}' already has ${memberCount} members. `
+      + `maxGoalsInFamily is ${current.bounds.maxGoalsInFamily}.`,
+    );
+  }
+  if (parentMember.childGoalIds.length + 1 > current.bounds.maxChildrenPerGoal) {
+    restoreFail(
+      "goal_family_children_per_goal_exceeded",
+      `Parent goal '${parentGoalId}' already has ${parentMember.childGoalIds.length} children. `
+      + `maxChildrenPerGoal is ${current.bounds.maxChildrenPerGoal}.`,
+    );
+  }
+
+  // Reuse member-added rules for membership integrity, then attach binding and budget.
+  const withMember = applyMemberAddedEvent(current, {
+    ...event,
+    type: "hypagraph.family.member-added",
+    data: {
+      goalId: event.data.goalId,
+      workflowId: event.data.workflowId,
+      parent: event.data.parent,
+      depth: event.data.depth,
+    },
+  });
+
+  const binding = requireChildGoalBinding(event.data.binding, "Family child-created event");
+  if (binding.childGoalId !== event.data.goalId) {
+    restoreFail(
+      "goal_family_binding_child_mismatch",
+      `Child-created event goal '${event.data.goalId}' does not match binding child '${binding.childGoalId}'.`,
+    );
+  }
+  if (
+    binding.parentGoalId !== event.data.parent.parentGoalId
+    || binding.parentWorkflowId !== event.data.parent.parentWorkflowId
+    || binding.parentNodeId !== event.data.parent.parentNodeId
+  ) {
+    restoreFail(
+      "goal_family_binding_parent_mismatch",
+      `Child-created event parent does not match binding parent for child '${binding.childGoalId}'.`,
+    );
+  }
+  if (withMember.bindings[binding.bindingId]) {
+    restoreFail(
+      "goal_family_binding_exists",
+      `Goal family '${withMember.familyId}' already contains binding '${binding.bindingId}'.`,
+    );
+  }
+  for (const existing of Object.values(withMember.bindings)) {
+    if (existing.childGoalId === binding.childGoalId) {
+      restoreFail(
+        "goal_family_binding_child_in_use",
+        `Goal family '${withMember.familyId}' already binds child goal '${binding.childGoalId}'.`,
+      );
+    }
+  }
+  const attemptsFromNode = Object.values(withMember.bindings).filter(
+    (existing) =>
+      existing.parentGoalId === binding.parentGoalId
+      && existing.parentNodeId === binding.parentNodeId,
+  ).length;
+  if (attemptsFromNode + 1 > withMember.bounds.maxChildCreationAttemptsPerNode) {
+    restoreFail(
+      "goal_family_child_creation_attempts_exceeded",
+      `Parent node '${binding.parentNodeId}' on goal '${binding.parentGoalId}' already created `
+      + `${attemptsFromNode} child goals. maxChildCreationAttemptsPerNode is `
+      + `${withMember.bounds.maxChildCreationAttemptsPerNode}.`,
+    );
+  }
+
+  const allocationDiagnostics = validateChildBudgetAgainstFamilyLimits(
+    withMember.familyBudget.limits,
+    binding.budget,
+  );
+  if (allocationDiagnostics.length > 0) {
+    const first = allocationDiagnostics[0]!;
+    restoreFail(first.code, first.message);
+  }
+
+  const reservedTurns = binding.budget.maximumTurns ?? 0;
+  const reservedTokens = binding.budget.maximumTokens ?? 0;
+  const nextReservedTurns = withMember.familyBudget.reservedTurns + reservedTurns;
+  const nextReservedTokens = withMember.familyBudget.reservedTokens + reservedTokens;
+  if (!Number.isSafeInteger(nextReservedTurns) || !Number.isSafeInteger(nextReservedTokens)) {
+    restoreFail(
+      "invalid_goal_family_budget",
+      `Family '${withMember.familyId}' reserved budget exceeds the safe integer range.`,
+    );
+  }
+  if (
+    withMember.familyBudget.limits.maximumTurns !== undefined
+    && nextReservedTurns > withMember.familyBudget.limits.maximumTurns
+  ) {
+    restoreFail(
+      "goal_family_budget_exceeded",
+      `Family '${withMember.familyId}' cannot reserve ${reservedTurns} turns for child '${binding.childGoalId}'.`,
+    );
+  }
+  if (
+    withMember.familyBudget.limits.maximumTokens !== undefined
+    && nextReservedTokens > withMember.familyBudget.limits.maximumTokens
+  ) {
+    restoreFail(
+      "goal_family_budget_exceeded",
+      `Family '${withMember.familyId}' cannot reserve ${reservedTokens} tokens for child '${binding.childGoalId}'.`,
+    );
+  }
+
+  const next: GoalFamilyRuntime = structuredClone(withMember);
+  next.bindings[binding.bindingId] = structuredClone(binding);
+  next.familyBudget.reservedTurns = nextReservedTurns;
+  next.familyBudget.reservedTokens = nextReservedTokens;
   return next;
 }
 
@@ -1033,6 +1488,41 @@ export function validateFamilyMembershipGraph(family: GoalFamilyRuntime): void {
   requireIdentity(family.familyId, "family ID");
   requireIdentity(family.rootGoalId, "root goal ID");
 
+  const bounds = requireFamilyBounds(family.bounds, `Goal family '${family.familyId}'`);
+  if (!family.bindings || typeof family.bindings !== "object" || Array.isArray(family.bindings)) {
+    restoreFail(
+      "invalid_goal_family_bindings",
+      `Goal-family snapshot '${family.familyId}' must include a bindings object.`,
+    );
+  }
+  if (!family.familyBudget || typeof family.familyBudget !== "object" || Array.isArray(family.familyBudget)) {
+    restoreFail(
+      "invalid_goal_family_budget",
+      `Goal-family snapshot '${family.familyId}' must include a familyBudget object.`,
+    );
+  }
+  requireFamilyBudgetLimits(family.familyBudget.limits, `Goal family '${family.familyId}' familyBudget`);
+  if (!Number.isSafeInteger(family.familyBudget.reservedTurns) || family.familyBudget.reservedTurns < 0) {
+    restoreFail(
+      "invalid_goal_family_budget",
+      `Goal family '${family.familyId}' reservedTurns must be a non-negative safe integer.`,
+    );
+  }
+  if (!Number.isSafeInteger(family.familyBudget.reservedTokens) || family.familyBudget.reservedTokens < 0) {
+    restoreFail(
+      "invalid_goal_family_budget",
+      `Goal family '${family.familyId}' reservedTokens must be a non-negative safe integer.`,
+    );
+  }
+
+  const memberCount = Object.keys(family.members).length;
+  if (memberCount > bounds.maxGoalsInFamily) {
+    restoreFail(
+      "goal_family_member_count_exceeded",
+      `Goal family '${family.familyId}' has ${memberCount} members, which exceeds maxGoalsInFamily ${bounds.maxGoalsInFamily}.`,
+    );
+  }
+
   const root = family.members[family.rootGoalId];
   if (!root) {
     restoreFail(
@@ -1134,6 +1624,137 @@ export function validateFamilyMembershipGraph(family: GoalFamilyRuntime): void {
         );
       }
     }
+
+    if (member.childGoalIds.length > bounds.maxChildrenPerGoal) {
+      restoreFail(
+        "goal_family_children_per_goal_exceeded",
+        `Member '${member.goalId}' has ${member.childGoalIds.length} children, `
+        + `which exceeds maxChildrenPerGoal ${bounds.maxChildrenPerGoal}.`,
+      );
+    }
+    if (member.depth > bounds.maxDepth) {
+      restoreFail(
+        "goal_family_depth_exceeded",
+        `Member '${member.goalId}' depth ${member.depth} exceeds maxDepth ${bounds.maxDepth}.`,
+      );
+    }
+  }
+
+  let expectedReservedTurns = 0;
+  let expectedReservedTokens = 0;
+  const boundChildGoals = new Set<string>();
+  const attemptsByParentNode = new Map<string, number>();
+  for (const [bindingKey, binding] of Object.entries(family.bindings)) {
+    const validated = requireChildGoalBinding(binding, `Binding '${bindingKey}'`);
+    if (validated.bindingId !== bindingKey) {
+      restoreFail(
+        "goal_family_binding_key_mismatch",
+        `Goal-family '${family.familyId}' binding key '${bindingKey}' does not match binding ID '${validated.bindingId}'.`,
+      );
+    }
+    if (!family.members[validated.childGoalId]) {
+      restoreFail(
+        "goal_family_binding_child_missing",
+        `Binding '${validated.bindingId}' references missing child goal '${validated.childGoalId}'.`,
+      );
+    }
+    if (!family.members[validated.parentGoalId]) {
+      restoreFail(
+        "goal_family_binding_parent_missing",
+        `Binding '${validated.bindingId}' references missing parent goal '${validated.parentGoalId}'.`,
+      );
+    }
+    const childMember = family.members[validated.childGoalId]!;
+    if (
+      !childMember.parent
+      || childMember.parent.parentGoalId !== validated.parentGoalId
+      || childMember.parent.parentWorkflowId !== validated.parentWorkflowId
+      || childMember.parent.parentNodeId !== validated.parentNodeId
+    ) {
+      restoreFail(
+        "goal_family_binding_parent_mismatch",
+        `Binding '${validated.bindingId}' parent does not match member '${validated.childGoalId}' parent link.`,
+      );
+    }
+    if (boundChildGoals.has(validated.childGoalId)) {
+      restoreFail(
+        "goal_family_binding_child_in_use",
+        `Goal family '${family.familyId}' has more than one binding for child '${validated.childGoalId}'.`,
+      );
+    }
+    boundChildGoals.add(validated.childGoalId);
+    const attemptKey = `${validated.parentGoalId}\0${validated.parentNodeId}`;
+    const attemptCount = (attemptsByParentNode.get(attemptKey) ?? 0) + 1;
+    attemptsByParentNode.set(attemptKey, attemptCount);
+    if (attemptCount > bounds.maxChildCreationAttemptsPerNode) {
+      restoreFail(
+        "goal_family_child_creation_attempts_exceeded",
+        `Parent node '${validated.parentNodeId}' on goal '${validated.parentGoalId}' has `
+        + `${attemptCount} child-creation bindings, which exceeds maxChildCreationAttemptsPerNode `
+        + `${bounds.maxChildCreationAttemptsPerNode}.`,
+      );
+    }
+    const allocationDiagnostics = validateChildBudgetAgainstFamilyLimits(
+      family.familyBudget.limits,
+      validated.budget,
+    );
+    if (allocationDiagnostics.length > 0) {
+      const first = allocationDiagnostics[0]!;
+      restoreFail(first.code, first.message);
+    }
+    expectedReservedTurns += validated.budget.maximumTurns ?? 0;
+    expectedReservedTokens += validated.budget.maximumTokens ?? 0;
+  }
+
+  // Every non-root member must have exactly one binding.
+  for (const member of Object.values(family.members)) {
+    if (member.goalId === family.rootGoalId) continue;
+    if (!boundChildGoals.has(member.goalId)) {
+      // Membership-only child links (from member-added without child-created) remain valid
+      // for scheduler tests that add members without bindings.
+      continue;
+    }
+  }
+
+  if (!Number.isSafeInteger(expectedReservedTurns) || !Number.isSafeInteger(expectedReservedTokens)) {
+    restoreFail(
+      "invalid_goal_family_budget",
+      `Goal family '${family.familyId}' reserved budget totals exceed the safe integer range.`,
+    );
+  }
+  if (family.familyBudget.reservedTurns !== expectedReservedTurns) {
+    restoreFail(
+      "goal_family_budget_mismatch",
+      `Goal family '${family.familyId}' reservedTurns ${family.familyBudget.reservedTurns} `
+      + `does not match binding allocations ${expectedReservedTurns}.`,
+    );
+  }
+  if (family.familyBudget.reservedTokens !== expectedReservedTokens) {
+    restoreFail(
+      "goal_family_budget_mismatch",
+      `Goal family '${family.familyId}' reservedTokens ${family.familyBudget.reservedTokens} `
+      + `does not match binding allocations ${expectedReservedTokens}.`,
+    );
+  }
+  if (
+    family.familyBudget.limits.maximumTurns !== undefined
+    && family.familyBudget.reservedTurns > family.familyBudget.limits.maximumTurns
+  ) {
+    restoreFail(
+      "goal_family_budget_exceeded",
+      `Goal family '${family.familyId}' reservedTurns ${family.familyBudget.reservedTurns} `
+      + `exceeds maximumTurns ${family.familyBudget.limits.maximumTurns}.`,
+    );
+  }
+  if (
+    family.familyBudget.limits.maximumTokens !== undefined
+    && family.familyBudget.reservedTokens > family.familyBudget.limits.maximumTokens
+  ) {
+    restoreFail(
+      "goal_family_budget_exceeded",
+      `Goal family '${family.familyId}' reservedTokens ${family.familyBudget.reservedTokens} `
+      + `exceeds maximumTokens ${family.familyBudget.limits.maximumTokens}.`,
+    );
   }
 
   validateFamilySchedulerState(family);
@@ -1383,6 +2004,24 @@ export function restoreFamilyProjection(
     restoreFail(
       "goal_family_scheduler_mismatch",
       `The restored family last dispatch outcome for '${snapshot.familyId}' does not match the stored snapshot.`,
+    );
+  }
+  if (canonicalJsonStringify(rebuilt.bounds) !== canonicalJsonStringify(snapshot.bounds)) {
+    restoreFail(
+      "goal_family_bounds_mismatch",
+      `The restored family bounds for '${snapshot.familyId}' do not match the stored snapshot.`,
+    );
+  }
+  if (canonicalJsonStringify(rebuilt.bindings) !== canonicalJsonStringify(snapshot.bindings)) {
+    restoreFail(
+      "goal_family_bindings_mismatch",
+      `The restored family bindings for '${snapshot.familyId}' do not match the stored snapshot.`,
+    );
+  }
+  if (canonicalJsonStringify(rebuilt.familyBudget) !== canonicalJsonStringify(snapshot.familyBudget)) {
+    restoreFail(
+      "goal_family_budget_mismatch",
+      `The restored family budget for '${snapshot.familyId}' does not match the stored snapshot.`,
     );
   }
 

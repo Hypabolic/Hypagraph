@@ -653,6 +653,9 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
       familyId: selected.family.familyId,
       rootGoalId: selected.family.rootGoalId,
       members: selected.family.members,
+      bounds: selected.family.bounds,
+      bindings: selected.family.bindings,
+      familyBudget: selected.family.familyBudget,
       pendingDispatch: {
         status: selected.family.pendingDispatch!.status,
         selectedAt: selected.family.pendingDispatch!.selectedAt,

@@ -616,6 +616,12 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         }
       }
       break;
+    case "hypagraph.task.waiting-for-child":
+      // Suspend only this parent task. Keep the open attempt for later return handling.
+      if (node && event.attemptId && node.currentAttemptId === event.attemptId) {
+        node.status = "waiting_for_child";
+      }
+      break;
     case "hypagraph.interaction.expired":
       if (node && attempt) {
         const onTimeout = event.data.onTimeout;

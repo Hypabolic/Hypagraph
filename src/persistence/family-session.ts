@@ -1,8 +1,17 @@
-import type { PersistedHypagraph } from "../domain/model.js";
+import {
+  createBoundedChildGoal,
+  type CreateBoundedChildGoalInput,
+} from "../domain/child-goal-creation.js";
+import type {
+  Diagnostic,
+  HypagraphDefinition,
+  PersistedHypagraph,
+} from "../domain/model.js";
 import type { PiSessionEntryAppender } from "./pi-session-store.js";
 import {
   HYPAGRAPH_FAMILY_RECORD_TYPE,
   assertPersistedGoalFamilyShape,
+  commitBoundedChildGoalToPersistedFamily,
   defaultOneMemberFamilyId,
   migrateRootWorkflowToOneMemberFamily,
   restorePersistedGoalFamily,
@@ -137,3 +146,97 @@ export function appendOneMemberFamilyRecord(
   const restored = restorePersistedGoalFamily(family);
   appender.appendEntry(HYPAGRAPH_FAMILY_RECORD_TYPE, restored);
 }
+
+/**
+ * Input for product-path bounded child creation against a persisted family.
+ * Pure identities and timestamps are caller-supplied.
+ */
+export type CreateBoundedChildGoalInFamilyInput = Omit<
+  CreateBoundedChildGoalInput,
+  "family" | "parentState"
+> & {
+  family: PersistedGoalFamily;
+  parentGoalId: string;
+};
+
+export type CreateBoundedChildGoalInFamilyResult =
+  | { ok: true; family: PersistedGoalFamily }
+  | { ok: false; diagnostics: Diagnostic[] };
+
+/**
+ * Create a bounded child goal on a persisted family record.
+ *
+ * Loads the parent workflow from the family record, runs createBoundedChildGoal,
+ * and commits family plus workflow streams through commitBoundedChildGoalToPersistedFamily.
+ * The input family record is not mutated.
+ * Child return handling is out of scope for this path.
+ *
+ * Pi tool surface wiring waits for a later M7 slice. Controllers and tests use this API.
+ */
+export function createBoundedChildGoalInFamily(
+  input: CreateBoundedChildGoalInFamilyInput,
+): CreateBoundedChildGoalInFamilyResult {
+  const parentMember = input.family.familySnapshot.members[input.parentGoalId];
+  if (!parentMember) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_parent_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' does not contain parent goal `
+          + `'${input.parentGoalId}'.`,
+        location: "parentGoalId",
+      }],
+    };
+  }
+
+  const parentWorkflow = input.family.workflows[parentMember.workflowId];
+  if (!parentWorkflow) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_member_workflow_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' parent '${input.parentGoalId}' `
+          + `references missing workflow '${parentMember.workflowId}'.`,
+        location: "parentGoalId",
+      }],
+    };
+  }
+
+  const creation = createBoundedChildGoal({
+    family: input.family.familySnapshot,
+    parentState: parentWorkflow.snapshot,
+    parentNodeId: input.parentNodeId,
+    childDefinition: input.childDefinition,
+    childGoalId: input.childGoalId,
+    childWorkflowId: input.childWorkflowId,
+    bindingId: input.bindingId,
+    at: input.at,
+    scopePaths: input.scopePaths,
+    ...(input.budget !== undefined ? { budget: input.budget } : {}),
+    ...(input.failurePolicy !== undefined ? { failurePolicy: input.failurePolicy } : {}),
+    ...(input.inputFacts !== undefined ? { inputFacts: input.inputFacts } : {}),
+    ...(input.outputFacts !== undefined ? { outputFacts: input.outputFacts } : {}),
+    ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
+    ...(input.causationId !== undefined ? { causationId: input.causationId } : {}),
+    ...(input.familyEventId !== undefined ? { familyEventId: input.familyEventId } : {}),
+    ...(input.parentCommandId !== undefined ? { parentCommandId: input.parentCommandId } : {}),
+  });
+  if (!creation.ok) return { ok: false, diagnostics: creation.diagnostics };
+
+  try {
+    const committed = commitBoundedChildGoalToPersistedFamily(input.family, creation);
+    return { ok: true, family: committed };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "goal_family_child_commit_failed";
+    return {
+      ok: false,
+      diagnostics: [{ code, message }],
+    };
+  }
+}
+
+/** Re-export for product callers that assemble child definitions. */
+export type { HypagraphDefinition };

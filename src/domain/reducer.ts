@@ -229,7 +229,10 @@ const invalidatedNodes = (previous: HypagraphDefinition, next: HypagraphDefiniti
 };
 
 const activeLoopForRevision = (state: HypagraphState): LoopDefinition | undefined =>
-  state.definition.loops.find((loop) => loop.nodes.some((nodeId) => ACTIVE_ATTEMPT_STATUSES.has(state.runtime.nodes[nodeId]?.status ?? "pending")));
+  state.definition.loops.find((loop) => loop.nodes.some((nodeId) => {
+    const status = state.runtime.nodes[nodeId]?.status ?? "pending";
+    return ACTIVE_ATTEMPT_STATUSES.has(status) || status === "waiting_for_child";
+  }));
 
 const loopForNode = (state: HypagraphState, nodeId: string): LoopDefinition | undefined => state.definition.loops.find((loop) => loop.nodes.includes(nodeId));
 const isLegacyPredicate = (value: unknown): value is string | LegacyLoopPredicate => {
@@ -280,12 +283,32 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
   }).map((contract) => contract.name);
 };
 
-const activeAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
+/**
+ * True when another node holds exclusive active-attempt ownership.
+ * Interaction wait and child wait do not block independent work starts.
+ */
+const exclusiveActiveAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
   // An unanswered interaction waits without holding exclusive active-attempt ownership.
   if (item.status === "awaiting_response") return false;
+  // A parent task waiting for a child goal suspends only that task.
+  if (item.status === "waiting_for_child") return false;
   return ACTIVE_ATTEMPT_STATUSES.has(item.status)
     || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying");
 });
+
+/**
+ * True when revision is unsafe because an open attempt still owns workflow identity.
+ * A parent task waiting for a child still blocks revision so the binding target remains valid.
+ */
+const revisionBlockingAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
+  if (item.status === "awaiting_response") return false;
+  if (item.status === "waiting_for_child") return true;
+  return ACTIVE_ATTEMPT_STATUSES.has(item.status)
+    || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying");
+});
+
+/** Exclusive active-attempt ownership for concurrent work starts. */
+const activeAttemptExists = exclusiveActiveAttemptExists;
 
 const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
   if (result.attemptId !== attemptId) return reject("stale_check_result", "The check result does not match the current attempt.");
@@ -678,7 +701,12 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       next = append(next, events, command, { type: "hypagraph.goal.revision-abandoned", data: { goalId: goal.goalId, operationId: automatic.operationId, outcomeCode: command.outcomeCode, reason: command.reason } });
       return { ok: true, state: next, events };
     }
-    if (activeAttemptExists(state)) return reject("active_revision_not_allowed", "An active attempt or check must finish or be cancelled before revision.");
+    if (revisionBlockingAttemptExists(state)) {
+      return reject(
+        "active_revision_not_allowed",
+        "An active attempt, check, or parent task waiting for a child must finish or be cancelled before revision.",
+      );
+    }
     const safeguards = validateAutomaticRevision(state.definition, command.definition);
     const structural = validateDefinition(command.definition);
     const rejection = [...safeguards, ...structural];
@@ -721,7 +749,12 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
   if (command.type === "revise") {
     const activeLoop = activeLoopForRevision(state);
     if (activeLoop) return reject("active_loop_revision_not_allowed", `Loop '${activeLoop.id}' has an active attempt. Cancel or finish it before revision.`, `loops.${activeLoop.id}`);
-    if (activeAttemptExists(state)) return reject("active_revision_not_allowed", "An active attempt or check must finish or be cancelled before revision.");
+    if (revisionBlockingAttemptExists(state)) {
+      return reject(
+        "active_revision_not_allowed",
+        "An active attempt, check, or parent task waiting for a child must finish or be cancelled before revision.",
+      );
+    }
     const diagnostics = validateDefinition(command.definition); if (diagnostics.length > 0) return { ok: false, diagnostics };
     const directChanges = directlyChangedNodes(state.definition, command.definition);
     const invalidatedLoops = invalidatedLoopIds(state.definition, command.definition, directChanges);
@@ -1614,6 +1647,46 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       break;
     }
     case "unblock-node": { if (node.status !== "blocked") return reject("node_not_blocked", `Node '${command.nodeId}' is not blocked.`); next = append(next, events, command, { type: "hypagraph.node.unblocked", nodeId: command.nodeId }); next = appendReadyEvents(next, events, command); break; }
+    case "wait-for-child": {
+      if ((definitionNode.kind ?? "task") !== "task") {
+        return reject(
+          "child_goal_parent_not_task",
+          `Node '${command.nodeId}' cannot wait for a child goal. Only a task node can create a child goal.`,
+          "nodeId",
+        );
+      }
+      if (!ACTIVE_ATTEMPT_STATUSES.has(node.status)) {
+        return reject(
+          "child_goal_parent_not_active",
+          `Node '${command.nodeId}' cannot wait for a child from status '${node.status}'. `
+          + "The parent task must be in an active attempt state.",
+          "nodeId",
+        );
+      }
+      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) {
+        return reject(
+          "stale_attempt",
+          "The wait-for-child command does not match the current attempt.",
+          "attemptId",
+        );
+      }
+      if (typeof command.childGoalId !== "string" || !command.childGoalId.trim()) {
+        return reject("invalid_child_goal_id", "The child goal ID must be a non-empty string.", "childGoalId");
+      }
+      if (typeof command.bindingId !== "string" || !command.bindingId.trim()) {
+        return reject("invalid_child_binding_id", "The child binding ID must be a non-empty string.", "bindingId");
+      }
+      next = append(next, events, command, {
+        type: "hypagraph.task.waiting-for-child",
+        nodeId: command.nodeId,
+        attemptId: command.attemptId,
+        data: {
+          childGoalId: command.childGoalId,
+          bindingId: command.bindingId,
+        },
+      });
+      break;
+    }
     case "cancel-attempt": {
       if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) return reject("stale_attempt", "The cancellation does not match the current attempt.");
       const loop = loopForNode(state, command.nodeId);

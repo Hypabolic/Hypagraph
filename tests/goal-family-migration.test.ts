@@ -752,7 +752,7 @@ describe("session product path for one-member family migration", () => {
 
   it("rejects malformed family shapes with typed restore errors", () => {
     const baseSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyId: "family-1",
       rootGoalId: "goal-root",
       members: {
@@ -767,17 +767,29 @@ describe("session product path for one-member family migration", () => {
       schedulerOrdinal: 1,
       createdAt: at,
       updatedAt: at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 8,
+        maxGoalsInFamily: 32,
+        maxChildCreationAttemptsPerNode: 8,
+      },
+      bindings: {},
+      familyBudget: {
+        limits: {},
+        reservedTurns: 0,
+        reservedTokens: 0,
+      },
     };
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: baseSnapshot,
       workflows: [],
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: baseSnapshot,
         workflows: [],
@@ -788,14 +800,14 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [null],
       familySnapshot: baseSnapshot,
       workflows: {},
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [null],
         familySnapshot: baseSnapshot,
         workflows: {},
@@ -806,7 +818,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: {
         ...baseSnapshot,
@@ -818,7 +830,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: {
           ...baseSnapshot,
@@ -833,7 +845,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: {
         ...baseSnapshot,
@@ -852,7 +864,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: {
           ...baseSnapshot,
@@ -874,7 +886,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: baseSnapshot,
       workflows: {
@@ -886,7 +898,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: baseSnapshot,
         workflows: {
@@ -901,7 +913,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: baseSnapshot,
       workflows: {
@@ -913,7 +925,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: baseSnapshot,
         workflows: {
@@ -928,7 +940,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: baseSnapshot,
       workflows: {
@@ -939,7 +951,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: baseSnapshot,
         workflows: {
@@ -953,7 +965,7 @@ describe("session product path for one-member family migration", () => {
     }
 
     expect(() => assertPersistedGoalFamilyShape({
-      schemaVersion: 1,
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
       familyEvents: [],
       familySnapshot: {
         ...baseSnapshot,
@@ -963,7 +975,7 @@ describe("session product path for one-member family migration", () => {
     })).toThrow(GoalFamilyRestoreError);
     try {
       assertPersistedGoalFamilyShape({
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [],
         familySnapshot: {
           ...baseSnapshot,
@@ -980,7 +992,7 @@ describe("session product path for one-member family migration", () => {
       type: "custom",
       customType: HYPAGRAPH_FAMILY_RECORD_TYPE,
       data: {
-        schemaVersion: 1,
+        schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
         familyEvents: [null],
         familySnapshot: baseSnapshot,
         workflows: {},
