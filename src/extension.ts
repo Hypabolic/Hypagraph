@@ -117,6 +117,19 @@ const presentInteractionSelect = async (
   return { responseId: response.id };
 };
 
+/** The `/hypagraph` usage text. Help and the unknown-subcommand error share it. */
+const hypagraphUsage = (): string => [
+  "Usage: /hypagraph [help | ask | history | explain | loop | check | graph]",
+  "  ask [<nodeId>]                             Present an open question again.",
+  `  history [<sequence> | revisions | <lane>]  Read the event timeline.`,
+  `                                             A lane is ${TIMELINE_LANES.join(", ")}.`,
+  "  explain [<nodeId>]                         Explain why work is not runnable.",
+  "  loop                                       Show bounded iteration regions.",
+  "  check active | check cancel [<nodeId>]     Inspect or stop a running check.",
+  "  graph [open | close | toggle | focus]      Control the graph pane.",
+  "  (no argument)                              Show the workflow.",
+].join("\n");
+
 const throwDiagnostics = (diagnostics: readonly { code: string; message: string; location?: string }[]): never => {
   throw new Error(`Hypagraph rejected the operation:\n${formatDiagnostics(diagnostics)}`);
 };
@@ -1478,18 +1491,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
     handler: async (args, ctx) => {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words.map((word) => word.toLowerCase()).join(" ");
-      if (action === "help") {
-        ctx.ui.notify([
-          "Usage: /hypagraph [help | ask | history | explain | loop | check | graph]",
-          "  ask [<nodeId>]                             Present an open question again.",
-          "  history [<sequence> | revisions | <lane>]  Read the event timeline.",
-          "  explain [<nodeId>]                         Explain why work is not runnable.",
-          "  loop                                       Show bounded iteration regions.",
-          "  check active | check cancel [<nodeId>]     Inspect or stop a running check.",
-          "  graph [open | close | toggle | focus]      Control the graph pane.",
-          "  (no argument)                              Show the workflow.",
-        ].join("\n"), "info");
-      }
+      if (action === "help") ctx.ui.notify(hypagraphUsage(), "info");
       else if (action === "graph" || action === "graph open") graphPane.open(ctx);
       else if (action === "graph close") graphPane.close();
       else if (action === "graph toggle") graphPane.toggle(ctx);
@@ -1523,7 +1525,13 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         updateUi(state!, ctx, graphPane);
         if (outcome === "answered") ctx.ui.notify(renderWorkflow(state!), "info");
         else ctx.ui.notify(`Interaction '${awaiting.nodeId}' still waits for an answer.`, "info");
-      } else ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
+      } else if (words.length === 0) {
+        ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
+      } else {
+        // A command must not accept an unknown subcommand in silence. A silent
+        // workflow render hides a typing mistake.
+        ctx.ui.notify(`/hypagraph has no '${words.join(" ")}' subcommand.\n${hypagraphUsage()}`, "warning");
+      }
     },
   });
 }
