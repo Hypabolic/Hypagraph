@@ -22,7 +22,8 @@ Read these files in order before you change code:
 6. `docs/delegation-and-visualisation.md` — executor and UI context for M7;
 7. `docs/v0.10-release-notes.md` — what just shipped;
 8. `docs/m6-3-external-effect-plan.md` — effect and reconciliation rules still in force;
-9. `docs/code-node-adapter-plan.md` — sandbox program body shared by code and effect nodes.
+9. `docs/code-node-adapter-plan.md` — sandbox program body shared by code and effect nodes;
+10. `docs/gauntlet-built-in-hypagoal.md` — design for a built-in Gauntlet Hypagoal recipe.
 
 ## 2. Released state
 
@@ -205,7 +206,8 @@ These are not blockers for starting M7:
 
 1. **M6.3 live GitHub dogfood** — the suite and `docs/m6-3-dogfood.md` use an in-memory host. A live pull-request dogfood can wait until credentials and a safe repository exist.
 2. **M6.2 non-pure workspace handlers** — pure code programs ship end to end. Broader workspace host handlers remain available to grow with effect and M8 surfaces as needed.
-3. **Dependabot** — GitHub reports one high vulnerability on the default branch. Review and fix when convenient; it is outside the M7 domain path.
+3. **Named recipe library** — Grok-style built-in Hypagoals are not shipped yet. The first designed built-in is **The Gauntlet** (`docs/gauntlet-built-in-hypagoal.md`): specialised implementers, blind critics, reference-grade gates. It needs aggregate quorum, M7 model-executors, and a recipe launch path.
+4. **Dependabot** — GitHub reports one high vulnerability on the default branch. Review and fix when convenient; it is outside the M7 domain path.
 
 ## 7. Suggested first M7 steps
 
@@ -232,6 +234,8 @@ These are not blockers for starting M7:
 | M6.1 dogfood | `docs/m6-1-dogfood.md` |
 | M7 family plan | `docs/goal-family-and-concurrent-execution-plan.md` |
 | M7 delegation | `docs/delegation-and-visualisation.md` |
+| Gauntlet built-in recipe (design) | `docs/gauntlet-built-in-hypagoal.md` |
+| Grok workflow comparison | `docs/research/grok-build-workflows-comparison.md` |
 | Skill | `skills/hypagraph/SKILL.md` |
 
 ## 9. Working tree expectation
