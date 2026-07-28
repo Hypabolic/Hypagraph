@@ -215,6 +215,20 @@ const interactionSchema = Type.Object({
     maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
     fact: Type.String({ description: "The declared string fact which receives the typed answer" }),
   }, { description: "An open question for a model-backed task which needs a clarification. A gate must not route on the fact." })),
+  freeText: Type.Optional(Type.Object({
+    prompt: Type.String({ description: "Prompt for optional notes on a closed question" }),
+    maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
+  }, { description: "Optional free-text notes on a closed question. Evidence only. Never a routing fact." })),
+  feedback: Type.Optional(Type.Object({
+    maxBytes: Type.Integer({ minimum: 1, maximum: 16_777_216 }),
+    mediaType: Type.Optional(Type.String({ description: "Default is application/json; charset=utf-8" })),
+  }, { description: "Optional structured feedback artifact. A gate must never route on feedback content." })),
+  timeout: Type.Optional(Type.Object({
+    durationMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86_400_000 })),
+    absolute: Type.Optional(Type.String({ description: "Absolute ISO-8601 deadline" })),
+    onTimeout: StringEnum(["block", "select"] as const),
+    selectResponseId: Type.Optional(Type.String({ description: "Required when onTimeout is select" })),
+  }, { description: "Level-triggered deadline. Supply durationMs or absolute, not both." })),
 });
 const nodeSchema = Type.Object({
   id: Type.String({ description: "Stable lowercase node ID" }),
@@ -227,6 +241,12 @@ const nodeSchema = Type.Object({
   gate: Type.Optional(gateSchema),
   check: Type.Optional(checkSchema),
   interaction: Type.Optional(interactionSchema),
+  context: Type.Optional(Type.Object({
+    feedbackFrom: Type.Array(Type.String(), {
+      minItems: 1,
+      description: "Interaction node ids whose feedback artifacts this task may consume",
+    }),
+  }, { description: "Explicit context bindings for a task. Prefer feedbackFrom for determinism." })),
   scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
 });
 
@@ -388,6 +408,7 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
                 },
       }),
       ...(node.interaction === undefined ? {} : { interaction: structuredClone(node.interaction) }),
+      ...(node.context === undefined ? {} : { context: { feedbackFrom: [...node.context.feedbackFrom] } }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
     })),
     loops: (input.loops ?? []).map((loop) => ({

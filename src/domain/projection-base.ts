@@ -76,9 +76,26 @@ const withoutHash = (state: HypagraphState): Omit<HypagraphState, "snapshotHash"
   return rest;
 };
 
+const isDeadline = (value: unknown): value is AttemptRuntime["deadline"] => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { absolute?: unknown; source?: unknown };
+  return typeof candidate.absolute === "string"
+    && (candidate.source === "requested-at-plus-duration" || candidate.source === "declared-absolute");
+};
+
+const isTimeoutPolicy = (value: unknown): value is AttemptRuntime["timeoutPolicy"] => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { onTimeout?: unknown; selectResponseId?: unknown };
+  if (candidate.onTimeout !== "block" && candidate.onTimeout !== "select") return false;
+  if (candidate.selectResponseId !== undefined && typeof candidate.selectResponseId !== "string") return false;
+  return true;
+};
+
 const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string, data: Record<string, unknown>): void => {
   const loopId = typeof data.loopId === "string" ? data.loopId : undefined;
   const iteration = typeof data.iteration === "number" ? data.iteration : undefined;
+  const deadline = isDeadline(data.deadline) ? structuredClone(data.deadline) : undefined;
+  const timeoutPolicy = isTimeoutPolicy(data.timeoutPolicy) ? structuredClone(data.timeoutPolicy) : undefined;
   const value: AttemptRuntime = {
     attemptId,
     number: node.attemptCount + 1,
@@ -87,6 +104,8 @@ const startAttempt = (node: NodeRuntime, attemptId: string, timestamp: string, d
     evidence: [],
     ...(loopId === undefined ? {} : { loopId }),
     ...(iteration === undefined ? {} : { iteration }),
+    ...(deadline === undefined ? {} : { deadline }),
+    ...(timeoutPolicy === undefined ? {} : { timeoutPolicy }),
   };
   node.attemptCount += 1;
   node.currentAttemptId = attemptId;
@@ -457,13 +476,46 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         attempt.evidence = evidence;
         node.evidence = evidence;
         node.status = "awaiting_evidence";
+        if (typeof event.data.responseId === "string") attempt.responseId = event.data.responseId;
+        if (typeof event.data.feedbackArtifactRef === "string") {
+          attempt.feedbackArtifactRef = event.data.feedbackArtifactRef;
+        }
+        if (typeof event.data.freeTextArtifactRef === "string") {
+          attempt.freeTextArtifactRef = event.data.freeTextArtifactRef;
+        }
+        if (typeof event.data.freeText === "string") {
+          attempt.freeText = event.data.freeText;
+        }
       }
       break;
     case "hypagraph.interaction.expired":
       if (node && attempt) {
-        attempt.status = "failed";
-        attempt.completedAt = event.timestamp;
-        node.status = "failed";
+        const onTimeout = event.data.onTimeout;
+        if (onTimeout === "select") {
+          // Select timeout publishes default facts next, like an answer.
+          const evidence = Array.isArray(event.data.evidence)
+            ? structuredClone(event.data.evidence as AttemptRuntime["evidence"])
+            : [];
+          attempt.status = "submitted";
+          attempt.submittedAt = event.timestamp;
+          attempt.evidence = evidence;
+          node.evidence = evidence;
+          node.status = "awaiting_evidence";
+          if (typeof event.data.selectResponseId === "string") {
+            attempt.responseId = event.data.selectResponseId;
+          }
+        } else {
+          // Block timeout ends the wait as an explicit blocked node.
+          attempt.status = "failed";
+          attempt.completedAt = event.timestamp;
+          attempt.failureReason = typeof event.data.reason === "string"
+            ? event.data.reason
+            : "The interaction deadline passed before an answer.";
+          node.status = "blocked";
+          node.blockedReason = attempt.failureReason;
+          node.blockerKind = "external-dependency";
+          delete node.currentAttemptId;
+        }
       }
       break;
     case "hypagraph.fact.published":

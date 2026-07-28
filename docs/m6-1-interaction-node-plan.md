@@ -349,7 +349,7 @@ Scope:
 | 1 | Node kind, wait state, and selector behaviour | `src/domain/validate.ts`, `src/domain/reducer.ts`, `tests/m6-1-interaction-slice-1.test.ts` |
 | 1.1 | Interactive presentation and the ask tool | `src/pi/interaction-dialog.ts`, `src/ui/interaction-surface.ts`, `src/extension.ts`, `src/ui/format.ts`, `src/ui/hypagoal-surface.ts`, `tests/m6-1-interaction-slice-1-1.test.ts` |
 | 2 | Deterministic presentation effects | `src/checks/presentation-executor.ts`, `src/domain/presentation-report.ts`, `src/domain/model-base.ts`, `src/domain/reducer.ts`, `src/domain/projection-base.ts`, `src/domain/validate.ts`, `src/extension.ts`, `tests/m6-1-interaction-slice-2.test.ts` |
-| 3 | Routing, structured feedback, and deadlines | Not started |
+| 3 | Routing, structured feedback, and deadlines | Complete |
 | 4 | Reload, restore, and product surface | Partial: the controller re-presents when the wait is the only stop; status, widget, and lifecycle surfaces name the wait; reload and graph-pane waiting state remain open |
 | 5 | Dogfood and release | Not started |
 
@@ -358,6 +358,17 @@ Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, th
 Slice 1.1 is complete. It adds `hypagraph_ask` and the closed and open dialog surfaces. It adds `/hypagraph ask` and waiting status and widget lines. A dialog opens only when no other action is runnable. A person answers through a dialog and never types a node ID or a response ID.
 
 Slice 2 is complete. It adds deterministic presentation kinds `none`, `report`, and `command`. The durable order is request, presentation effect, `present-interaction` observation, then dialog. Artifacts use the check-artifact store. A failed effect stores an explicit failed node. Semantic presentation still fails validation with a diagnostic which names M7. `tests/m6-1-interaction-slice-2.test.ts` holds the tests.
+
+Slice 3 is complete. Routing uses only published response facts through the existing gate path. Optional `freeText` notes on closed questions are evidence only. Structured feedback artifacts store by identity and reach the next task through `projectTaskContext` and explicit `context.feedbackFrom`. Continuation prompts and `hypagraph_read` summary deliver those refs to the worker. Level-triggered deadlines store an absolute time on request and evaluate through `expire-interaction` with a supplied evaluation time. The extension evaluates outstanding deadlines on controller wake. When an interaction presentation is in flight, deadline evaluation waits for the next controller entry after the presentation ends. Evidence:
+
+- `src/domain/model-base.ts`
+- `src/domain/validate.ts`
+- `src/domain/reducer.ts`
+- `src/domain/projection-base.ts`
+- `src/domain/task-context.ts`
+- `src/extension.ts`
+- `src/pi/definition.ts`
+- `tests/m6-1-interaction-slice-3.test.ts`
 
 Two decisions were recorded during Slice 1.
 

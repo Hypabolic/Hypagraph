@@ -8,6 +8,7 @@ import {
   type GoalDispatchableContinuation,
 } from "../domain/goal-continuation.js";
 import { projectModelVisibleWorkflowSummary } from "./model-visible-state.js";
+import { renderTaskContextLines } from "../domain/task-context.js";
 
 export interface GoalContinuationGeneration {
   sessionGeneration: number;
@@ -67,6 +68,9 @@ export function buildGoalContinuationPrompt(
     ].join("\n");
   }
   const loop = projectGoalLoopContinuationGuidance(state, action);
+  const taskContext = (action.kind === "start-ready-task" || action.kind === "continue-active-task")
+    ? renderTaskContextLines(state, action.nodeId)
+    : [];
   return [
     "Hypagraph automatic continuation.",
     `Operation: ${operationId}`,
@@ -77,7 +81,14 @@ export function buildGoalContinuationPrompt(
     ...(action.loopId ? [`Loop: ${action.loopId}`] : []),
     ...(loop ? [`Loop iteration: ${loop.iteration}/${loop.maximumIterations}`, `Loop status: ${loop.status}`] : []),
     ...(loop?.evaluation ? [`Evaluation purpose: ${loop.evaluation.purpose}`, `Evaluation feedback: ${loop.evaluation.feedbackMode}`] : []),
+    ...taskContext,
     "Continue only the selected canonical action. Use the Hypagraph lifecycle tools. Do not mark the goal complete directly.",
+    ...(taskContext.length > 0
+      ? [
+        "hypagraph_read returns taskContexts feedback artifact refs only. It does not load artifact bytes.",
+        "Open each feedback artifact at its ref (file path or URL) to read the content. Do not invent feedback content.",
+      ]
+      : []),
   ].join("\n");
 }
 
@@ -152,9 +163,13 @@ export function continuationSystemPrompt(pending: PendingGoalContinuation, state
     ...(action.loopId ? [`The selected action belongs to loop '${action.loopId}'.`] : []),
     ...renderGoalLoopContinuationGuidance(state, action),
   ];
-  if (action.kind === "continue-active-task") common.push(`Continue only task '${action.nodeId}'. Publish declared facts, submit evidence, and use a separate verification action. Do not start another node.`);
-  else if (action.kind === "start-ready-task") common.push(`Start task '${action.nodeId}' with hypagraph_transition before repository changes. Work only in its declared scope. Then publish facts, submit evidence, and verify it.`);
-  else if (action.kind === "run-ready-check") common.push(`Run check '${action.nodeId}' with hypagraph_run_check. Do not start it with hypagraph_transition.`);
+  if (action.kind === "continue-active-task") {
+    common.push(`Continue only task '${action.nodeId}'. Publish declared facts, submit evidence, and use a separate verification action. Do not start another node.`);
+    common.push(...renderTaskContextLines(state, action.nodeId));
+  } else if (action.kind === "start-ready-task") {
+    common.push(`Start task '${action.nodeId}' with hypagraph_transition before repository changes. Work only in its declared scope. Then publish facts, submit evidence, and verify it.`);
+    common.push(...renderTaskContextLines(state, action.nodeId));
+  } else if (action.kind === "run-ready-check") common.push(`Run check '${action.nodeId}' with hypagraph_run_check. Do not start it with hypagraph_transition.`);
   else if (action.kind === "request-ready-interaction") common.push(`Ask interaction '${action.nodeId}' with hypagraph_ask. The tool presents the declared question and stores the answer which the user selects. Do not invent a question, a response, or an answer.`);
   else common.push(`Evaluate gate '${action.nodeId}' with the evaluate action of hypagraph_transition. Do not use model judgement to select the route.`);
   common.push("Do not revise the graph, replace the root, or mark the goal complete unless canonical state requires a separate supported action.");

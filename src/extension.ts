@@ -24,6 +24,7 @@ import {
   responseForOptionText,
   type AwaitingInteraction,
 } from "./domain/interaction-presentation.js";
+import { expiredInteractionCandidates } from "./domain/task-context.js";
 import { projectGraphView } from "./graph/projection.js";
 import {
   replacementConfirmationFor,
@@ -46,7 +47,11 @@ import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } f
 import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
 import { definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
-import { projectModelVisibleGraphView, projectModelVisibleWorkflowSummary } from "./pi/model-visible-state.js";
+import {
+  projectModelVisibleGraphView,
+  projectModelVisibleTaskContext,
+  projectModelVisibleWorkflowSummary,
+} from "./pi/model-visible-state.js";
 import { formatPiCheckCommand } from "./pi/check-runner.js";
 import { runDeterministicCheckDispatch } from "./pi/deterministic-check-runner.js";
 import {
@@ -87,6 +92,9 @@ export const MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES = 64;
 interface InteractionAnswer {
   responseId?: string;
   openText?: string;
+  freeText?: string;
+  /** Optional structured feedback body. The host stores it before answer. */
+  feedbackContent?: string;
 }
 
 /** Present the rich dialog. TUI mode supports a custom overlay component. */
@@ -98,7 +106,22 @@ const presentInteractionDialog = async (
     (tui, theme, _keybindings, done) => new InteractionDialogComponent(tui, theme, interaction, done),
     { overlay: true, overlayOptions: { width: "80%", minWidth: 48, maxHeight: "70%" } },
   );
-  if (result.kind === "response") return { responseId: result.responseId };
+  if (result.kind === "response") {
+    const answer: InteractionAnswer = { responseId: result.responseId };
+    // Closed dialog has no freeText or feedback row yet. Capture optional host
+    // notes and structured feedback through plain input after the dialog.
+    if (interaction.freeText) {
+      const notes = await ctx.ui.input(interaction.freeText.prompt);
+      if (notes !== undefined && notes.trim().length > 0) answer.freeText = notes;
+    }
+    if (interaction.feedback) {
+      const feedback = await ctx.ui.input(
+        "Optional structured feedback. Leave empty to skip. Use JSON when the interaction expects annotations.",
+      );
+      if (feedback !== undefined && feedback.trim().length > 0) answer.feedbackContent = feedback;
+    }
+    return answer;
+  }
   if (result.kind === "open") return { openText: result.openText };
   return undefined;
 };
@@ -122,7 +145,18 @@ const presentInteractionSelect = async (
   if (selected === undefined) return undefined;
   const response = responseForOptionText(interaction, selected);
   if (!response) return undefined;
-  return { responseId: response.id };
+  const answer: InteractionAnswer = { responseId: response.id };
+  if (interaction.freeText) {
+    const notes = await ctx.ui.input(interaction.freeText.prompt);
+    if (notes !== undefined && notes.trim().length > 0) answer.freeText = notes;
+  }
+  if (interaction.feedback) {
+    const feedback = await ctx.ui.input(
+      "Optional structured feedback. Leave empty to skip. Use JSON when the interaction expects annotations.",
+    );
+    if (feedback !== undefined && feedback.trim().length > 0) answer.feedbackContent = feedback;
+  }
+  return answer;
 };
 
 /** The `/hypagraph` usage text. Help and the unknown-subcommand error share it. */
@@ -489,6 +523,39 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
    *
    * Slice 2 also requires a presentation observation before the dialog.
    */
+  /**
+   * Store interaction note or feedback bytes by identity.
+   * The reducer never reads the artifact store. It only records the measured ref.
+   */
+  const storeInteractionArtifact = async (
+    ctx: ExtensionContext,
+    awaiting: AwaitingInteraction,
+    name: "feedback" | "free-text",
+    content: string,
+    maxBytes: number,
+    mediaType: string,
+  ): Promise<{ ref: string; mediaType: string; byteLength: number }> => {
+    if (!state) throw new Error("There is no active Hypagraph.");
+    const bytes = Buffer.from(content, "utf8");
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(
+        name === "feedback"
+          ? `The feedback artifact exceeds the maximum of ${maxBytes} bytes.`
+          : `The free-text notes exceed the maximum of ${maxBytes} bytes.`,
+      );
+    }
+    const store = new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts"));
+    const ref = await store.write({
+      workflowId: state.workflowId,
+      nodeId: awaiting.nodeId,
+      attemptId: awaiting.attemptId,
+      name,
+      mediaType,
+      content: bytes,
+    });
+    return { ref, mediaType, byteLength: bytes.byteLength };
+  };
+
   const presentAwaitingInteraction = async (
     ctx: ExtensionContext,
     awaiting: AwaitingInteraction,
@@ -503,12 +570,66 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
       : await presentInteractionSelect(ctx, interaction);
     if (answer === undefined) return "dismissed";
 
+    // Pre-check byte bounds before any store write so a failed answer does not
+    // leave an orphan artifact from a later oversized field.
+    if (answer.freeText !== undefined && interaction.freeText) {
+      const freeBytes = Buffer.byteLength(answer.freeText, "utf8");
+      if (freeBytes > interaction.freeText.maxBytes) {
+        throw new Error(
+          `The free-text notes exceed the maximum of ${interaction.freeText.maxBytes} bytes.`,
+        );
+      }
+    }
+    if (answer.feedbackContent !== undefined && interaction.feedback) {
+      const feedbackBytes = Buffer.byteLength(answer.feedbackContent, "utf8");
+      if (feedbackBytes > interaction.feedback.maxBytes) {
+        throw new Error(
+          `The feedback artifact exceeds the maximum of ${interaction.feedback.maxBytes} bytes.`,
+        );
+      }
+    }
+
+    let freeTextArtifact: { ref: string; mediaType: string; byteLength: number } | undefined;
+    if (
+      answer.freeText !== undefined
+      && answer.freeText.trim().length > 0
+      && interaction.freeText
+    ) {
+      freeTextArtifact = await storeInteractionArtifact(
+        ctx,
+        awaiting,
+        "free-text",
+        answer.freeText,
+        interaction.freeText.maxBytes,
+        "text/plain; charset=utf-8",
+      );
+    }
+
+    let feedbackArtifact: { ref: string; mediaType: string; byteLength: number } | undefined;
+    if (
+      answer.feedbackContent !== undefined
+      && answer.feedbackContent.trim().length > 0
+      && interaction.feedback
+    ) {
+      feedbackArtifact = await storeInteractionArtifact(
+        ctx,
+        awaiting,
+        "feedback",
+        answer.feedbackContent,
+        interaction.feedback.maxBytes,
+        interaction.feedback.mediaType ?? "application/json; charset=utf-8",
+      );
+    }
+
     await runCommands([{
       type: "answer-interaction",
       nodeId: awaiting.nodeId,
       attemptId: awaiting.attemptId,
       ...(answer.responseId ? { responseId: answer.responseId } : {}),
       ...(answer.openText ? { openText: answer.openText } : {}),
+      ...(answer.freeText !== undefined ? { freeText: answer.freeText } : {}),
+      ...(freeTextArtifact === undefined ? {} : { freeTextArtifact }),
+      ...(feedbackArtifact === undefined ? {} : { feedbackArtifact }),
       commandId: randomUUID(),
       at: new Date().toISOString(),
     }]);
@@ -624,9 +745,85 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
     }
   };
 
+  /**
+   * Evaluate outstanding interaction deadlines with the supplied evaluation time.
+   *
+   * The domain reducer stays clock-free. This host path alone supplies now.
+   * Concurrent callers coalesce onto the latest evaluation time. After an
+   * in-flight run finishes, a waiter re-enters so a later evaluationAt is not
+   * dropped. One failed expire does not stop the remaining candidates.
+   *
+   * When an interaction presentation is in flight, queueGoalContinuation defers
+   * this evaluation until the next controller entry after the presentation ends.
+   */
+  let activeDeadlineEvaluation: Promise<void> | undefined;
+  let latestDeadlineEvaluationAt: string | undefined;
+  const evaluateInteractionDeadlines = async (
+    ctx: ExtensionContext,
+    evaluationAt = new Date().toISOString(),
+  ): Promise<void> => {
+    if (!state) return;
+    const evaluationMs = Date.parse(evaluationAt);
+    if (!Number.isFinite(evaluationMs)) return;
+    if (
+      latestDeadlineEvaluationAt === undefined
+      || evaluationMs > Date.parse(latestDeadlineEvaluationAt)
+    ) {
+      latestDeadlineEvaluationAt = evaluationAt;
+    }
+    if (activeDeadlineEvaluation) {
+      await activeDeadlineEvaluation;
+      // Re-enter with the latest requested time so a later waiter is not dropped.
+      if (!state || latestDeadlineEvaluationAt === undefined) return;
+      return evaluateInteractionDeadlines(ctx, latestDeadlineEvaluationAt);
+    }
+    const at = latestDeadlineEvaluationAt;
+    if (!at) return;
+    const run = (async () => {
+      const failed = new Set<string>();
+      while (state) {
+        const candidates = expiredInteractionCandidates(state, at)
+          .filter((item) => !failed.has(`${item.nodeId}\u0000${item.attemptId}`));
+        if (candidates.length === 0) return;
+        const candidate = candidates[0]!;
+        const key = `${candidate.nodeId}\u0000${candidate.attemptId}`;
+        try {
+          await runCommands([{
+            type: "expire-interaction",
+            nodeId: candidate.nodeId,
+            attemptId: candidate.attemptId,
+            commandId: randomUUID(),
+            at,
+          }]);
+        } catch (error) {
+          // A concurrent answer can win the race and make the node no longer
+          // awaiting. Skip this candidate and continue the remaining list.
+          failed.add(key);
+          const detail = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(
+            `Hypagraph could not expire interaction '${candidate.nodeId}': ${detail}`,
+            "warning",
+          );
+        }
+      }
+    })();
+    activeDeadlineEvaluation = run;
+    try {
+      await run;
+    } finally {
+      if (activeDeadlineEvaluation === run) activeDeadlineEvaluation = undefined;
+    }
+  };
+
   const queueGoalContinuation = async (ctx: ExtensionContext): Promise<void> => {
+    // An open presentation defers deadline evaluation to the next controller
+    // entry after the presentation ends. Level-triggered recovery still applies.
     if (pendingContinuation || deliveredContinuation || !state || activeExecutions.hasActive() || activePresentations.size > 0) return;
     let deterministicDispatches = 0;
+
+    // Level-triggered deadlines: evaluate before selecting the next action.
+    await evaluateInteractionDeadlines(ctx, new Date().toISOString());
+    if (!state) return;
 
     while (true) {
       const decision = selectGoalContinuation(state);
@@ -1188,16 +1385,27 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
     }),
     async execute(_toolCallId, params) {
       if (!state) throw new Error("There is no active Hypagraph. Call hypagraph_define first.");
-      const text = params.view === "full"
-        ? renderWorkflow(state)
-        : params.view === "graph"
-          ? JSON.stringify(projectModelVisibleGraphView(state), null, 2)
-          : params.view === "history"
-            ? JSON.stringify(projectModelVisibleHistory(events), null, 2)
-            : params.view === "explain"
-              ? renderExplanation(state, params.nodeId)
-              : JSON.stringify(projectModelVisibleWorkflowSummary(state), null, 2);
-      return textResult(text);
+      if (params.view === "full") {
+        const contexts = projectModelVisibleTaskContext(state, params.nodeId);
+        const contextBlock = JSON.stringify(contexts, null, 2);
+        return textResult(`${renderWorkflow(state)}\n\nTask context:\n${contextBlock}`);
+      }
+      if (params.view === "graph") {
+        return textResult(JSON.stringify(projectModelVisibleGraphView(state), null, 2));
+      }
+      if (params.view === "history") {
+        return textResult(JSON.stringify(projectModelVisibleHistory(events), null, 2));
+      }
+      if (params.view === "explain") {
+        return textResult(renderExplanation(state, params.nodeId));
+      }
+      // summary (default): include taskContexts for every bound task, or one node.
+      if (params.nodeId) {
+        const summary = projectModelVisibleWorkflowSummary(state);
+        summary.taskContext = projectModelVisibleTaskContext(state, params.nodeId);
+        return textResult(JSON.stringify(summary, null, 2));
+      }
+      return textResult(JSON.stringify(projectModelVisibleWorkflowSummary(state), null, 2));
     },
   });
 

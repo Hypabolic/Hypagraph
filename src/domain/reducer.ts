@@ -6,9 +6,11 @@ import type {
   Diagnostic,
   DomainEvent,
   EventType,
+  EvidenceReference,
   HypagraphCommand,
   HypagraphDefinition,
   HypagraphState,
+  InteractionDeadline,
   LegacyLoopPredicate,
   LoopDefinition,
   ReducerResult,
@@ -36,6 +38,100 @@ import { formatGoalBudgetStop, goalBudgetStop, validateGoalBudgetDefinition, val
 type Rejection = Extract<ReducerResult, { ok: false }>;
 const reject = (code: string, message: string, location?: string): Rejection => ({ ok: false, diagnostics: [{ code, message, ...(location ? { location } : {}) }] });
 interface EventInput { type: EventType; nodeId?: string; attemptId?: string; loopId?: string; data?: Record<string, unknown> }
+
+/** Build the absolute interaction deadline from the definition and command time. */
+const resolveInteractionDeadline = (
+  timeout: NonNullable<NonNullable<HypagraphDefinition["nodes"][number]["interaction"]>["timeout"]>,
+  requestedAt: string,
+): { ok: true; deadline: InteractionDeadline } | { ok: false; code: string; message: string } => {
+  if (timeout.absolute !== undefined && timeout.durationMs !== undefined) {
+    return { ok: false, code: "invalid_interaction_timeout_source", message: "An interaction timeout must set durationMs or absolute, not both." };
+  }
+  if (timeout.absolute !== undefined) {
+    if (!timeout.absolute.trim() || !Number.isFinite(Date.parse(timeout.absolute))) {
+      return { ok: false, code: "invalid_interaction_timeout_absolute", message: "An interaction timeout absolute must be a valid ISO-8601 timestamp." };
+    }
+    return { ok: true, deadline: { absolute: timeout.absolute, source: "declared-absolute" } };
+  }
+  if (timeout.durationMs === undefined) {
+    return { ok: false, code: "invalid_interaction_timeout_source", message: "An interaction timeout must set durationMs or absolute." };
+  }
+  if (!Number.isInteger(timeout.durationMs) || timeout.durationMs < 1) {
+    return { ok: false, code: "invalid_interaction_timeout_duration", message: "An interaction timeout durationMs must be a positive integer." };
+  }
+  const requestedMs = Date.parse(requestedAt);
+  if (!Number.isFinite(requestedMs)) {
+    return { ok: false, code: "invalid_interaction_request_time", message: "The interaction request time must be a valid ISO-8601 timestamp." };
+  }
+  return {
+    ok: true,
+    deadline: {
+      absolute: new Date(requestedMs + timeout.durationMs).toISOString(),
+      source: "requested-at-plus-duration",
+    },
+  };
+};
+
+/** Report whether the stored deadline has passed at the evaluation time. */
+const interactionDeadlinePassed = (deadlineAbsolute: string, evaluationAt: string): boolean | undefined => {
+  const deadlineMs = Date.parse(deadlineAbsolute);
+  const evaluationMs = Date.parse(evaluationAt);
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(evaluationMs)) return undefined;
+  return evaluationMs >= deadlineMs;
+};
+
+/** Publish declared response facts and pass verification for an interaction attempt. */
+const publishInteractionFacts = (
+  next: HypagraphState,
+  events: DomainEvent[],
+  command: { commandId: string; correlationId?: string; at: string },
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+  published: FactInput[],
+  evidence: EvidenceReference[],
+  reason: string,
+): ReducerResult => {
+  const definitionNode = next.definition.nodes.find((item) => item.id === nodeId)!;
+  const attempt = next.runtime.nodes[nodeId]!.attempts[attemptId]!;
+  let current = next;
+  for (const input of published) {
+    const fact: PublishedFact = {
+      name: input.name,
+      type: input.type,
+      value: structuredClone(input.value),
+      producerNodeId: nodeId,
+      attemptId,
+      revision: state.revision,
+      evidence: structuredClone(input.evidence ?? evidence),
+      ...(attempt.loopId === undefined ? {} : { loopId: attempt.loopId }),
+      ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
+    };
+    const validated = validatePublishedFact(fact, {
+      contracts: definitionNode.produces ?? [],
+      currentRevision: state.revision,
+      currentAttemptId: attemptId,
+    });
+    if (!validated.ok) return reject(validated.code, validated.message, `facts.${input.name}`);
+    current = append(current, events, command, {
+      type: "hypagraph.fact.published",
+      nodeId,
+      attemptId,
+      data: { fact: structuredClone(validated.fact) },
+    });
+  }
+  const missing = requiredFactsArePresent(current, nodeId, attemptId);
+  if (missing.length > 0) return reject("required_facts_missing", `Node '${nodeId}' did not publish required facts: ${missing.join(", ")}.`);
+  current = append(current, events, command, {
+    type: "hypagraph.verification.passed",
+    nodeId,
+    attemptId,
+    data: { reason },
+  });
+  current = appendReadyEvents(current, events, command);
+  current = appendCompletionIfNeeded(current, events, command);
+  return { ok: true, state: current, events };
+};
 
 const makeEvent = (state: HypagraphState | undefined, command: { commandId: string; correlationId?: string; at: string }, workflowId: string, revision: number, input: EventInput): DomainEvent => {
   const sequence = (state?.sequence ?? 0) + 1;
@@ -567,6 +663,19 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       const prepared = prepareLoopStart(next, events, command, command.nodeId);
       if ("ok" in prepared) return prepared;
       next = prepared.state;
+      let deadline: InteractionDeadline | undefined;
+      let timeoutPolicy: { onTimeout: "block" | "select"; selectResponseId?: string } | undefined;
+      if (definitionNode.interaction.timeout) {
+        const resolved = resolveInteractionDeadline(definitionNode.interaction.timeout, command.at);
+        if (!resolved.ok) return reject(resolved.code, resolved.message, "timeout");
+        deadline = resolved.deadline;
+        timeoutPolicy = {
+          onTimeout: definitionNode.interaction.timeout.onTimeout,
+          ...(definitionNode.interaction.timeout.selectResponseId === undefined
+            ? {}
+            : { selectResponseId: definitionNode.interaction.timeout.selectResponseId }),
+        };
+      }
       next = append(next, events, command, {
         type: "hypagraph.interaction.requested",
         nodeId: command.nodeId,
@@ -575,6 +684,8 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           question: definitionNode.interaction.question,
           presentation: structuredClone(definitionNode.interaction.presentation),
           responseIds: (definitionNode.interaction.responses ?? []).map((response) => response.id),
+          ...(deadline === undefined ? {} : { deadline: structuredClone(deadline) }),
+          ...(timeoutPolicy === undefined ? {} : { timeoutPolicy: structuredClone(timeoutPolicy) }),
           ...(prepared.loopId === undefined ? {} : { loopId: prepared.loopId }),
           ...(prepared.iteration === undefined ? {} : { iteration: prepared.iteration }),
         },
@@ -644,9 +755,162 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         );
       }
       const open = definitionNode.interaction.openAnswer;
-      const evidence = structuredClone(command.evidence ?? []);
+      const freeTextDef = definitionNode.interaction.freeText;
+      const feedbackDef = definitionNode.interaction.feedback;
+      // Attempt evidence holds the durable free-text body. Fact evidence stays short.
+      const attemptEvidence = structuredClone(command.evidence ?? []);
+      const factEvidence = structuredClone(command.evidence ?? []);
       let published: FactInput[];
       let answeredData: Record<string, unknown>;
+      let freeTextBody: string | undefined;
+      let freeTextArtifactRef: string | undefined;
+      let freeBytes = 0;
+
+      if (command.freeText !== undefined || command.freeTextArtifact !== undefined) {
+        if (open) {
+          return reject(
+            "interaction_free_text_open_question",
+            `Interaction '${command.nodeId}' is an open question. Use openText for the answer.`,
+            "freeText",
+          );
+        }
+        if (!freeTextDef) {
+          return reject(
+            "interaction_free_text_not_declared",
+            `Interaction '${command.nodeId}' does not declare freeText notes.`,
+            "freeText",
+          );
+        }
+        if (command.freeText === undefined || command.freeText.trim().length === 0) {
+          return reject(
+            "interaction_free_text_required",
+            `Interaction free-text notes require the full bounded text on the answer command.`,
+            "freeText",
+          );
+        }
+        freeTextBody = command.freeText;
+        freeBytes = Buffer.byteLength(freeTextBody, "utf8");
+        if (freeBytes > freeTextDef.maxBytes) {
+          return reject(
+            "interaction_free_text_too_large",
+            `The free-text notes exceed the maximum of ${freeTextDef.maxBytes} bytes.`,
+            "freeText",
+          );
+        }
+        if (command.freeTextArtifact !== undefined) {
+          if (!command.freeTextArtifact.ref?.trim()) {
+            return reject(
+              "interaction_free_text_ref_required",
+              `A free-text notes artifact requires a stored identity reference.`,
+              "freeTextArtifact.ref",
+            );
+          }
+          if (command.freeTextArtifact.byteLength === undefined) {
+            return reject(
+              "interaction_free_text_byte_length_required",
+              `A free-text notes artifact requires byteLength so the declared maxBytes bound can be enforced.`,
+              "freeTextArtifact.byteLength",
+            );
+          }
+          if (!Number.isInteger(command.freeTextArtifact.byteLength) || command.freeTextArtifact.byteLength < 0) {
+            return reject(
+              "invalid_interaction_free_text_byte_length",
+              `A free-text notes artifact byteLength must be a non-negative integer.`,
+              "freeTextArtifact.byteLength",
+            );
+          }
+          if (command.freeTextArtifact.byteLength !== freeBytes) {
+            return reject(
+              "interaction_free_text_byte_length_mismatch",
+              `A free-text notes artifact byteLength must match the freeText body size of ${freeBytes} bytes.`,
+              "freeTextArtifact.byteLength",
+            );
+          }
+          freeTextArtifactRef = command.freeTextArtifact.ref;
+        }
+        const freeTextRef = freeTextArtifactRef
+          ?? `interaction:${command.nodeId}:${command.attemptId}:free-text`;
+        // Full notes body on attempt evidence for durable restore.
+        attemptEvidence.push({
+          ref: freeTextRef,
+          kind: freeTextArtifactRef ? "file" : "note",
+          summary: freeTextBody,
+        });
+        // Short summary only on published facts. Do not duplicate the full body.
+        const previewLimit = 120;
+        const preview = freeTextBody.length <= previewLimit
+          ? freeTextBody
+          : `${freeTextBody.slice(0, previewLimit)}...`;
+        factEvidence.push({
+          ref: freeTextRef,
+          kind: freeTextArtifactRef ? "file" : "note",
+          summary: `Free-text notes (${freeBytes} bytes): ${preview}`,
+        });
+      }
+
+      let feedbackArtifactRef: string | undefined;
+      if (command.feedbackArtifact !== undefined) {
+        if (!feedbackDef) {
+          return reject(
+            "interaction_feedback_not_declared",
+            `Interaction '${command.nodeId}' does not declare feedback.`,
+            "feedbackArtifact",
+          );
+        }
+        if (!command.feedbackArtifact.ref?.trim()) {
+          return reject(
+            "interaction_feedback_ref_required",
+            `A feedback artifact requires a stored identity reference.`,
+            "feedbackArtifact.ref",
+          );
+        }
+        // The host must measure stored bytes and pass byteLength so the reducer
+        // can enforce the declared bound without reading the artifact store.
+        if (command.feedbackArtifact.byteLength === undefined) {
+          return reject(
+            "interaction_feedback_byte_length_required",
+            `A feedback artifact requires byteLength so the declared maxBytes bound can be enforced.`,
+            "feedbackArtifact.byteLength",
+          );
+        }
+        if (!Number.isInteger(command.feedbackArtifact.byteLength) || command.feedbackArtifact.byteLength < 0) {
+          return reject(
+            "invalid_interaction_feedback_byte_length",
+            `A feedback artifact byteLength must be a non-negative integer.`,
+            "feedbackArtifact.byteLength",
+          );
+        }
+        if (command.feedbackArtifact.byteLength > feedbackDef.maxBytes) {
+          return reject(
+            "interaction_feedback_too_large",
+            `The feedback artifact exceeds the maximum of ${feedbackDef.maxBytes} bytes.`,
+            "feedbackArtifact",
+          );
+        }
+        // When the definition declares mediaType, use it as the authority.
+        // An omitted command mediaType defaults to the declared type.
+        // A present command mediaType must match exactly.
+        if (feedbackDef.mediaType !== undefined) {
+          if (
+            command.feedbackArtifact.mediaType !== undefined
+            && command.feedbackArtifact.mediaType !== feedbackDef.mediaType
+          ) {
+            return reject(
+              "interaction_feedback_media_type_mismatch",
+              `Feedback mediaType '${command.feedbackArtifact.mediaType}' does not match the declared mediaType '${feedbackDef.mediaType}'.`,
+              "feedbackArtifact.mediaType",
+            );
+          }
+        }
+        feedbackArtifactRef = command.feedbackArtifact.ref;
+        const feedbackEvidence = {
+          ref: feedbackArtifactRef,
+          kind: "file" as const,
+          summary: `Structured feedback artifact (${command.feedbackArtifact.byteLength} bytes)`,
+        };
+        attemptEvidence.push(feedbackEvidence);
+        factEvidence.push(feedbackEvidence);
+      }
 
       if (open) {
         if (command.responseId !== undefined) return reject("interaction_response_not_allowed", `Interaction '${command.nodeId}' asks an open question and accepts no response option.`, "responseId");
@@ -656,8 +920,13 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
         const bytes = Buffer.byteLength(command.openText, "utf8");
         if (bytes > open.maxBytes) return reject("interaction_open_text_too_large", `The typed answer exceeds the maximum of ${open.maxBytes} bytes.`, "openText");
         published = [{ name: open.fact, type: "string", value: command.openText }];
-        evidence.push({ ref: `interaction:${command.nodeId}:${command.attemptId}:open-answer`, kind: "note", summary: command.openText });
-        answeredData = { openTextBytes: bytes, evidence: structuredClone(evidence) };
+        attemptEvidence.push({ ref: `interaction:${command.nodeId}:${command.attemptId}:open-answer`, kind: "note", summary: command.openText });
+        factEvidence.push({ ref: `interaction:${command.nodeId}:${command.attemptId}:open-answer`, kind: "note", summary: command.openText });
+        answeredData = {
+          openTextBytes: bytes,
+          evidence: structuredClone(attemptEvidence),
+          ...(feedbackArtifactRef === undefined ? {} : { feedbackArtifactRef }),
+        };
       } else {
         if (command.openText !== undefined) return reject("interaction_open_text_not_allowed", `Interaction '${command.nodeId}' asks a closed question and accepts no typed answer.`, "openText");
         const response = (definitionNode.interaction.responses ?? []).find((item) => item.id === command.responseId);
@@ -666,51 +935,120 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           return reject("unknown_interaction_response", `Interaction '${command.nodeId}' has no response '${command.responseId}'. It declares ${known}.`, "responseId");
         }
         published = structuredClone(response.publish);
-        answeredData = { responseId: response.id, evidence: structuredClone(evidence) };
+        answeredData = {
+          responseId: response.id,
+          evidence: structuredClone(attemptEvidence),
+          ...(freeTextBody === undefined ? {} : { freeText: freeTextBody, freeTextBytes: freeBytes }),
+          ...(freeTextArtifactRef === undefined ? {} : { freeTextArtifactRef }),
+          ...(feedbackArtifactRef === undefined ? {} : { feedbackArtifactRef }),
+        };
       }
 
-      const attempt = node.attempts[command.attemptId]!;
       next = append(next, events, command, {
         type: "hypagraph.interaction.answered",
         nodeId: command.nodeId,
         attemptId: command.attemptId,
         data: answeredData,
       });
-      for (const input of published) {
-        const fact: PublishedFact = {
-          name: input.name,
-          type: input.type,
-          value: structuredClone(input.value),
-          producerNodeId: command.nodeId,
-          attemptId: command.attemptId,
-          revision: state.revision,
-          evidence: structuredClone(input.evidence ?? evidence),
-          ...(attempt.loopId === undefined ? {} : { loopId: attempt.loopId }),
-          ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
-        };
-        const validated = validatePublishedFact(fact, {
-          contracts: definitionNode.produces ?? [],
-          currentRevision: state.revision,
-          currentAttemptId: command.attemptId,
-        });
-        if (!validated.ok) return reject(validated.code, validated.message, `facts.${input.name}`);
+      const publishedResult = publishInteractionFacts(
+        next,
+        events,
+        command,
+        state,
+        command.nodeId,
+        command.attemptId,
+        published,
+        factEvidence,
+        open ? "The typed answer was accepted." : `Interaction response '${command.responseId}' was accepted.`,
+      );
+      if (!publishedResult.ok) return publishedResult;
+      next = publishedResult.state;
+      break;
+    }
+    case "expire-interaction": {
+      if ((definitionNode.kind ?? "task") !== "interaction" || !definitionNode.interaction) {
+        return reject("node_not_interaction", `Node '${command.nodeId}' is not an interaction.`);
+      }
+      if (node.status !== "awaiting_response" || node.currentAttemptId !== command.attemptId) {
+        return reject("interaction_not_awaiting", `Interaction '${command.nodeId}' is not awaiting a response for this attempt.`);
+      }
+      const attempt = node.attempts[command.attemptId];
+      if (!attempt?.deadline || !attempt.timeoutPolicy) {
+        return reject(
+          "interaction_deadline_missing",
+          `Interaction '${command.nodeId}' has no stored deadline for this attempt.`,
+        );
+      }
+      const passed = interactionDeadlinePassed(attempt.deadline.absolute, command.at);
+      if (passed === undefined) {
+        return reject(
+          "invalid_interaction_deadline_evaluation_time",
+          `The deadline evaluation time must be a valid ISO-8601 timestamp.`,
+          "at",
+        );
+      }
+      if (!passed) {
+        return reject(
+          "interaction_deadline_not_passed",
+          `Interaction '${command.nodeId}' deadline '${attempt.deadline.absolute}' has not passed at '${command.at}'.`,
+        );
+      }
+
+      const onTimeout = attempt.timeoutPolicy.onTimeout;
+      if (onTimeout === "block") {
+        const reason = `The interaction deadline '${attempt.deadline.absolute}' passed before an answer.`;
         next = append(next, events, command, {
-          type: "hypagraph.fact.published",
+          type: "hypagraph.interaction.expired",
           nodeId: command.nodeId,
           attemptId: command.attemptId,
-          data: { fact: structuredClone(validated.fact) },
+          data: {
+            onTimeout: "block",
+            deadline: structuredClone(attempt.deadline),
+            reason,
+          },
         });
+        break;
       }
-      const missing = requiredFactsArePresent(next, command.nodeId, command.attemptId);
-      if (missing.length > 0) return reject("required_facts_missing", `Node '${command.nodeId}' did not publish required facts: ${missing.join(", ")}.`);
+
+      // onTimeout select: publish the declared default response facts.
+      const selectResponseId = attempt.timeoutPolicy.selectResponseId;
+      const response = (definitionNode.interaction.responses ?? []).find((item) => item.id === selectResponseId);
+      if (!response) {
+        return reject(
+          "interaction_timeout_select_unknown",
+          `Interaction '${command.nodeId}' timeout selectResponseId '${selectResponseId}' is not a declared response.`,
+        );
+      }
+      const evidence: EvidenceReference[] = [{
+        ref: `interaction:${command.nodeId}:${command.attemptId}:timeout-select`,
+        kind: "note",
+        summary: `Timeout selected response '${response.id}'.`,
+      }];
       next = append(next, events, command, {
-        type: "hypagraph.verification.passed",
+        type: "hypagraph.interaction.expired",
         nodeId: command.nodeId,
         attemptId: command.attemptId,
-        data: { reason: open ? "The typed answer was accepted." : `Interaction response '${command.responseId}' was accepted.` },
+        data: {
+          onTimeout: "select",
+          selectResponseId: response.id,
+          deadline: structuredClone(attempt.deadline),
+          evidence: structuredClone(evidence),
+          reason: `The interaction deadline '${attempt.deadline.absolute}' passed. The default response '${response.id}' was selected.`,
+        },
       });
-      next = appendReadyEvents(next, events, command);
-      next = appendCompletionIfNeeded(next, events, command);
+      const publishedResult = publishInteractionFacts(
+        next,
+        events,
+        command,
+        state,
+        command.nodeId,
+        command.attemptId,
+        structuredClone(response.publish),
+        evidence,
+        `Timeout selected interaction response '${response.id}'.`,
+      );
+      if (!publishedResult.ok) return publishedResult;
+      next = publishedResult.state;
       break;
     }
     case "start-check": {

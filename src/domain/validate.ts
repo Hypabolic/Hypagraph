@@ -508,6 +508,68 @@ const validateInteractionPresentation = (
   return diagnostics;
 };
 
+const validateInteractionTimeout = (
+  nodeId: string,
+  timeout: NonNullable<InteractionDefinition["timeout"]>,
+  responseIds: Set<string>,
+  location: string,
+): Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+  const hasDuration = timeout.durationMs !== undefined;
+  const hasAbsolute = timeout.absolute !== undefined;
+  if (hasDuration === hasAbsolute) {
+    diagnostics.push({
+      code: "invalid_interaction_timeout_source",
+      message: `Interaction node '${nodeId}' timeout must set durationMs or absolute, not both and not neither.`,
+      location,
+    });
+  }
+  if (hasDuration && (!Number.isInteger(timeout.durationMs) || timeout.durationMs! < 1 || timeout.durationMs! > MAX_PRESENTATION_TIMEOUT_MS)) {
+    diagnostics.push({
+      code: "invalid_interaction_timeout_duration",
+      message: `Interaction timeout durationMs must be between 1 and ${MAX_PRESENTATION_TIMEOUT_MS}.`,
+      location: `${location}.durationMs`,
+    });
+  }
+  if (hasAbsolute) {
+    if (!timeout.absolute?.trim() || !Number.isFinite(Date.parse(timeout.absolute))) {
+      diagnostics.push({
+        code: "invalid_interaction_timeout_absolute",
+        message: `Interaction timeout absolute must be a valid ISO-8601 timestamp.`,
+        location: `${location}.absolute`,
+      });
+    }
+  }
+  if (timeout.onTimeout !== "block" && timeout.onTimeout !== "select") {
+    diagnostics.push({
+      code: "invalid_interaction_timeout_action",
+      message: `Interaction timeout onTimeout must be 'block' or 'select'.`,
+      location: `${location}.onTimeout`,
+    });
+  } else if (timeout.onTimeout === "select") {
+    if (!timeout.selectResponseId?.trim()) {
+      diagnostics.push({
+        code: "interaction_timeout_select_required",
+        message: `Interaction node '${nodeId}' timeout onTimeout 'select' requires selectResponseId.`,
+        location: `${location}.selectResponseId`,
+      });
+    } else if (!responseIds.has(timeout.selectResponseId)) {
+      diagnostics.push({
+        code: "interaction_timeout_select_unknown",
+        message: `Interaction node '${nodeId}' timeout selectResponseId '${timeout.selectResponseId}' is not a declared response.`,
+        location: `${location}.selectResponseId`,
+      });
+    }
+  } else if (timeout.selectResponseId !== undefined) {
+    diagnostics.push({
+      code: "interaction_timeout_select_not_allowed",
+      message: `Interaction node '${nodeId}' timeout onTimeout 'block' must not set selectResponseId.`,
+      location: `${location}.selectResponseId`,
+    });
+  }
+  return diagnostics;
+};
+
 const validateInteraction = (node: NodeDefinition, location: string): Diagnostic[] => {
   if (!node.interaction) {
     return [{ code: "interaction_definition_required", message: `Interaction node '${node.id}' requires an interaction definition.`, location: `${location}.interaction` }];
@@ -522,6 +584,61 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
   const contracts = new Map((node.produces ?? []).map((fact) => [fact.name, fact.type]));
   const hasResponses = Array.isArray(interaction.responses) && interaction.responses.length > 0;
   const hasOpenAnswer = interaction.openAnswer !== undefined;
+  const hasFreeText = interaction.freeText !== undefined;
+
+  // freeText is optional notes on a closed question only. openAnswer already
+  // captures free text for an open question.
+  if (hasFreeText && hasOpenAnswer) {
+    diagnostics.push({
+      code: "interaction_free_text_with_open_answer",
+      message: `Interaction node '${node.id}' declares freeText and openAnswer.`,
+      location: `${interactionLocation}.freeText`,
+      suggestion: "Use openAnswer alone for an open question. Use freeText only with responses.",
+    });
+  }
+  if (hasFreeText && !hasResponses) {
+    diagnostics.push({
+      code: "interaction_free_text_requires_responses",
+      message: `Interaction node '${node.id}' declares freeText without response options.`,
+      location: `${interactionLocation}.freeText`,
+      suggestion: "Declare freeText only on a closed question with responses.",
+    });
+  }
+  if (hasFreeText && interaction.freeText) {
+    const freeLocation = `${interactionLocation}.freeText`;
+    if (!interaction.freeText.prompt?.trim()) {
+      diagnostics.push({
+        code: "interaction_free_text_prompt_required",
+        message: `Interaction node '${node.id}' requires a freeText prompt.`,
+        location: `${freeLocation}.prompt`,
+      });
+    }
+    if (!Number.isInteger(interaction.freeText.maxBytes) || interaction.freeText.maxBytes < 1 || interaction.freeText.maxBytes > MAX_ASSERTION_BYTES) {
+      diagnostics.push({
+        code: "invalid_interaction_free_text_limit",
+        message: `Interaction freeText maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`,
+        location: `${freeLocation}.maxBytes`,
+      });
+    }
+  }
+
+  if (interaction.feedback) {
+    const feedbackLocation = `${interactionLocation}.feedback`;
+    if (!Number.isInteger(interaction.feedback.maxBytes) || interaction.feedback.maxBytes < 1 || interaction.feedback.maxBytes > MAX_ASSERTION_BYTES) {
+      diagnostics.push({
+        code: "invalid_interaction_feedback_limit",
+        message: `Interaction feedback maxBytes must be between 1 and ${MAX_ASSERTION_BYTES}.`,
+        location: `${feedbackLocation}.maxBytes`,
+      });
+    }
+    if (interaction.feedback.mediaType !== undefined && !interaction.feedback.mediaType.trim()) {
+      diagnostics.push({
+        code: "invalid_interaction_feedback_media_type",
+        message: `Interaction feedback mediaType must not be empty when set.`,
+        location: `${feedbackLocation}.mediaType`,
+      });
+    }
+  }
 
   // A question is closed or open. A closed question has a fixed set of answers.
   // An open question needs typed input, so a response list means nothing there.
@@ -556,6 +673,10 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
       diagnostics.push({ code: "interaction_open_fact_not_declared", message: `Interaction node '${node.id}' publishes undeclared fact '${open.fact}'.`, location: `${openLocation}.fact`, suggestion: "Declare the fact in produces with type 'string'." });
     } else if (type !== "string") {
       diagnostics.push({ code: "interaction_open_fact_type_mismatch", message: `Open-answer fact '${open.fact}' must use type 'string'.`, location: `${openLocation}.fact` });
+    }
+    if (interaction.timeout) {
+      // Open questions have no response options, so select timeout is invalid.
+      diagnostics.push(...validateInteractionTimeout(node.id, interaction.timeout, new Set(), `${interactionLocation}.timeout`));
     }
     return diagnostics;
   }
@@ -593,6 +714,71 @@ const validateInteraction = (node: NodeDefinition, location: string): Diagnostic
       else if (contractType !== fact.type) diagnostics.push({ code: "interaction_fact_type_mismatch", message: `Response fact '${fact.name}' must have type '${contractType}'.`, location: factLocation });
       else if (!isFactValueOfType(fact.type, fact.value)) diagnostics.push({ code: "interaction_fact_value_invalid", message: `Response fact '${fact.name}' has an invalid value for type '${fact.type}'.`, location: factLocation });
     });
+  });
+  if (interaction.timeout) {
+    diagnostics.push(...validateInteractionTimeout(node.id, interaction.timeout, responseIds, `${interactionLocation}.timeout`));
+  }
+  return diagnostics;
+};
+
+const validateTaskContext = (
+  node: NodeDefinition,
+  byId: Map<string, NodeDefinition>,
+  location: string,
+): Diagnostic[] => {
+  if (!node.context) return [];
+  const diagnostics: Diagnostic[] = [];
+  const contextLocation = `${location}.context`;
+  if (!Array.isArray(node.context.feedbackFrom)) {
+    diagnostics.push({
+      code: "invalid_task_context_feedback_from",
+      message: `Node '${node.id}' context.feedbackFrom must be an array of interaction node ids.`,
+      location: `${contextLocation}.feedbackFrom`,
+    });
+    return diagnostics;
+  }
+  if (node.context.feedbackFrom.length === 0) {
+    diagnostics.push({
+      code: "empty_task_context_feedback_from",
+      message: `Node '${node.id}' context.feedbackFrom must list at least one interaction node.`,
+      location: `${contextLocation}.feedbackFrom`,
+    });
+  }
+  const seen = new Set<string>();
+  node.context.feedbackFrom.forEach((sourceId, index) => {
+    const itemLocation = `${contextLocation}.feedbackFrom[${index}]`;
+    if (seen.has(sourceId)) {
+      diagnostics.push({
+        code: "duplicate_task_context_feedback_from",
+        message: `Node '${node.id}' context.feedbackFrom repeats '${sourceId}'.`,
+        location: itemLocation,
+      });
+    }
+    seen.add(sourceId);
+    const source = byId.get(sourceId);
+    if (!source) {
+      diagnostics.push({
+        code: "dangling_task_context_feedback_from",
+        message: `Node '${node.id}' context.feedbackFrom lists unknown node '${sourceId}'.`,
+        location: itemLocation,
+      });
+      return;
+    }
+    if ((source.kind ?? "task") !== "interaction" || !source.interaction) {
+      diagnostics.push({
+        code: "task_context_feedback_from_not_interaction",
+        message: `Node '${node.id}' context.feedbackFrom lists '${sourceId}', which is not an interaction node.`,
+        location: itemLocation,
+      });
+      return;
+    }
+    if (!source.interaction.feedback) {
+      diagnostics.push({
+        code: "task_context_feedback_from_undeclared",
+        message: `Node '${node.id}' context.feedbackFrom lists interaction '${sourceId}', which does not declare feedback.`,
+        location: itemLocation,
+      });
+    }
   });
   return diagnostics;
 };
@@ -721,12 +907,24 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
   definition.nodes.forEach((node, index) => node.requires.forEach((required, requiredIndex) => {
     if (!ids.has(required)) diagnostics.push({ code: "dangling_dependency", message: `Node '${node.id}' requires node '${required}', but that node does not exist.`, location: `nodes[${index}].requires[${requiredIndex}]` });
   }));
+  const nodesById = new Map(definition.nodes.map((node) => [node.id, node]));
   definition.nodes.forEach((node, index) => {
     const location = `nodes[${index}]`;
     const kind = node.kind ?? "task";
     if (kind !== "gate" && node.gate) diagnostics.push({ code: "non_gate_has_gate", message: `Node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
     if (kind !== "check" && node.check) diagnostics.push({ code: "non_check_has_check", message: `Node '${node.id}' must not contain a check definition.`, location: `${location}.check` });
     if (kind !== "interaction" && node.interaction) diagnostics.push({ code: "non_interaction_has_interaction", message: `Node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
+    if (node.context) {
+      if (kind !== "task") {
+        diagnostics.push({
+          code: "non_task_has_context",
+          message: `Node '${node.id}' must not declare context. Only a task node may bind feedback context.`,
+          location: `${location}.context`,
+        });
+      } else {
+        diagnostics.push(...validateTaskContext(node, nodesById, location));
+      }
+    }
     if (kind === "check") {
       if (node.gate) diagnostics.push({ code: "check_has_gate", message: `Check node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
       if (node.interaction) diagnostics.push({ code: "check_has_interaction", message: `Check node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });

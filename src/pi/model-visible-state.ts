@@ -5,6 +5,7 @@ import {
 } from "../domain/evaluation-presentation.js";
 import { classifyGoalBlockage } from "../domain/goal-blockage.js";
 import type { HypagraphState } from "../domain/model.js";
+import { projectAllTaskContexts, projectTaskContext } from "../domain/task-context.js";
 import { projectGraphView, type GraphViewModel } from "../graph/projection.js";
 import { workflowSummary } from "../ui/format.js";
 
@@ -57,5 +58,19 @@ export function projectModelVisibleWorkflowSummary(state: HypagraphState): Recor
       }
     }
   }
+  // Explicit task context is model-visible so a worker can read feedback refs.
+  summary.taskContexts = projectAllTaskContexts(state);
   return secret === undefined ? summary : redactProtectedText(summary, secret) as Record<string, unknown>;
+}
+
+/**
+ * Project the explicit task context for one node, or every bound task when
+ * nodeId is omitted.
+ */
+export function projectModelVisibleTaskContext(
+  state: HypagraphState,
+  nodeId?: string,
+): ReturnType<typeof projectTaskContext> | ReturnType<typeof projectAllTaskContexts> {
+  if (nodeId) return projectTaskContext(state, nodeId);
+  return projectAllTaskContexts(state);
 }

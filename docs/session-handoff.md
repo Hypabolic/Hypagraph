@@ -102,9 +102,11 @@ Slice 2 is complete. It adds deterministic presentation kinds `none`, `report`, 
 - `src/extension.ts`
 - `tests/m6-1-interaction-slice-2.test.ts`
 
+Slice 3 is complete. Routing uses published interaction facts through ordinary gates. Free-text notes and feedback artifacts never select a route. Feedback reaches the next task through `projectTaskContext`, continuation prompts, and `hypagraph_read`. Deadlines are level-triggered: the request stores an absolute deadline, and `expire-interaction` evaluates it with a supplied time. The extension evaluates outstanding deadlines when the controller wakes. An open presentation defers deadline evaluation until the next controller entry. Evidence: `tests/m6-1-interaction-slice-3.test.ts`.
+
 ### Next work
 
-Slice 3 is next: routing through existing gates, free-text evidence bounds, structured feedback artifacts, and level-triggered deadlines.
+Slice 4 is next: reload and restore of outstanding interactions, re-present without a repeated presentation effect, and product surface waiting state for status and the graph pane.
 
 ## 5. Release evidence
 

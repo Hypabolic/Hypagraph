@@ -243,6 +243,54 @@ export interface InteractionOpenAnswer {
   fact: string;
 }
 
+/**
+ * Optional free-text notes on a closed question.
+ *
+ * Notes are evidence only. They never publish a routing fact. Do not set freeText
+ * with openAnswer. An open question already captures free text as the answer.
+ */
+export interface InteractionFreeText {
+  prompt: string;
+  maxBytes: number;
+}
+
+/**
+ * Optional structured feedback which the presentation surface returns.
+ *
+ * The artifact is stored by identity. The next task receives it through an
+ * explicit context projection. A gate must never route on feedback content.
+ */
+export interface InteractionFeedbackDefinition {
+  maxBytes: number;
+  /** Default is application/json; charset=utf-8. */
+  mediaType?: string;
+}
+
+/**
+ * Absolute deadline which the request event stores.
+ *
+ * Evaluate the deadline on wake, resume, and reload with a supplied evaluation
+ * time. Never read the wall clock inside the domain reducer.
+ */
+export interface InteractionDeadline {
+  absolute: string;
+  source: "requested-at-plus-duration" | "declared-absolute";
+}
+
+/**
+ * Level-triggered timeout for an unanswered interaction.
+ *
+ * Supply durationMs or absolute, not both. On request the runtime stores one
+ * absolute deadline. On the next controller wake it evaluates that deadline.
+ */
+export interface InteractionTimeoutDefinition {
+  durationMs?: number;
+  absolute?: string;
+  onTimeout: "block" | "select";
+  /** Required when onTimeout is select. Must match a declared response id. */
+  selectResponseId?: string;
+}
+
 export interface InteractionDefinition {
   kind: "interaction";
   version: 1;
@@ -252,6 +300,32 @@ export interface InteractionDefinition {
   responses?: InteractionResponseOption[];
   /** An open question. The person types the answer. */
   openAnswer?: InteractionOpenAnswer;
+  /** Optional free-text notes on a closed question. Evidence only. */
+  freeText?: InteractionFreeText;
+  /** Optional structured feedback artifact from the presentation surface. */
+  feedback?: InteractionFeedbackDefinition;
+  /** Optional absolute or relative deadline for an unanswered interaction. */
+  timeout?: InteractionTimeoutDefinition;
+}
+
+/**
+ * Explicit context bindings for a task node.
+ *
+ * feedbackFrom lists interaction node ids. The task context projection includes
+ * feedback artifact refs from those interactions after they succeed.
+ */
+export interface TaskContextDefinition {
+  feedbackFrom: string[];
+}
+
+/**
+ * Feedback artifact reference which an answer stores on the attempt.
+ * The extension stores content by identity first, then passes the ref.
+ */
+export interface InteractionFeedbackArtifactInput {
+  ref: string;
+  mediaType?: string;
+  byteLength?: number;
 }
 
 export type EvidenceVisibility = "public" | "protected";
@@ -481,6 +555,8 @@ export interface NodeDefinition {
   gate?: GateDefinition;
   check?: CheckDefinition;
   interaction?: InteractionDefinition;
+  /** Explicit context bindings for a semantic task. Prefer feedbackFrom. */
+  context?: TaskContextDefinition;
   scope?: { paths: string[] };
 }
 
@@ -619,6 +695,18 @@ export interface AttemptRuntime {
   checkResult?: CheckResult;
   /** Presentation observation for an interaction attempt. */
   presentation?: InteractionPresentationObservation;
+  /** Absolute deadline stored when the interaction was requested. */
+  deadline?: InteractionDeadline;
+  /** Timeout policy stored when the interaction was requested. */
+  timeoutPolicy?: Pick<InteractionTimeoutDefinition, "onTimeout" | "selectResponseId">;
+  /** Selected closed-response identifier after an answer or select timeout. */
+  responseId?: string;
+  /** Structured feedback artifact reference from the answer. */
+  feedbackArtifactRef?: string;
+  /** Free-text notes artifact reference when the host stored notes by identity. */
+  freeTextArtifactRef?: string;
+  /** Full free-text notes body when recorded on the attempt (bounded by maxBytes). */
+  freeText?: string;
   loopId?: string;
   iteration?: number;
 }
@@ -762,7 +850,28 @@ export type HypagraphCommand =
     attemptId: string;
     result: InteractionPresentationObservation;
   })
-  | (CommandBase & { type: "answer-interaction"; nodeId: string; attemptId: string; responseId?: string; openText?: string; evidence?: EvidenceReference[] })
+  | (CommandBase & {
+    type: "answer-interaction";
+    nodeId: string;
+    attemptId: string;
+    responseId?: string;
+    openText?: string;
+    /** Optional free-text notes on a closed question which declares freeText. */
+    freeText?: string;
+    /**
+     * Optional free-text notes artifact. The host stores content by identity first.
+     * When set, freeText must still carry the full bounded notes for the event log.
+     */
+    freeTextArtifact?: InteractionFeedbackArtifactInput;
+    /** Optional structured feedback artifact. The extension stores content first. */
+    feedbackArtifact?: InteractionFeedbackArtifactInput;
+    evidence?: EvidenceReference[];
+  })
+  /**
+   * Evaluate a stored interaction deadline with the supplied evaluation time.
+   * The reducer does not read the wall clock. The extension passes at.
+   */
+  | (CommandBase & { type: "expire-interaction"; nodeId: string; attemptId: string })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })
   | (CommandBase & { type: "submit-result"; nodeId: string; attemptId: string; evidence: EvidenceReference[] })
