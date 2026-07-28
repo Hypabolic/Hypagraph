@@ -10,6 +10,10 @@ import type {
   WorkflowPhase,
 } from "../domain/model.js";
 import { evaluationBudgetStatus } from "../domain/evaluation-policy.js";
+import {
+  awaitingInteractionNodeIds,
+  isDerivedWaitingForUser,
+} from "../domain/interaction-presentation.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
 import { classifyGoalBlockage } from "../domain/goal-blockage.js";
 
@@ -152,6 +156,19 @@ export interface GraphViewModel {
   components?: GraphViewComponent[];
   readyNodeIds: string[];
   activeNodeId?: string;
+  /**
+   * Node IDs with status `awaiting_response`.
+   *
+   * This list is node-local. It can be non-empty while other work is runnable.
+   */
+  awaitingNodeIds: string[];
+  /**
+   * Derived goal-level waiting state.
+   *
+   * True only when no runnable action exists and at least one interaction is
+   * outstanding. Do not store this value on the workflow.
+   */
+  derivedWaitingForUser: boolean;
   evaluationBudget?: GraphViewEvaluationBudget;
   goal?: GraphViewGoalSummary;
 }
@@ -375,6 +392,8 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
 
   const readyNodeIds = nodes.filter((node) => node.ready).map((node) => node.id);
   const activeNodeId = nodes.find((node) => node.active)?.id;
+  const awaitingNodeIds = awaitingInteractionNodeIds(state);
+  const derivedWaitingForUser = isDerivedWaitingForUser(state);
   const evaluationBudget = evaluationBudgetStatus(state);
   // The graph model feeds the live pane and the replay pane. Both apply one policy.
   const policy = protectedTextPolicy(state);
@@ -441,6 +460,8 @@ export function projectGraphView(state: HypagraphState): GraphViewModel {
     loops,
     components,
     readyNodeIds,
+    awaitingNodeIds,
+    derivedWaitingForUser,
     ...(activeNodeId === undefined ? {} : { activeNodeId }),
     ...(evaluationBudget === undefined ? {} : { evaluationBudget }),
     ...(goal === undefined ? {} : { goal }),

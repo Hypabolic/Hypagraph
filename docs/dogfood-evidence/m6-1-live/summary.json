@@ -1,0 +1,544 @@
+{
+  "objective": "Create a Hypagoal with exactly two independent components and no edge between them. Component A: interaction node approve-plan with closed responses approve and reject that publish boolean fact plan.approved. After approve, task write-plan writes plan-approved.txt with exact text m6-1-approved, then command check verify-plan checks the file. Component B: independent loop marker-loop with nodes loop-work and loop-check. loop-work requires loop-check only through a feedback edge that is ALSO listed in loop-work.requires, and loop-check requires loop-work. The feedback edge must be from loop-check to loop-work and must match a requires edge. loop-check is a command check that publishes boolean loop.passed. Loop successWhen is loop.passed equals true, maxIterations 3, entry loop-work, evaluateAfter loop-check. The loop and the interaction must not depend on each other so the loop can run while approval waits. Use hypagraph_ask for the interaction. Use dotted fact names plan.approved and loop.passed.",
+  "workspace": "/tmp/hypagraph-m6-1-live-dogfood/workspace",
+  "sessionDir": "/tmp/hypagraph-m6-1-live-dogfood/session",
+  "logPath": "/tmp/hypagraph-m6-1-live-dogfood/logs/rpc-1785238828082.jsonl",
+  "notifications": [
+    {
+      "message": "Hypagoal closed an orphaned model-lane continuation and will select the next action.",
+      "notifyType": "warning",
+      "at": "2026-07-28T11:42:17.814Z"
+    },
+    {
+      "message": "Hypagoal closed an orphaned model-lane continuation and will select the next action.",
+      "notifyType": "warning",
+      "at": "2026-07-28T11:42:31.170Z"
+    },
+    {
+      "message": "Hypagoal closed an orphaned model-lane continuation and will select the next action.",
+      "notifyType": "warning",
+      "at": "2026-07-28T11:42:43.308Z"
+    },
+    {
+      "message": "Hypagoal closed an orphaned model-lane continuation and will select the next action.",
+      "notifyType": "warning",
+      "at": "2026-07-28T11:42:58.696Z"
+    },
+    {
+      "message": "Hypagoal completed; workflow completed; next none; the canonical workflow completed; model turns 0/unlimited; tokens 0/unlimited; scheduled actions 7; revision 0/1. Stop: goal_completed \u2014 The canonical workflow completed..",
+      "notifyType": "info",
+      "at": "2026-07-28T11:42:58.710Z"
+    },
+    {
+      "message": "Hypagoal status\nObjective: Create a Hypagoal with exactly two independent components and no edge between them.\n           Component A: interaction node approve-plan with closed responses approve and reject that\n           publish boolean fact plan.approved. After approve, task write-plan writes\n           plan-approved.txt with exact text m6-1-approved, then command check verify-plan checks\n           the file. Component B: independent loop marker-loop with nodes loop-work and loop-check.\n           loop-work requires loop-check only through a feedback edge that is ALSO listed in\n           loop-work.requires, and loop-check requires loop-work. The feedback edge must be from\n           loop-check to loop-work and must match a requires edge. loop-check is a command check\n           that publishes boolean loop.passed. Loop successWhen is loop.passed equals true,\n           maxIterations 3, entry loop-work, evaluateAfter loop-check. The loop and the interaction\n           must not depend on each other so the loop can run while approval waits. Use hypagraph_ask\n           for the interaction. Use dotted fact names plan.approved and loop.passed.\nWorkflow: baf9c9ed-b47a-4775-9fac-c48c52500133 | phase completed | revision 1 | event 65\nGoal: goal-b8fb9b00-7356-419e-97f9-9cf1a803f3ca | status completed\nCurrent action: none\nNext action: none; the canonical workflow completed\nReady work: none\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 7; charged model turns 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready\n                 check or a ready gate, consumes no turn. A turn-budget stop ends automatic\n                 continuation in every lane.\nLast action: deterministic lane; completed; ordinal 7; run check 'verify-plan'\nAutomatic revision: 0/1; remaining 1\nBlockage: revision not allowed; terminal-policy 'goal-completed': The canonical workflow completed.\nLoop and evaluation state:\n- marker-loop: succeeded; iteration 2/3; typed success true; exit success\nStop goal_completed: The canonical workflow completed.\nControls: /hypagoal status | /hypagoal graph",
+      "notifyType": "info",
+      "at": "2026-07-28T11:43:03.940Z"
+    },
+    {
+      "message": "Hypagoal status\nObjective: Create a Hypagoal with exactly two independent components and no edge between them.\n           Component A: interaction node approve-plan with closed responses approve and reject that\n           publish boolean fact plan.approved. After approve, task write-plan writes\n           plan-approved.txt with exact text m6-1-approved, then command check verify-plan checks\n           the file. Component B: independent loop marker-loop with nodes loop-work and loop-check.\n           loop-work requires loop-check only through a feedback edge that is ALSO listed in\n           loop-work.requires, and loop-check requires loop-work. The feedback edge must be from\n           loop-check to loop-work and must match a requires edge. loop-check is a command check\n           that publishes boolean loop.passed. Loop successWhen is loop.passed equals true,\n           maxIterations 3, entry loop-work, evaluateAfter loop-check. The loop and the interaction\n           must not depend on each other so the loop can run while approval waits. Use hypagraph_ask\n           for the interaction. Use dotted fact names plan.approved and loop.passed.\nWorkflow: baf9c9ed-b47a-4775-9fac-c48c52500133 | phase completed | revision 1 | event 65\nGoal: goal-b8fb9b00-7356-419e-97f9-9cf1a803f3ca | status completed\nCurrent action: none\nNext action: none; the canonical workflow completed\nReady work: none\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 7; charged model turns 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready\n                 check or a ready gate, consumes no turn. A turn-budget stop ends automatic\n                 continuation in every lane.\nLast action: deterministic lane; completed; ordinal 7; run check 'verify-plan'\nAutomatic revision: 0/1; remaining 1\nBlockage: revision not allowed; terminal-policy 'goal-completed': The canonical workflow completed.\nLoop and evaluation state:\n- marker-loop: succeeded; iteration 2/3; typed success true; exit success\nStop goal_completed: The canonical workflow completed.\nControls: /hypagoal status | /hypagoal graph",
+      "notifyType": "info",
+      "at": "2026-07-28T11:44:10.521Z"
+    },
+    {
+      "message": "Hypagraph event timeline: 20 of 65 entries, sequence 46 to 65.\nMarker: M model lane, D deterministic lane, X executor lane, P protected evaluator.\n   46   r1 fact       Node 'approve-plan' published fact 'plan.approved' as true.\n   47   r1 node       Node 'approve-plan' passed verification.\n   48   r1 node       Node 'write-plan' became ready.\n   49 M r1 dispatch   The model lane selected start task 'write-plan' at ordinal 6.\n   50   r1 node       Attempt 0dfda68a-d0c5-4760-90fb-6cc1ce7516b3 started on node 'write-plan'.\n   51   r1 node       Node 'write-plan' submitted a result with 1 evidence references.\n   52   r1 node       Verification started on node 'write-plan'.\n   53   r1 node       Node 'write-plan' passed verification.\n   54   r1 node       Node 'verify-plan' became ready.\n   55 M r1 dispatch   The model lane abandoned its action: The model-lane continuation had no delivered turn bookkeeping. The controller closed it and selected the next action..\n   56 D r1 dispatch   The scheduler selected run check 'verify-plan' in the deterministic lane at ordinal 7.\n   57 D r1 dispatch   The deterministic lane dispatched the selected action.\n   58   r1 check      Check 'verify-plan' started a command attempt.\n   59   r1 fact       Node 'verify-plan' published fact 'plan.verified' as true.\n   60   r1 check      Check 'verify-plan' recorded a 'passed' result, exit code 0.\n   61   r1 node       Verification started on node 'verify-plan'.\n   62   r1 node       Node 'verify-plan' passed verification.\n   63   r1 workflow   The workflow completed.\n   64   r1 goal       The goal completed.\n   65 D r1 dispatch   The deterministic lane completed the dispatched action.",
+      "notifyType": "info",
+      "at": "2026-07-28T11:44:12.036Z"
+    },
+    {
+      "message": "Hypagraph event timeline in lane 'interaction': 3 of 3 entries, sequence 6 to 45.\nMarker: M model lane, D deterministic lane, X executor lane, P protected evaluator.\n    6   r1 interaction Interaction 'approve-plan' requested an answer.\n   44   r1 interaction Interaction 'approve-plan' presented its question.\n   45   r1 interaction Interaction 'approve-plan' received response 'approve'.",
+      "notifyType": "info",
+      "at": "2026-07-28T11:44:13.546Z"
+    },
+    {
+      "message": "Goal: completed\nDecision: stop-completed\nThe canonical workflow completed.\nRunnable nodes: none\nNodes:\n- approve-plan: succeeded; Node 'approve-plan' reached the terminal status 'succeeded'.\n- write-plan: succeeded; Node 'write-plan' reached the terminal status 'succeeded'.\n- verify-plan: succeeded; Node 'verify-plan' reached the terminal status 'succeeded'.\n- loop-work: succeeded; Node 'loop-work' belongs to loop 'marker-loop', which is succeeded through success.\n- loop-check: succeeded; Node 'loop-check' belongs to loop 'marker-loop', which is succeeded through success.",
+      "notifyType": "info",
+      "at": "2026-07-28T11:44:15.057Z"
+    },
+    {
+      "message": "Hypagoal status\nObjective: Create a Hypagoal with exactly two independent components and no edge between them.\n           Component A: interaction node approve-plan with closed responses approve and reject that\n           publish boolean fact plan.approved. After approve, task write-plan writes\n           plan-approved.txt with exact text m6-1-approved, then command check verify-plan checks\n           the file. Component B: independent loop marker-loop with nodes loop-work and loop-check.\n           loop-work requires loop-check only through a feedback edge that is ALSO listed in\n           loop-work.requires, and loop-check requires loop-work. The feedback edge must be from\n           loop-check to loop-work and must match a requires edge. loop-check is a command check\n           that publishes boolean loop.passed. Loop successWhen is loop.passed equals true,\n           maxIterations 3, entry loop-work, evaluateAfter loop-check. The loop and the interaction\n           must not depend on each other so the loop can run while approval waits. Use hypagraph_ask\n           for the interaction. Use dotted fact names plan.approved and loop.passed.\nWorkflow: baf9c9ed-b47a-4775-9fac-c48c52500133 | phase completed | revision 1 | event 65\nGoal: goal-b8fb9b00-7356-419e-97f9-9cf1a803f3ca | status completed\nCurrent action: none\nNext action: none; the canonical workflow completed\nReady work: none\nGoal budget: model turns 0/unlimited; tokens 0/unlimited\nScheduled actions: 7; charged model turns 0\nTurn accounting: Consumed turns count model turns only. A deterministic action, such as a ready\n                 check or a ready gate, consumes no turn. A turn-budget stop ends automatic\n                 continuation in every lane.\nLast action: deterministic lane; completed; ordinal 7; run check 'verify-plan'\nAutomatic revision: 0/1; remaining 1\nBlockage: revision not allowed; terminal-policy 'goal-completed': The canonical workflow completed.\nLoop and evaluation state:\n- marker-loop: succeeded; iteration 2/3; typed success true; exit success\nStop goal_completed: The canonical workflow completed.\nControls: /hypagoal status | /hypagoal graph",
+      "notifyType": "info",
+      "at": "2026-07-28T11:44:19.571Z"
+    }
+  ],
+  "statuses": {
+    "hypagraph": "HG completed: 0 ready",
+    "crossbar-scan": "",
+    "crossbar-loaded": "",
+    "xai-usage": "",
+    "hypagraph-check": ""
+  },
+  "widgets": {
+    "hypagraph": [
+      "Hypagraph: M6.1 independent plan approval and marker loop [completed] | Goal completed (goal_completed)",
+      "Active: none | Ready: none | Budget turns 0/\u221e, tokens 0/\u221e | Revision 0/1 | Loop marker-loop: 2/3 fail-workflow success"
+    ]
+  },
+  "toolCalls": [
+    {
+      "name": "unknown",
+      "at": 1785238836549
+    },
+    {
+      "name": "unknown",
+      "at": 1785238839908
+    },
+    {
+      "name": "unknown",
+      "at": 1785238840651
+    },
+    {
+      "name": "unknown",
+      "at": 1785238860771
+    },
+    {
+      "name": "unknown",
+      "at": 1785238865389
+    },
+    {
+      "name": "unknown",
+      "at": 1785238869255
+    },
+    {
+      "name": "unknown",
+      "at": 1785238871800
+    },
+    {
+      "name": "unknown",
+      "at": 1785238871800
+    },
+    {
+      "name": "unknown",
+      "at": 1785238874116
+    },
+    {
+      "name": "unknown",
+      "at": 1785238874985
+    },
+    {
+      "name": "unknown",
+      "at": 1785238877564
+    },
+    {
+      "name": "unknown",
+      "at": 1785238877844
+    },
+    {
+      "name": "unknown",
+      "at": 1785238878591
+    },
+    {
+      "name": "unknown",
+      "at": 1785238905080
+    },
+    {
+      "name": "unknown",
+      "at": 1785238911801
+    },
+    {
+      "name": "unknown",
+      "at": 1785238916080
+    },
+    {
+      "name": "unknown",
+      "at": 1785238921841
+    },
+    {
+      "name": "unknown",
+      "at": 1785238925317
+    },
+    {
+      "name": "unknown",
+      "at": 1785238940412
+    },
+    {
+      "name": "unknown",
+      "at": 1785238944458
+    },
+    {
+      "name": "unknown",
+      "at": 1785238947652
+    },
+    {
+      "name": "unknown",
+      "at": 1785238953140
+    },
+    {
+      "name": "unknown",
+      "at": 1785238956794
+    },
+    {
+      "name": "unknown",
+      "at": 1785238958609
+    },
+    {
+      "name": "unknown",
+      "at": 1785238961070
+    },
+    {
+      "name": "unknown",
+      "at": 1785238965118
+    },
+    {
+      "name": "unknown",
+      "at": 1785238967216
+    },
+    {
+      "name": "unknown",
+      "at": 1785238969754
+    },
+    {
+      "name": "unknown",
+      "at": 1785238971531
+    },
+    {
+      "name": "unknown",
+      "at": 1785238973382
+    }
+  ],
+  "errors": [],
+  "selects": [
+    {
+      "options": [
+        "approve - Approve",
+        "reject - Reject"
+      ],
+      "at": "2026-07-28T11:42:43.331Z"
+    }
+  ],
+  "uiMethods": [
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setStatus",
+    "setStatus",
+    "setStatus",
+    "setStatus",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "notify",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "notify",
+    "setStatus",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "notify",
+    "setStatus",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "select",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "notify",
+    "setStatus",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "setWidget",
+    "setStatus",
+    "notify",
+    "notify",
+    "notify",
+    "notify",
+    "notify",
+    "notify",
+    "notify"
+  ],
+  "assistantTail": [
+    "I have enough repository evidence. Authoring the two independent components exactly as specified.",
+    "Hypagoal created successfully.\n\n- **Workflow ID:** `baf9c9ed-b47a-4775-9fac-c48c52500133`\n- **Goal ID:** `goal-b8fb9b00-7356-419e-97f9-9cf1a803f3ca`\n- **Objective:** preserved exactly as supplied\n- **Independent components:**\n  - **A:** `approve-plan` \u2192 `write-plan` \u2192 `verify-plan` (`plan.approved`)\n  - **B:** `marker-loop` (`loop-work` \u2194 `loop-check`, `loop.passed`, maxIterations 3)\n- **Ready now:** interaction `approve-plan` and loop entry `loop-work` (no cross-edge)\n- **Creation request:** exact identity applied; no autonomous continuation started",
+    "Presenting the ready interaction `approve-plan` via the lifecycle tool.",
+    "`approve-plan` can't be asked while `loop-work` is runnable. Completing the independent loop work first.",
+    "**Selected action status:** `approve-plan` is requested and **awaiting_response**.\n\n- Lifecycle: `start` on `approve-plan` succeeded (event 6).\n- Question: \u201cApprove the implementation plan?\u201d with `approve` / `reject`.\n- `hypagraph_ask` refused: other runnable work (`loop-work`) is ready; the dialog only opens when nothing else is runnable.\n- Did **not** run `loop-work` this turn (continuation said continue only the selected interaction action).\n\n**Ready still:** `loop-work`  \n**Waiting:** `approve-plan` (human answer via `/hypagraph ask` once the graph has no other runnable work, or when the scheduler picks loop work next)",
+    "**Selected action done:** `loop-work` (marker-loop iteration 1/3)\n\n- **start \u2192 submit \u2192 verify (passed)** completed\n- Iteration 1 intentionally left `loop-marker` absent so the first `loop-check` can fail once (README: writes marker after one failure)\n- **Now ready:** `loop-check` (next scheduler turn)\n- **Still waiting:** `approve-plan` (human answer)",
+    "**Selected action done:** `loop-work` (marker-loop iteration 2/3)\n\n- start \u2192 wrote `loop-marker` \u2192 submit \u2192 verify (passed)\n- **Ready next:** `loop-check` (should pass with `loop.passed = true`)\n- **Still waiting:** `approve-plan`"
+  ],
+  "entryCount": 0,
+  "phase": "completed",
+  "goalStatus": "completed",
+  "sequence": 65,
+  "revision": null,
+  "consumedTurns": null,
+  "schedulerOrdinal": null,
+  "nodes": {
+    "approve-plan": "succeeded",
+    "write-plan": "succeeded",
+    "verify-plan": "succeeded",
+    "loop-work": "succeeded",
+    "loop-check": "succeeded"
+  },
+  "facts": [
+    "loop.passed",
+    "plan.approved",
+    "plan.verified"
+  ],
+  "eventTypes": [],
+  "interactionEvents": [
+    "hypagraph.interaction.requested",
+    "hypagraph.interaction.presented",
+    "hypagraph.interaction.answered"
+  ],
+  "planApprovedContent": "m6-1-approved\n",
+  "loopMarkerExists": true,
+  "waitingSurfaceSeen": true,
+  "selectCount": 1,
+  "canonical": {
+    "sessionFile": "2026-07-28T11-40-29-550Z_019fa886-b9ee-7694-b0c4-5a9e42950404.jsonl",
+    "phase": "completed",
+    "sequence": 65,
+    "revision": 1,
+    "goalStatus": "completed",
+    "consumedTurns": 0,
+    "schedulerOrdinal": 7,
+    "nodes": {
+      "approve-plan": "succeeded",
+      "write-plan": "succeeded",
+      "verify-plan": "succeeded",
+      "loop-work": "succeeded",
+      "loop-check": "succeeded"
+    },
+    "facts": {
+      "loop.passed": true,
+      "plan.approved": true,
+      "plan.verified": true
+    },
+    "eventTypes": [
+      "hypagraph.workflow.defined",
+      "hypagraph.node.ready",
+      "hypagraph.node.ready",
+      "hypagraph.goal.started",
+      "hypagraph.goal.continuation-requested",
+      "hypagraph.interaction.requested",
+      "hypagraph.goal.continuation-abandoned",
+      "hypagraph.goal.continuation-requested",
+      "hypagraph.loop.iteration-started",
+      "hypagraph.attempt.started",
+      "hypagraph.attempt.result-submitted",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+      "hypagraph.node.ready",
+      "hypagraph.goal.continuation-abandoned",
+      "hypagraph.action.selected",
+      "hypagraph.action.dispatched",
+      "hypagraph.check.started",
+      "hypagraph.fact.published",
+      "hypagraph.check.result-recorded",
+      "hypagraph.verification.started",
+      "hypagraph.verification.failed",
+      "hypagraph.loop.evaluated",
+      "hypagraph.loop.iteration-started",
+      "hypagraph.node.ready",
+      "hypagraph.action.completed",
+      "hypagraph.goal.continuation-requested",
+      "hypagraph.attempt.started",
+      "hypagraph.attempt.result-submitted",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+      "hypagraph.node.ready",
+      "hypagraph.goal.continuation-abandoned",
+      "hypagraph.action.selected",
+      "hypagraph.action.dispatched",
+      "hypagraph.check.started",
+      "hypagraph.fact.published",
+      "hypagraph.check.result-recorded",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+      "hypagraph.loop.evaluated",
+      "hypagraph.loop.completed",
+      "hypagraph.action.completed",
+      "hypagraph.interaction.presented",
+      "hypagraph.interaction.answered",
+      "hypagraph.fact.published",
+      "hypagraph.verification.passed",
+      "hypagraph.node.ready",
+      "hypagraph.goal.continuation-requested",
+      "hypagraph.attempt.started",
+      "hypagraph.attempt.result-submitted",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+      "hypagraph.node.ready",
+      "hypagraph.goal.continuation-abandoned",
+      "hypagraph.action.selected",
+      "hypagraph.action.dispatched",
+      "hypagraph.check.started",
+      "hypagraph.fact.published",
+      "hypagraph.check.result-recorded",
+      "hypagraph.verification.started",
+      "hypagraph.verification.passed",
+      "hypagraph.workflow.completed",
+      "hypagraph.goal.completed",
+      "hypagraph.action.completed"
+    ],
+    "interactionEvents": [
+      "hypagraph.interaction.requested",
+      "hypagraph.interaction.presented",
+      "hypagraph.interaction.answered"
+    ],
+    "loopActivityDuringWait": [
+      [
+        8,
+        "hypagraph.goal.continuation-requested",
+        "loop-work"
+      ],
+      [
+        10,
+        "hypagraph.attempt.started",
+        "loop-work"
+      ],
+      [
+        11,
+        "hypagraph.attempt.result-submitted",
+        "loop-work"
+      ],
+      [
+        12,
+        "hypagraph.verification.started",
+        "loop-work"
+      ],
+      [
+        13,
+        "hypagraph.verification.passed",
+        "loop-work"
+      ],
+      [
+        14,
+        "hypagraph.node.ready",
+        "loop-check"
+      ],
+      [
+        16,
+        "hypagraph.action.selected",
+        "loop-check"
+      ],
+      [
+        17,
+        "hypagraph.action.dispatched",
+        "loop-check"
+      ],
+      [
+        18,
+        "hypagraph.check.started",
+        "loop-check"
+      ],
+      [
+        19,
+        "hypagraph.fact.published",
+        "loop-check"
+      ],
+      [
+        20,
+        "hypagraph.check.result-recorded",
+        "loop-check"
+      ],
+      [
+        21,
+        "hypagraph.verification.started",
+        "loop-check"
+      ],
+      [
+        22,
+        "hypagraph.verification.failed",
+        "loop-check"
+      ],
+      [
+        25,
+        "hypagraph.node.ready",
+        "loop-work"
+      ],
+      [
+        26,
+        "hypagraph.action.completed",
+        "loop-check"
+      ],
+      [
+        27,
+        "hypagraph.goal.continuation-requested",
+        "loop-work"
+      ],
+      [
+        28,
+        "hypagraph.attempt.started",
+        "loop-work"
+      ],
+      [
+        29,
+        "hypagraph.attempt.result-submitted",
+        "loop-work"
+      ],
+      [
+        30,
+        "hypagraph.verification.started",
+        "loop-work"
+      ],
+      [
+        31,
+        "hypagraph.verification.passed",
+        "loop-work"
+      ]
+    ],
+    "planApprovedContent": "m6-1-approved",
+    "loopMarkerContent": "m6-1-marker",
+    "selectOptions": [
+      "approve - Approve",
+      "reject - Reject"
+    ],
+    "selectChosen": "approve - Approve",
+    "title": "M6.1 independent plan approval and marker loop"
+  }
+}

@@ -415,6 +415,31 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   };
 
   /**
+   * Report whether a stored presentation artifact still resolves on disk.
+   *
+   * Plan 3.6 skips a repeated external effect only when the artifact still
+   * exists. Kind `none` has no artifact. Failed observations stay terminal.
+   * The domain reducer stays pure; this host check alone reads the store.
+   */
+  const presentationArtifactStillExists = async (
+    ctx: ExtensionContext,
+    artifactRef: string | undefined,
+  ): Promise<boolean> => {
+    if (!artifactRef?.trim()) return true;
+    const store = new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts"));
+    // Bound the existence probe. Content is not used after the probe.
+    const maxBytes = 1_048_576;
+    try {
+      const artifact = await store.read(artifactRef, maxBytes);
+      return artifact !== undefined;
+    } catch {
+      // Oversized or unreadable refs are treated as missing so the host can
+      // regenerate the presentation file without a second durable observation.
+      return false;
+    }
+  };
+
+  /**
    * Run the presentation effect after the request event is stored.
    *
    * Durable order:
@@ -423,19 +448,26 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
    * 3. store present-interaction with the observation;
    * 4. open the dialog only after a successful observation.
    *
-   * A successful observation must not re-run the external effect on reload.
+   * A successful observation must not re-run the external effect on reload when
+   * the presentation artifact still exists. If the observation exists but the
+   * artifact is gone, the host re-runs the effect to regenerate the file and
+   * does not store a second present-interaction event. If regenerate fails, the
+   * durable successful observation still allows the dialog to open.
    * Concurrent callers for the same attempt share one in-flight promise so the
-   * external effect runs at most one time.
+   * external effect runs at most one time per concurrent window.
    */
   const ensureInteractionPresentation = async (
     _ctx: ExtensionContext,
     awaiting: AwaitingInteraction,
   ): Promise<"ready" | "failed" | "unavailable"> => {
     if (!state) return "unavailable";
+
+    // Fast path: successful observation and a resolvable artifact (or no artifact).
     if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
       const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
-      if (observation?.status === "succeeded") return "ready";
-      return "failed";
+      if (observation?.status !== "succeeded") return "failed";
+      if (await presentationArtifactStillExists(_ctx, observation.artifactRef)) return "ready";
+      // Fall through to the coalesced runner so a missing artifact regenerates once.
     }
 
     const key = presentationExecutionKey(state.workflowId, awaiting.nodeId, awaiting.attemptId);
@@ -444,14 +476,16 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
 
     const run = (async (): Promise<"ready" | "failed" | "unavailable"> => {
       if (!state) return "unavailable";
-      // Another concurrent path may have stored the observation after this run
-      // was scheduled. Re-check before the external effect.
+
+      // Re-check after scheduling. Another caller may have finished first.
       if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
         const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
-        if (observation?.status === "succeeded") return "ready";
-        return "failed";
+        if (observation?.status !== "succeeded") return "failed";
+        if (await presentationArtifactStillExists(_ctx, observation.artifactRef)) return "ready";
+        // Observation is durable. Regenerate the artifact file only.
       }
 
+      const alreadyObserved = !interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId);
       const presentation = awaiting.interaction.presentation;
       const executor = new DefaultPresentationExecutor({
         rootDirectory: _ctx.cwd,
@@ -476,11 +510,25 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
         };
       }
 
-      // A concurrent commit may already hold the observation. Treat that as
-      // authoritative instead of throwing a second hard failure.
-      if (!interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
+      // A concurrent commit may already hold the observation, or this run is a
+      // regenerate after a missing artifact. Do not store a second observation.
+      // A durable successful observation keeps the answer path open even when
+      // regenerate fails. Only a durable failed observation is terminal.
+      if (alreadyObserved || !interactionPresentationNeedsEffect(state, awaiting.nodeId, awaiting.attemptId)) {
         const observation = interactionPresentationObservation(state, awaiting.nodeId, awaiting.attemptId);
-        if (observation?.status === "succeeded") return "ready";
+        if (observation?.status === "succeeded") {
+          if (result.status !== "succeeded") {
+            const detail = "error" in result && result.error
+              ? result.error
+              : result.status;
+            _ctx.ui.notify(
+              `Interaction '${awaiting.nodeId}' presentation artifact could not be regenerated (${detail}). `
+              + "The stored presentation observation remains successful. The question is still open.",
+              "warning",
+            );
+          }
+          return "ready";
+        }
         return "failed";
       }
 

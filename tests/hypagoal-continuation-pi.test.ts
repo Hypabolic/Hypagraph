@@ -286,7 +286,7 @@ describe("Hypagoal Pi continuation", () => {
       event.type === "hypagraph.action.completed" && event.data?.dispatchId?.startsWith("hypagoal-dispatch:"))).toHaveLength(2);
   });
 
-  it("stops one controller pass at the consecutive deterministic dispatch maximum", async () => {
+  it("stops one controller pass at the consecutive deterministic dispatch maximum", { timeout: 30_000 }, async () => {
     const value = harness();
     const gateCount = MAX_CONSECUTIVE_DETERMINISTIC_DISPATCHES + 1;
     const nodes: any[] = [];

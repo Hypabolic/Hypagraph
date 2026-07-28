@@ -1,0 +1,203 @@
+{
+  "sessionFile": "2026-07-28T11-40-29-550Z_019fa886-b9ee-7694-b0c4-5a9e42950404.jsonl",
+  "phase": "completed",
+  "sequence": 65,
+  "revision": 1,
+  "goalStatus": "completed",
+  "consumedTurns": 0,
+  "schedulerOrdinal": 7,
+  "nodes": {
+    "approve-plan": "succeeded",
+    "write-plan": "succeeded",
+    "verify-plan": "succeeded",
+    "loop-work": "succeeded",
+    "loop-check": "succeeded"
+  },
+  "facts": {
+    "loop.passed": true,
+    "plan.approved": true,
+    "plan.verified": true
+  },
+  "eventTypes": [
+    "hypagraph.workflow.defined",
+    "hypagraph.node.ready",
+    "hypagraph.node.ready",
+    "hypagraph.goal.started",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.interaction.requested",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.loop.iteration-started",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.failed",
+    "hypagraph.loop.evaluated",
+    "hypagraph.loop.iteration-started",
+    "hypagraph.node.ready",
+    "hypagraph.action.completed",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.loop.evaluated",
+    "hypagraph.loop.completed",
+    "hypagraph.action.completed",
+    "hypagraph.interaction.presented",
+    "hypagraph.interaction.answered",
+    "hypagraph.fact.published",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-requested",
+    "hypagraph.attempt.started",
+    "hypagraph.attempt.result-submitted",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.node.ready",
+    "hypagraph.goal.continuation-abandoned",
+    "hypagraph.action.selected",
+    "hypagraph.action.dispatched",
+    "hypagraph.check.started",
+    "hypagraph.fact.published",
+    "hypagraph.check.result-recorded",
+    "hypagraph.verification.started",
+    "hypagraph.verification.passed",
+    "hypagraph.workflow.completed",
+    "hypagraph.goal.completed",
+    "hypagraph.action.completed"
+  ],
+  "interactionEvents": [
+    "hypagraph.interaction.requested",
+    "hypagraph.interaction.presented",
+    "hypagraph.interaction.answered"
+  ],
+  "loopActivityDuringWait": [
+    [
+      8,
+      "hypagraph.goal.continuation-requested",
+      "loop-work"
+    ],
+    [
+      10,
+      "hypagraph.attempt.started",
+      "loop-work"
+    ],
+    [
+      11,
+      "hypagraph.attempt.result-submitted",
+      "loop-work"
+    ],
+    [
+      12,
+      "hypagraph.verification.started",
+      "loop-work"
+    ],
+    [
+      13,
+      "hypagraph.verification.passed",
+      "loop-work"
+    ],
+    [
+      14,
+      "hypagraph.node.ready",
+      "loop-check"
+    ],
+    [
+      16,
+      "hypagraph.action.selected",
+      "loop-check"
+    ],
+    [
+      17,
+      "hypagraph.action.dispatched",
+      "loop-check"
+    ],
+    [
+      18,
+      "hypagraph.check.started",
+      "loop-check"
+    ],
+    [
+      19,
+      "hypagraph.fact.published",
+      "loop-check"
+    ],
+    [
+      20,
+      "hypagraph.check.result-recorded",
+      "loop-check"
+    ],
+    [
+      21,
+      "hypagraph.verification.started",
+      "loop-check"
+    ],
+    [
+      22,
+      "hypagraph.verification.failed",
+      "loop-check"
+    ],
+    [
+      25,
+      "hypagraph.node.ready",
+      "loop-work"
+    ],
+    [
+      26,
+      "hypagraph.action.completed",
+      "loop-check"
+    ],
+    [
+      27,
+      "hypagraph.goal.continuation-requested",
+      "loop-work"
+    ],
+    [
+      28,
+      "hypagraph.attempt.started",
+      "loop-work"
+    ],
+    [
+      29,
+      "hypagraph.attempt.result-submitted",
+      "loop-work"
+    ],
+    [
+      30,
+      "hypagraph.verification.started",
+      "loop-work"
+    ],
+    [
+      31,
+      "hypagraph.verification.passed",
+      "loop-work"
+    ]
+  ],
+  "planApprovedContent": "m6-1-approved",
+  "loopMarkerContent": "m6-1-marker",
+  "selectOptions": [
+    "approve - Approve",
+    "reject - Reject"
+  ],
+  "selectChosen": "approve - Approve",
+  "title": "M6.1 independent plan approval and marker loop"
+}

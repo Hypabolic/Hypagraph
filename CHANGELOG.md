@@ -2,21 +2,28 @@
 
 ## Unreleased
 
-M6.1 Slice 1 adds interaction nodes.
+No unreleased changes.
+
+## v0.8.0 - 2026-07-28
+
+M6.1 adds interaction and approval nodes.
 
 ### Added
 
-- the `interaction` node kind with structural validation;
-- the `awaiting_response` node status;
-- the interaction request and answer lifecycle;
-- declared response facts which an answer publishes;
-- a Pi command which accepts a typed answer;
-- validation which rejects a semantic presentation and names the M7 model executor.
+- the `interaction` node kind with node-local `awaiting_response` wait;
+- closed and open questions with `hypagraph_ask` and a dialog surface;
+- deterministic presentation kinds `none`, `report`, and `command`;
+- optional free-text notes and structured feedback artifacts for the next task;
+- level-triggered interaction deadlines with block or select policies;
+- reload and resume re-presentation without repeating a completed presentation effect;
+- derived waiting surfaces on status, widget, and the graph pane;
+- live Pi dogfood evidence for plan approval beside an independent loop.
 
 ### Changed
 
-- an interaction which waits for an answer does not stop an independent branch or an independent loop;
-- blockage classification excludes a wait-only state, so an outstanding question does not start automatic revision.
+- an unanswered interaction does not stop an independent branch or loop;
+- blockage classification excludes a wait-only state.
+
 
 ## v0.7.0 - 2026-07-27
 

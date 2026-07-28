@@ -227,12 +227,17 @@ const drawNode = (
   drawRect(canvas, layoutNode.x, layoutNode.y, layoutNode.width, layoutNode.height, node.id === selectedNodeId, unicode);
   const innerWidth = Math.max(0, layoutNode.width - 2);
   const marker = (unicode ? STATUS_MARKERS : ASCII_STATUS_MARKERS)[node.status];
-  canvas.text(layoutNode.x + 1, layoutNode.y + 1, truncate(`${marker} ${node.id}`, innerWidth), innerWidth);
+  // Fold a compact wait tag into the status line so normal and compact densities
+  // show it inside the default node width. Spacious density also keeps the kind line.
+  const waitingInteraction = node.status === "awaiting_response" && node.kind === "interaction";
+  const statusLine = waitingInteraction ? `${marker}w ${node.id}` : `${marker} ${node.id}`;
+  canvas.text(layoutNode.x + 1, layoutNode.y + 1, truncate(statusLine, innerWidth), innerWidth);
   if (layoutNode.height >= 4) {
     canvas.text(layoutNode.x + 1, layoutNode.y + 2, truncate(node.title, innerWidth), innerWidth);
   }
   if (node.kind !== "task" && layoutNode.height >= 5) {
-    canvas.text(layoutNode.x + 1, layoutNode.y + 3, truncate(`[${node.kind}]`, innerWidth), innerWidth);
+    const kindLabel = waitingInteraction ? "[interaction wait]" : `[${node.kind}]`;
+    canvas.text(layoutNode.x + 1, layoutNode.y + 3, truncate(kindLabel, innerWidth), innerWidth);
   }
 };
 

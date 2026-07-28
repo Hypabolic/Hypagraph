@@ -1,10 +1,10 @@
-import { enumerateGoalContinuationCandidates } from "./goal-continuation.js";
 import type {
   HypagraphState,
   InteractionDefinition,
   InteractionPresentationObservation,
   InteractionResponseOption,
 } from "./model.js";
+import { enumerateRootWorkActions } from "./goal-runnable.js";
 
 /** One interaction node which waits for an answer. */
 export interface AwaitingInteraction {
@@ -95,11 +95,40 @@ export function awaitingInteractions(state: HypagraphState): AwaitingInteraction
  * scheduler. Rule 1.1.1 therefore allows a dialog only when the graph has no
  * other runnable action.
  *
- * The interaction which the dialog presents is itself a runnable action. The
- * caller passes its node ID, and this function does not count it.
+ * The check uses graph-level root work actions, not goal-gated candidates. A
+ * paused goal after reload must not open a dialog when independent work is
+ * still ready. The interaction which the dialog presents is itself a runnable
+ * action when status is ready; the caller passes its node ID, and this
+ * function does not count it.
  */
 export const interactionPresentationIsAllowed = (
   state: HypagraphState,
   exceptNodeId?: string,
 ): boolean =>
-  enumerateGoalContinuationCandidates(state).every((candidate) => candidate.nodeId === exceptNodeId);
+  enumerateRootWorkActions(state).every((action) => action.nodeId === exceptNodeId);
+
+/**
+ * Report the derived goal-level waiting state.
+ *
+ * Rule 3.2: derive "waiting for a user response" when the runnable action list
+ * is empty and at least one interaction is outstanding. Do not store this
+ * value. It matches the controller stop-waiting-response decision for an
+ * active running goal.
+ *
+ * Node-local `awaiting_response` status can still appear when other work is
+ * runnable. That case is not derived goal waiting.
+ */
+export function isDerivedWaitingForUser(state: HypagraphState): boolean {
+  if (state.goal?.status !== "active" || state.phase !== "running") return false;
+  if (awaitingInteractions(state).length === 0) return false;
+  return enumerateRootWorkActions(state).length === 0;
+}
+
+/**
+ * Node IDs which currently wait for a user response, in definition order.
+ *
+ * This list is node-local. It is not the derived goal waiting state.
+ */
+export function awaitingInteractionNodeIds(state: HypagraphState): string[] {
+  return awaitingInteractions(state).map((item) => item.nodeId);
+}

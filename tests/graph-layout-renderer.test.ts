@@ -42,6 +42,8 @@ const view = (): GraphViewModel => ({
     componentId: "component:repair",
   }],
   readyNodeIds: ["docs"],
+  awaitingNodeIds: [],
+  derivedWaitingForUser: false,
 });
 
 describe("graph layout and renderer", () => {

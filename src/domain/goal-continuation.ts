@@ -6,6 +6,7 @@ import type {
 } from "./model.js";
 import { blockerIdentityMatches, classifyGoalBlockage } from "./goal-blockage.js";
 import { enumerateRootWorkActions, rootWorkActionIsRunnable } from "./goal-runnable.js";
+import { awaitingInteractionNodeIds } from "./interaction-presentation.js";
 
 export interface GoalContinuationStateIdentity {
   goalId: string;
@@ -94,10 +95,8 @@ export function selectGoalContinuation(state: HypagraphState): GoalContinuationD
   if (state.phase !== "running") return { ...identity, kind: "invariant-error", reason: `The active goal does not match workflow phase '${state.phase}'.` };
   const candidates = enumerateGoalContinuationCandidates(state);
   if (candidates.length === 0) {
-    const waitingNodeIds = state.definition.nodes
-      .filter((node) => state.runtime.nodes[node.id]?.status === "awaiting_response")
-      .map((node) => node.id)
-      .sort();
+    // Use definition order so controller decisions match status and pane surfaces.
+    const waitingNodeIds = awaitingInteractionNodeIds(state);
     if (waitingNodeIds.length > 0) {
       return {
         ...identity,

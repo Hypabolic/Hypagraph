@@ -101,6 +101,14 @@ An unanswered interaction must survive a session reload and must be presented ag
 
 The current policy pauses an active goal after a reload. That policy stays for autonomous continuation. It must not discard an outstanding question. After `/hypagoal resume`, an outstanding interaction is presented again without a repeated external effect if the artifact still exists.
 
+Host rule for presentation skip after restore:
+
+1. When no presentation observation is stored, run the external effect and store `present-interaction`.
+2. When a successful observation is stored and the presentation has no artifact (kind `none`), skip the external effect.
+3. When a successful observation is stored and `artifactRef` still resolves in the artifact store, skip the external effect.
+4. When a successful observation is stored and `artifactRef` is missing on disk, re-run the external effect to regenerate the file. Do not store a second `present-interaction` event. The durable observation stays authoritative. If regenerate fails, open the dialog anyway. A successful observation is not fatal for the answer path.
+5. When a failed, timed-out, cancelled, or error observation is stored, do not re-run the effect. The node stays terminal.
+
 ### 3.7 Consume no budget while waiting
 
 A waiting interaction consumes no turns and no tokens. Waiting is not work.
@@ -350,8 +358,8 @@ Scope:
 | 1.1 | Interactive presentation and the ask tool | `src/pi/interaction-dialog.ts`, `src/ui/interaction-surface.ts`, `src/extension.ts`, `src/ui/format.ts`, `src/ui/hypagoal-surface.ts`, `tests/m6-1-interaction-slice-1-1.test.ts` |
 | 2 | Deterministic presentation effects | `src/checks/presentation-executor.ts`, `src/domain/presentation-report.ts`, `src/domain/model-base.ts`, `src/domain/reducer.ts`, `src/domain/projection-base.ts`, `src/domain/validate.ts`, `src/extension.ts`, `tests/m6-1-interaction-slice-2.test.ts` |
 | 3 | Routing, structured feedback, and deadlines | Complete |
-| 4 | Reload, restore, and product surface | Partial: the controller re-presents when the wait is the only stop; status, widget, and lifecycle surfaces name the wait; reload and graph-pane waiting state remain open |
-| 5 | Dogfood and release | Not started |
+| 4 | Reload, restore, and product surface | Complete |
+| 5 | Dogfood and release | `docs/m6-1-dogfood.md`, `docs/dogfood-evidence/m6-1-live/`, `tests/m6-1-dogfood.test.ts` |
 
 Slice 1 is complete in commit `45c26c9`. It adds the `interaction` node kind, the `awaiting_response` node status, the request and answer lifecycle, declared response facts, and the request and answer command path. The wait stays node-local, so an independent branch and an independent loop stay runnable.
 
@@ -369,6 +377,16 @@ Slice 3 is complete. Routing uses only published response facts through the exis
 - `src/extension.ts`
 - `src/pi/definition.ts`
 - `tests/m6-1-interaction-slice-3.test.ts`
+
+Slice 4 is complete. An outstanding `awaiting_response` interaction survives session restore. Reload pauses the goal and keeps the wait durable. After `/hypagoal resume`, the controller evaluates deadlines and re-presents the question when the wait is the only stop. A stored presentation observation prevents a second external presentation effect. Status surfaces show open questions. The derived goal waiting state appears only when no runnable action exists. The graph projection marks `awaiting_response` nodes and exposes `awaitingNodeIds` and `derivedWaitingForUser`. The graph pane shows node-local awaiting and the derived waiting line. Evidence:
+
+- `src/domain/interaction-presentation.ts`
+- `src/ui/interaction-surface.ts`
+- `src/graph/projection.ts`
+- `src/graph/renderer.ts`
+- `src/pi/graph-pane.ts`
+- `src/extension.ts`
+- `tests/m6-1-interaction-slice-4.test.ts`
 
 Two decisions were recorded during Slice 1.
 
@@ -398,3 +416,9 @@ Two decisions were recorded during Slice 1.
 - external review systems, which belong to M6.3.
 
 Displaying a result in Pi is not an external effect. It is a presentation action, and it belongs here.
+
+Slice 5 is complete. Live Pi RPC dogfood ran plan approval beside an independent
+loop. The loop continued after the interaction request and before the answer.
+Evidence is in `docs/m6-1-dogfood.md` and `docs/dogfood-evidence/m6-1-live/`.
+The automated path is `tests/m6-1-dogfood.test.ts`.
+

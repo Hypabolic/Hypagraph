@@ -298,6 +298,14 @@ export class PiGraphPaneComponent implements Component, Focusable {
     if (goal.stopReason || goal.blockage.kind !== "not-blocked") {
       lines.push(` Stop ${goal.blockage.kind}${goal.blockage.blockerKind ? ` · ${goal.blockage.blockerKind} ${goal.blockage.blockerId}` : ""}${goal.stopReason ? ` · ${sanitizeTerminalText(goal.stopReason)}` : ""}`);
     }
+    // Derived goal waiting: only when no runnable action remains. Node-local
+    // awaiting status still appears on graph nodes while other work runs.
+    if (this.view.derivedWaitingForUser) {
+      const ids = this.view.awaitingNodeIds.join(", ") || "unknown";
+      lines.push(` Waiting for a user response · ${ids}`);
+    } else if (this.view.awaitingNodeIds.length > 0) {
+      lines.push(` Awaiting response: ${this.view.awaitingNodeIds.join(", ")}`);
+    }
     return lines.map((line) => truncateToWidth(line, width, "…", true));
   }
 

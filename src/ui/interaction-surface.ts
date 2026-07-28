@@ -1,4 +1,8 @@
-import { awaitingInteractions, interactionOptions } from "../domain/interaction-presentation.js";
+import {
+  awaitingInteractions,
+  interactionOptions,
+  isDerivedWaitingForUser,
+} from "../domain/interaction-presentation.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import type { HypagraphState } from "../domain/model.js";
 
@@ -29,6 +33,22 @@ export function hasIndependentWorkBesideWait(state: HypagraphState): boolean {
 }
 
 /**
+ * Goal-level derived waiting lines.
+ *
+ * These lines appear only when no runnable action exists and at least one
+ * interaction is outstanding. Node-local open questions use
+ * `waitingQuestionLines` and can appear while independent work continues.
+ */
+export function derivedWaitingLines(state: HypagraphState): string[] {
+  if (!isDerivedWaitingForUser(state)) return [];
+  const ids = awaitingInteractions(state).map((item) => item.nodeId).join(", ");
+  return [
+    "Waiting for a user response. No other runnable work is available.",
+    `Outstanding interactions: ${ids}.`,
+  ];
+}
+
+/**
  * Render every open question with its declared response options.
  *
  * A person cannot answer a question which they cannot read. Hypagraph presents
@@ -38,7 +58,8 @@ export function hasIndependentWorkBesideWait(state: HypagraphState): boolean {
 export function waitingQuestionLines(state: HypagraphState): string[] {
   const awaiting = awaitingInteractions(state);
   if (awaiting.length === 0) return [];
-  const lines = ["Waiting for an answer:"];
+  const lines = [...derivedWaitingLines(state)];
+  lines.push("Waiting for an answer:");
   for (const item of awaiting) {
     lines.push(`- ${item.nodeId}: ${item.interaction.question}`);
     for (const option of interactionOptions(item.interaction)) lines.push(`    ${option}`);

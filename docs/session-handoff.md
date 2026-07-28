@@ -1,4 +1,4 @@
-# Session handoff: M6.1 Slice 2 complete
+# Session handoff: M6.1 Slice 4 complete
 
 - Handoff date: 2026-07-28
 - Repository: `Hypabolic/Hypagraph`
@@ -104,9 +104,19 @@ Slice 2 is complete. It adds deterministic presentation kinds `none`, `report`, 
 
 Slice 3 is complete. Routing uses published interaction facts through ordinary gates. Free-text notes and feedback artifacts never select a route. Feedback reaches the next task through `projectTaskContext`, continuation prompts, and `hypagraph_read`. Deadlines are level-triggered: the request stores an absolute deadline, and `expire-interaction` evaluates it with a supplied time. The extension evaluates outstanding deadlines when the controller wakes. An open presentation defers deadline evaluation until the next controller entry. Evidence: `tests/m6-1-interaction-slice-3.test.ts`.
 
+Slice 4 is complete. Outstanding interactions survive reload. After `/hypagoal resume`, the controller re-presents the question when the wait is the only stop. A stored presentation observation prevents a repeated external presentation effect. Status surfaces and the graph pane show node-local awaiting. The derived goal waiting state appears only when no runnable action exists. Evidence:
+
+- `src/domain/interaction-presentation.ts`
+- `src/ui/interaction-surface.ts`
+- `src/graph/projection.ts`
+- `src/graph/renderer.ts`
+- `src/pi/graph-pane.ts`
+- `src/extension.ts`
+- `tests/m6-1-interaction-slice-4.test.ts`
+
 ### Next work
 
-Slice 4 is next: reload and restore of outstanding interactions, re-present without a repeated presentation effect, and product surface waiting state for status and the graph pane.
+Slice 5 is next: dogfood one objective with plan approval and one independent loop, prove the loop continues while approval waits, and record evidence in `docs/m6-1-dogfood.md`.
 
 ## 5. Release evidence
 
