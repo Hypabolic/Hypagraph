@@ -936,8 +936,7 @@ describe("m7-s6 executor context and result contracts", () => {
       expect(wrongType.diagnostics.some((d) => d.code === "executor_result_fact_type_mismatch")).toBe(true);
     }
 
-    // Empty facts remain valid on the executor result. Required produces facts can
-    // be published through a separate publish-facts command before settlement.
+    // Empty facts without prior publication fail when required contracts exist.
     const emptyFacts = validateExecutorResult(
       context,
       matchingResult(context, {
@@ -945,7 +944,23 @@ describe("m7-s6 executor context and result contracts", () => {
         evidence: [{ ref: "evidence://required-proof", kind: "note" }],
       }),
     );
-    expect(emptyFacts.ok).toBe(true);
+    expect(emptyFacts.ok).toBe(false);
+    if (!emptyFacts.ok) {
+      expect(emptyFacts.diagnostics.some((d) => d.code === "executor_result_required_fact_missing")).toBe(true);
+    }
+
+    // Prior publish on the same attempt satisfies required fact contracts.
+    const fromPriorPublish = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [],
+        evidence: [{ ref: "evidence://required-proof", kind: "note" }],
+      }),
+      {
+        publishedAttemptFacts: [{ name: "work.done", type: "boolean" }],
+      },
+    );
+    expect(fromPriorPublish.ok).toBe(true);
 
     const missingRequiredEvidence = validateExecutorResult(
       context,
@@ -969,5 +984,95 @@ describe("m7-s6 executor context and result contracts", () => {
       }),
     );
     expect(accepted.ok).toBe(true);
+  });
+
+  it("rejects materialization when captured child inputs exceed maxSelectedFacts", () => {
+    const base = createFamilyAndState();
+    // Seed a child binding with more captured inputs than the allowed bound.
+    const family = structuredClone(base.family);
+    family.members["goal-child"] = {
+      goalId: "goal-child",
+      workflowId: "workflow-child",
+      rootGoalId: "goal-root",
+      depth: 1,
+      parent: {
+        parentGoalId: "goal-root",
+        parentWorkflowId: "workflow-root",
+        parentNodeId: "work",
+      },
+      childGoalIds: [],
+    };
+    family.members["goal-root"]!.childGoalIds = ["goal-child"];
+    family.bindings["binding-inputs"] = {
+      bindingId: "binding-inputs",
+      childGoalId: "goal-child",
+      parentGoalId: "goal-root",
+      parentWorkflowId: "workflow-root",
+      parentNodeId: "work",
+      parentAttemptId: "attempt-work-1",
+      inputFacts: ["parent.a", "parent.b"],
+      capturedInputFacts: [
+        {
+          name: "parent.a",
+          type: "boolean",
+          value: true,
+          producerNodeId: "work",
+          attemptId: "attempt-work-1",
+          revision: base.state.revision,
+        },
+        {
+          name: "parent.b",
+          type: "string",
+          value: "x",
+          producerNodeId: "work",
+          attemptId: "attempt-work-1",
+          revision: base.state.revision,
+        },
+      ],
+      outputFacts: [],
+      budget: {},
+      failurePolicy: "fail-parent-node",
+      scopePaths: ["src/**"],
+      status: "active",
+      createdAt: later,
+    };
+
+    const childState = createStartedWorkflow(chainDefinition(), "workflow-child", "goal-child");
+    const tooSmall = materializeExecutorContext({
+      family,
+      state: childState,
+      identity: {
+        familyId: family.familyId,
+        goalId: "goal-child",
+        workflowId: "workflow-child",
+        revision: childState.revision,
+        nodeId: "work",
+        attemptId: "attempt-child",
+      },
+      profile,
+      maxSelectedFacts: 1,
+    });
+    expect(tooSmall.ok).toBe(false);
+    if (!tooSmall.ok) {
+      expect(tooSmall.diagnostics[0]?.code).toBe("executor_context_captured_inputs_exceed_bound");
+    }
+
+    const enough = materializeExecutorContext({
+      family,
+      state: childState,
+      identity: {
+        familyId: family.familyId,
+        goalId: "goal-child",
+        workflowId: "workflow-child",
+        revision: childState.revision,
+        nodeId: "work",
+        attemptId: "attempt-child",
+      },
+      profile,
+      maxSelectedFacts: 2,
+    });
+    expect(enough.ok).toBe(true);
+    if (!enough.ok) return;
+    expect(enough.value.selectedFacts.map((item) => item.name)).toEqual(["parent.a", "parent.b"]);
   });
 });

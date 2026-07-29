@@ -27,6 +27,7 @@
 
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   buildExecutorResultPayload,
@@ -1623,6 +1624,52 @@ export function extractStructuredResultFromAssistantText(
 }
 
 /**
+ * Streaming UTF-8 JSONL line reader for Pi RPC stdout.
+ *
+ * Decodes raw buffer chunks through StringDecoder so multi-byte characters that
+ * span chunk boundaries stay intact. Splits only on LF (`\n`) and strips a
+ * trailing CR. Incomplete lines remain buffered until a later chunk arrives.
+ */
+export class JsonlUtf8LineReader {
+  private readonly decoder = new StringDecoder("utf8");
+  private buffer = "";
+
+  /**
+   * Decode one raw chunk and return complete lines (without the LF delimiter).
+   */
+  push(chunk: Buffer): string[] {
+    this.buffer += this.decoder.write(chunk);
+    return this.drainCompleteLines();
+  }
+
+  /**
+   * Flush decoder end state and return any remaining complete lines.
+   * A trailing incomplete line without LF is left in the buffer and not returned.
+   */
+  end(): string[] {
+    this.buffer += this.decoder.end();
+    return this.drainCompleteLines();
+  }
+
+  /** Text still buffered after the last push/end (incomplete final line). */
+  pending(): string {
+    return this.buffer;
+  }
+
+  private drainCompleteLines(): string[] {
+    const lines: string[] = [];
+    while (true) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) break;
+      const rawLine = this.buffer.slice(0, newline).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(newline + 1);
+      lines.push(rawLine);
+    }
+    return lines;
+  }
+}
+
+/**
  * Child-process transport that bootstraps Pi in RPC/JSONL mode.
  *
  * Uses the supported Pi RPC protocol:
@@ -1785,7 +1832,7 @@ export function createChildProcessIsolatedPiTransport(
           return await new Promise<unknown>((resolve, reject) => {
             let settled = false;
             let byteCount = 0;
-            let lineBuffer = "";
+            const lineReader = new JsonlUtf8LineReader();
             let promptAccepted = false;
             let agentSettled = false;
             let awaitingAssistantText = false;
@@ -1950,13 +1997,10 @@ export function createChildProcessIsolatedPiTransport(
                 });
                 return;
               }
-              lineBuffer += chunk.toString("utf8");
-              // Pi RPC framing uses LF only; strip optional CR before parse.
-              while (true) {
-                const newline = lineBuffer.indexOf("\n");
-                if (newline < 0) break;
-                const rawLine = lineBuffer.slice(0, newline).replace(/\r$/, "");
-                lineBuffer = lineBuffer.slice(newline + 1);
+              // Decode through StringDecoder so multi-byte UTF-8 sequences that
+              // span chunk boundaries remain valid before JSONL split.
+              const lines = lineReader.push(chunk);
+              for (const rawLine of lines) {
                 if (rawLine.trim().length === 0) continue;
                 let parsed: unknown;
                 try {

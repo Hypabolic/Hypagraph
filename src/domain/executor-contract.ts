@@ -1004,17 +1004,29 @@ export function materializeExecutorContext(
     input.resultFactContracts ?? node.produces ?? [],
   ) as FactContract[];
 
-  const selectedFacts = selectUpstreamFacts(state, {
-    maxSelectedFacts,
+  // Captured parent input facts always occupy the first selection slots.
+  // maxSelectedFacts is a total bound. Reject when declared inputs alone exceed it.
+  const capturedInputs = getCapturedChildInputFacts(family, identity.goalId);
+  if (capturedInputs.length > maxSelectedFacts) {
+    return reject(
+      "executor_context_captured_inputs_exceed_bound",
+      `The child binding declares ${capturedInputs.length} input facts, but maxSelectedFacts is `
+      + `${maxSelectedFacts}. Raise the selection bound so every declared parent input is available.`,
+      "maxSelectedFacts",
+    );
+  }
+  const remainingFactSlots = maxSelectedFacts - capturedInputs.length;
+  const childSelectedFacts = selectUpstreamFacts(state, {
+    maxSelectedFacts: remainingFactSlots,
+    excludeNames: new Set(capturedInputs.map((item) => item.name)),
     ...(input.selectedFactNames !== undefined
       ? { selectedFactNames: input.selectedFactNames }
       : {}),
   });
-
-  // Project parent input facts captured on the child binding into the envelope.
-  // Parent values are stored on the binding at child creation; they are not
-  // re-read from parent runtime at materialize time.
-  mergeCapturedChildInputFacts(family, identity.goalId, selectedFacts, maxSelectedFacts);
+  const selectedFacts: SelectedUpstreamFact[] = [
+    ...capturedInputs,
+    ...childSelectedFacts,
+  ];
 
   const taskContext = projectTaskContext(state, identity.nodeId);
   const selectedArtifacts: SelectedArtifactRef[] = taskContext.feedbackArtifacts
@@ -1096,8 +1108,13 @@ export function materializeExecutorContext(
 
 function selectUpstreamFacts(
   state: HypagraphState,
-  options: { maxSelectedFacts: number; selectedFactNames?: string[] },
+  options: {
+    maxSelectedFacts: number;
+    selectedFactNames?: string[];
+    excludeNames?: ReadonlySet<string>;
+  },
 ): SelectedUpstreamFact[] {
+  if (options.maxSelectedFacts < 1) return [];
   const names = options.selectedFactNames
     ? [...options.selectedFactNames]
     : Object.keys(state.runtime.facts).sort((left, right) => left.localeCompare(right));
@@ -1105,6 +1122,7 @@ function selectUpstreamFacts(
   const selected: SelectedUpstreamFact[] = [];
   for (const name of names) {
     if (selected.length >= options.maxSelectedFacts) break;
+    if (options.excludeNames?.has(name)) continue;
     const record = state.runtime.facts[name];
     if (!record) continue;
     selected.push({
@@ -1120,37 +1138,43 @@ function selectUpstreamFacts(
 }
 
 /**
- * Merge parent facts captured on the child-goal binding into selectedFacts.
- * Parent inputs are prepended so they remain available under the selection bound.
- * Child runtime facts with the same name keep the child value.
+ * Load parent facts captured on the child-goal binding for this goal.
+ * Values were stored at child creation. They are not re-read from parent runtime.
  */
-function mergeCapturedChildInputFacts(
+function getCapturedChildInputFacts(
   family: GoalFamilyRuntime,
   goalId: string,
-  selectedFacts: SelectedUpstreamFact[],
-  maxSelectedFacts: number,
-): void {
+): SelectedUpstreamFact[] {
   const binding = Object.values(family.bindings).find((item) => item.childGoalId === goalId);
   if (!binding || !Array.isArray(binding.capturedInputFacts) || binding.capturedInputFacts.length === 0) {
-    return;
+    return [];
   }
-  const childNames = new Set(selectedFacts.map((item) => item.name));
-  const parentFacts: SelectedUpstreamFact[] = [];
-  for (const captured of binding.capturedInputFacts) {
-    if (childNames.has(captured.name)) continue;
-    parentFacts.push({
-      name: captured.name,
-      type: captured.type,
-      value: structuredClone(captured.value),
-      producerNodeId: captured.producerNodeId,
-      attemptId: captured.attemptId,
-      revision: captured.revision,
-    });
+  return binding.capturedInputFacts.map((captured) => ({
+    name: captured.name,
+    type: captured.type,
+    value: structuredClone(captured.value),
+    producerNodeId: captured.producerNodeId,
+    attemptId: captured.attemptId,
+    revision: captured.revision,
+  }));
+}
+
+/**
+ * Facts already published by one node attempt in canonical workflow state.
+ * Used so required fact contracts can be satisfied without repeating them on the result.
+ */
+export function publishedAttemptFactsFromState(
+  state: HypagraphState,
+  nodeId: string,
+  attemptId: string,
+): Array<{ name: string; type: FactType }> {
+  const published: Array<{ name: string; type: FactType }> = [];
+  for (const record of Object.values(state.runtime.facts)) {
+    if (record.producerNodeId !== nodeId) continue;
+    if (record.attemptId !== attemptId) continue;
+    published.push({ name: record.name, type: record.type });
   }
-  if (parentFacts.length === 0) return;
-  const merged = [...parentFacts, ...selectedFacts].slice(0, maxSelectedFacts);
-  selectedFacts.length = 0;
-  selectedFacts.push(...merged);
+  return published;
 }
 
 function buildPredecessorSummaries(
@@ -1178,6 +1202,18 @@ function buildPredecessorSummaries(
 }
 
 /**
+ * Optional inputs that refine protocol contract checks during validation.
+ */
+export interface ValidateExecutorResultOptions {
+  /**
+   * Facts already published by the same node attempt in canonical state.
+   * Required fact contracts for outcome "submitted" may be satisfied by these.
+   * Isolated executors typically omit this and must supply required facts on the result.
+   */
+  publishedAttemptFacts?: readonly { name: string; type: FactType }[];
+}
+
+/**
  * Validate an untrusted executor result against the dispatch context.
  *
  * Rejects identity mismatch, unknown or missing outcomes, and malformed
@@ -1189,6 +1225,7 @@ function buildPredecessorSummaries(
 export function validateExecutorResult(
   context: ExecutorContextEnvelope,
   result: unknown,
+  options: ValidateExecutorResultOptions = {},
 ): ValidateExecutorResultResult {
   if (context === null || context === undefined || !isStrictPlainObject(context as unknown)) {
     return reject(
@@ -1377,6 +1414,7 @@ export function validateExecutorResult(
       raw.outcome as ExecutorOutcome,
       factsValidation.facts,
       evidenceValidation.evidence,
+      options.publishedAttemptFacts ?? [],
     );
     if (!protocolChecks.ok) diagnostics.push(...protocolChecks.diagnostics);
   }
@@ -1416,17 +1454,17 @@ export function validateExecutorResult(
  * Validate result facts and evidence against the structured result protocol.
  *
  * - Facts that are present must be declared in protocol.factContracts with matching types.
+ * - For outcome "submitted", every required fact contract must appear either on the
+ *   result facts list or in publishedAttemptFacts (same node attempt, prior publish).
  * - When outcome is "submitted" and protocol.requiredEvidence is non-empty, each
  *   required evidence ref must appear on the result.
- * - Required fact contracts are not forced onto the executor result when empty:
- *   callers may publish required facts through a separate publish-facts step.
- *   The reducer still enforces required produces contracts on publish.
  */
 function validateExecutorResultProtocolContracts(
   protocol: StructuredResultProtocolDescriptor,
   outcome: ExecutorOutcome,
   facts: readonly FactInput[],
   evidence: readonly EvidenceReference[],
+  publishedAttemptFacts: readonly { name: string; type: FactType }[],
 ): { ok: true } | { ok: false; diagnostics: Diagnostic[] } {
   const diagnostics: Diagnostic[] = [];
   const contracts = Array.isArray(protocol.factContracts) ? protocol.factContracts : [];
@@ -1454,6 +1492,36 @@ function validateExecutorResultProtocolContracts(
   }
 
   if (outcome === "submitted") {
+    const availableByName = new Map<string, FactType>();
+    for (const published of publishedAttemptFacts) {
+      availableByName.set(published.name, published.type);
+    }
+    for (const fact of facts) {
+      availableByName.set(fact.name, fact.type);
+    }
+
+    for (const contract of contracts) {
+      if (contract.required !== true) continue;
+      const availableType = availableByName.get(contract.name);
+      if (availableType === undefined) {
+        diagnostics.push({
+          code: "executor_result_required_fact_missing",
+          message: `Executor result is missing required fact '${contract.name}'. `
+            + "Supply it on the result or publish it for this node attempt before submit.",
+          location: `resultProtocol.factContracts.${contract.name}`,
+        });
+        continue;
+      }
+      if (availableType !== contract.type) {
+        diagnostics.push({
+          code: "executor_result_fact_type_mismatch",
+          message: `Required fact '${contract.name}' has type '${availableType}' but the protocol `
+            + `requires type '${contract.type}'.`,
+          location: `resultProtocol.factContracts.${contract.name}`,
+        });
+      }
+    }
+
     const requiredEvidence = Array.isArray(protocol.requiredEvidence)
       ? protocol.requiredEvidence
       : [];

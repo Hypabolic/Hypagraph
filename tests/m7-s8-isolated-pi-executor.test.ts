@@ -33,6 +33,7 @@ import {
   dispatchIsolatedPiAttempt,
   executeAndSettleIsolatedPi,
   extractStructuredResultFromAssistantText,
+  JsonlUtf8LineReader,
   killPidBestEffort,
   materializeIsolatedPiContext,
   normalizeExecutorUsage,
@@ -1471,6 +1472,27 @@ describe("m7-s8 isolated Pi executor", () => {
 
     const raw = extractStructuredResultFromAssistantText("the model finished successfully");
     expect(raw.ok).toBe(false);
+  });
+
+  it("JsonlUtf8LineReader preserves multi-byte UTF-8 characters split across chunks", () => {
+    // Euro sign is three bytes: E2 82 AC. Split after the first byte.
+    const euro = Buffer.from("€", "utf8");
+    expect(euro.length).toBe(3);
+    const line = Buffer.concat([
+      Buffer.from('{"type":"message","text":"', "utf8"),
+      euro,
+      Buffer.from('"}\n', "utf8"),
+    ]);
+    const first = line.subarray(0, line.indexOf(euro) + 1);
+    const second = line.subarray(first.length);
+
+    const reader = new JsonlUtf8LineReader();
+    expect(reader.push(first)).toEqual([]);
+    const lines = reader.push(second);
+    expect(lines).toHaveLength(1);
+    const parsed = JSON.parse(lines[0]!) as { type: string; text: string };
+    expect(parsed.type).toBe("message");
+    expect(parsed.text).toBe("€");
   });
 
   it("real child_process mid-exit maps to interrupted session loss", async () => {

@@ -339,7 +339,11 @@ export function produceAndSettleCurrentSessionResult(
   if (!produced.ok) {
     return { ok: false, diagnostics: produced.diagnostics };
   }
-  return settleExecutorResult(produced.context, produced.untrusted, input.meta);
+  // Pass workflow state so required fact contracts can be satisfied by facts
+  // already published on this node attempt (publish-then-submit product path).
+  return settleExecutorResult(produced.context, produced.untrusted, input.meta, {
+    state: input.state,
+  });
 }
 
 /**

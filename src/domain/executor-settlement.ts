@@ -12,18 +12,21 @@
  */
 
 import {
+  publishedAttemptFactsFromState,
   validateExecutorResult,
   type ExecutorAttemptIdentity,
   type ExecutorContextEnvelope,
   type ExecutorDiagnostic,
   type ExecutorOutcome,
   type ExecutorResult,
+  type ValidateExecutorResultOptions,
 } from "./executor-contract.js";
 import type {
   Diagnostic,
   EvidenceReference,
   FactInput,
   HypagraphCommand,
+  HypagraphState,
 } from "./model.js";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +77,20 @@ export interface SettleExecutorResultMeta {
    * Called once per step. The supplier must return a non-empty string.
    */
   commandIdForStep: (stepIndex: number, step: ExecutorSettlementStep) => string;
+}
+
+/**
+ * Optional settlement inputs for protocol checks that need canonical state.
+ * Isolated executors may omit this. Current-session submit may pass state so
+ * required facts already published on the attempt satisfy the protocol.
+ */
+export interface SettleExecutorResultOptions {
+  /** Workflow state used to load facts already published by this node attempt. */
+  state?: HypagraphState;
+  /**
+   * Explicit published attempt facts. When set, takes precedence over state extraction.
+   */
+  publishedAttemptFacts?: ValidateExecutorResultOptions["publishedAttemptFacts"];
 }
 
 export type SettleExecutorResultResult =
@@ -379,8 +396,22 @@ export function settleExecutorResult(
   context: ExecutorContextEnvelope,
   untrustedResult: unknown,
   meta: SettleExecutorResultMeta,
+  options: SettleExecutorResultOptions = {},
 ): SettleExecutorResultResult {
-  const validated = validateExecutorResult(context, untrustedResult);
+  const publishedAttemptFacts = options.publishedAttemptFacts
+    ?? (options.state
+      ? publishedAttemptFactsFromState(
+        options.state,
+        context.identity.nodeId,
+        context.identity.attemptId,
+      )
+      : undefined);
+
+  const validated = validateExecutorResult(
+    context,
+    untrustedResult,
+    publishedAttemptFacts !== undefined ? { publishedAttemptFacts } : {},
+  );
   if (!validated.ok) {
     return { ok: false, diagnostics: validated.diagnostics };
   }
