@@ -16,7 +16,16 @@ import { DefaultPresentationExecutor } from "./checks/presentation-executor.js";
 import { recoverInterruptedChecks, recoverOrphanedLoopAttempts } from "./checks/recovery.js";
 import { recoverInterruptedEffects } from "./effect/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
-import type { DomainEvent, HypagraphCommand, HypagraphState, InteractionDefinition, PersistedHypagraph } from "./domain/model.js";
+import type { GoalFamilyRuntime } from "./domain/goal-family.js";
+import type {
+  DomainEvent,
+  EvidenceReference,
+  FactInput,
+  HypagraphCommand,
+  HypagraphState,
+  InteractionDefinition,
+  PersistedHypagraph,
+} from "./domain/model.js";
 import { InteractionDialogComponent, type InteractionDialogResult } from "./pi/interaction-dialog.js";
 import { createWorkflow } from "./domain/reducer.js";
 import { isReadyGateDecision } from "./domain/deterministic-gate-dispatch.js";
@@ -60,6 +69,9 @@ import {
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
+import {
+  routeLiveTaskCompletion,
+} from "./pi/current-session-executor.js";
 import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
 import { CodeDefinitionError, definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
@@ -458,6 +470,57 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (!result.ok) return throwDiagnostics(result.diagnostics);
     state = result.value.state;
     events.push(...result.value.events);
+  };
+
+  /**
+   * Settle task completion through the shared executor produce+settle path.
+   *
+   * Uses routeLiveTaskCompletion (same produce builder as NodeExecutor sources).
+   * Returns null when no family/goal path applies so the caller can use the
+   * legacy direct command path. Invalid structured results do not commit state.
+   */
+  const settleLiveTaskCompletion = (input: {
+    ctx: ExtensionContext;
+    state: HypagraphState;
+    nodeId: string;
+    attemptId: string;
+    outcome: "submitted" | "cancelled" | "failed";
+    facts?: FactInput[];
+    evidence?: EvidenceReference[];
+    reason?: string;
+    at: string;
+    correlationId: string;
+  }): HypagraphCommand[] | null => {
+    let family: GoalFamilyRuntime | undefined;
+    if (input.state.goal) {
+      const familyProjection = restoreOrMigrateOneMemberFamilySession(input.ctx.sessionManager.getBranch());
+      if (familyProjection) {
+        if (familyProjection.migrated) {
+          appendOneMemberFamilyRecord(pi, familyProjection.family);
+        }
+        family = familyProjection.family.familySnapshot;
+      }
+    }
+
+    const routing = routeLiveTaskCompletion({
+      family,
+      state: input.state,
+      nodeId: input.nodeId,
+      attemptId: input.attemptId,
+      outcome: input.outcome,
+      ...(input.facts !== undefined ? { facts: input.facts } : {}),
+      ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      meta: {
+        at: input.at,
+        correlationId: input.correlationId,
+        commandIdForStep: () => randomUUID(),
+      },
+    });
+
+    if (routing.kind === "legacy") return null;
+    if (routing.kind === "rejected") return throwDiagnostics(routing.diagnostics);
+    return routing.settlement.commands;
   };
 
   /**
@@ -1799,11 +1862,28 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         else if (params.action === "publish") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
+          // Intermediate fact publication during an attempt. Task completion
+          // (submit and cancel) settles through the shared executor result path.
           commands.push({ type: "publish-facts", nodeId, attemptId, facts: structuredClone(params.facts ?? []), commandId: randomUUID(), correlationId, at });
         } else if (params.action === "submit") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          commands.push({ type: "submit-result", nodeId, attemptId, evidence: params.evidence ?? [], commandId: randomUUID(), correlationId, at });
+          const settledCommands = settleLiveTaskCompletion({
+            ctx,
+            state,
+            nodeId,
+            attemptId,
+            outcome: "submitted",
+            ...(params.facts !== undefined ? { facts: params.facts as FactInput[] } : {}),
+            ...(params.evidence !== undefined ? { evidence: params.evidence as EvidenceReference[] } : {}),
+            at,
+            correlationId,
+          });
+          if (settledCommands) {
+            commands.push(...settledCommands);
+          } else {
+            commands.push({ type: "submit-result", nodeId, attemptId, evidence: params.evidence ?? [], commandId: randomUUID(), correlationId, at });
+          }
         } else if (params.action === "verify") {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
@@ -1816,7 +1896,21 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         else {
           const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId;
           if (!attemptId) throw new Error(`Node '${nodeId}' has no current attempt.`);
-          commands.push({ type: "cancel-attempt", nodeId, attemptId, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
+          const settledCommands = settleLiveTaskCompletion({
+            ctx,
+            state,
+            nodeId,
+            attemptId,
+            outcome: "cancelled",
+            ...(params.reason !== undefined ? { reason: params.reason } : {}),
+            at,
+            correlationId,
+          });
+          if (settledCommands) {
+            commands.push(...settledCommands);
+          } else {
+            commands.push({ type: "cancel-attempt", nodeId, attemptId, ...(params.reason ? { reason: params.reason } : {}), commandId: randomUUID(), correlationId, at });
+          }
         }
       }
       await runCommands(commands);
