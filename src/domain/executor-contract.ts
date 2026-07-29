@@ -107,6 +107,7 @@ export interface PredecessorSummary {
 /**
  * Workspace lease and base revision for a mutating attempt.
  * Optional in M7. Required for concurrent worktree isolation in M8.
+ * Build from a full lease with toExecutorWorkspaceLeaseRef in workspace-lease.ts.
  */
 export interface ExecutorWorkspaceLeaseRef {
   leaseId: string;
