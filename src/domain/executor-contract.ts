@@ -547,6 +547,13 @@ function validateFamilyStructure(
       "family.members",
     );
   }
+  if (!isStrictPlainObject(record.bindings)) {
+    return reject(
+      "executor_context_invalid_family",
+      "Family runtime requires a plain bindings object map.",
+      "family.bindings",
+    );
+  }
   return { ok: true };
 }
 
@@ -1145,6 +1152,11 @@ function getCapturedChildInputFacts(
   family: GoalFamilyRuntime,
   goalId: string,
 ): SelectedUpstreamFact[] {
+  // validateFamilyStructure already requires a plain bindings map. Guard so a
+  // direct caller cannot throw when bindings is missing or not an object.
+  if (!isStrictPlainObject(family.bindings as unknown)) {
+    return [];
+  }
   const binding = Object.values(family.bindings).find((item) => item.childGoalId === goalId);
   if (!binding || !Array.isArray(binding.capturedInputFacts) || binding.capturedInputFacts.length === 0) {
     return [];

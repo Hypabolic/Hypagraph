@@ -566,6 +566,38 @@ describe("m7-s6 executor context and result contracts", () => {
       expect(incompleteFamily.diagnostics[0]?.location).toBe("family.members");
     }
 
+    // Valid identifiers and members, but missing bindings must not throw.
+    const missingBindings = materializeExecutorContext({
+      family: {
+        familyId: base.family.familyId,
+        rootGoalId: base.family.rootGoalId,
+        members: base.family.members,
+      } as GoalFamilyRuntime,
+      state: base.state,
+      identity: base.identity,
+      profile,
+    });
+    expect(missingBindings.ok).toBe(false);
+    if (!missingBindings.ok) {
+      expect(missingBindings.diagnostics[0]?.code).toBe("executor_context_invalid_family");
+      expect(missingBindings.diagnostics[0]?.location).toBe("family.bindings");
+    }
+
+    const malformedBindings = materializeExecutorContext({
+      family: {
+        ...base.family,
+        bindings: null,
+      } as unknown as GoalFamilyRuntime,
+      state: base.state,
+      identity: base.identity,
+      profile,
+    });
+    expect(malformedBindings.ok).toBe(false);
+    if (!malformedBindings.ok) {
+      expect(malformedBindings.diagnostics[0]?.code).toBe("executor_context_invalid_family");
+      expect(malformedBindings.diagnostics[0]?.location).toBe("family.bindings");
+    }
+
     const familyArray = materializeExecutorContext({
       family: [] as unknown as GoalFamilyRuntime,
       state: base.state,
