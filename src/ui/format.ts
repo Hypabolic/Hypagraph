@@ -3,6 +3,8 @@ import { assessCodeAuthoring, formatCodeAuthoringAdvisories } from "../domain/co
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
+import type { FamilyGraphViewModel } from "../graph/family-projection.js";
+import { familyWidgetLines } from "./family-surface.js";
 import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
 import { waitingQuestionLines, waitingWidgetLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
@@ -87,7 +89,10 @@ export function renderWorkflow(state: HypagraphState): string {
   return lines.join("\n");
 }
 
-export function renderWidget(state: HypagraphState): string[] {
+export function renderWidget(
+  state: HypagraphState,
+  family?: FamilyGraphViewModel,
+): string[] {
   const ready = readyNodeIds(state);
   const hypagoal = projectHypagoalSurface(state);
   const shownLoop = loopSurfaceSummaries(state).find((loop) => loop.status === "running")
@@ -100,6 +105,7 @@ export function renderWidget(state: HypagraphState): string[] {
   return [
     `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}${hypagoal?.stopCode ? ` (${hypagoal.stopCode})` : ""}` : ""}`,
     `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${state.goal ? ` | Budget turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "∞"}, tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "∞"} | Revision ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}` : ""}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
+    ...(family === undefined ? [] : familyWidgetLines(family)),
     ...waitingWidgetLines(state),
   ];
 }

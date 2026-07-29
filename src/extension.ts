@@ -46,7 +46,11 @@ import {
   type AwaitingInteraction,
 } from "./domain/interaction-presentation.js";
 import { expiredInteractionCandidates } from "./domain/task-context.js";
+import type { FamilyExecutorHostSnapshot, FamilyGraphViewModel } from "./graph/family-projection.js";
 import { projectGraphView } from "./graph/projection.js";
+import {
+  projectProductFamilyView,
+} from "./ui/family-product.js";
 import {
   replacementConfirmationFor,
   startRootHypagoal,
@@ -64,6 +68,7 @@ import {
 } from "./persistence/coordinator.js";
 import {
   appendOneMemberFamilyRecord,
+  restoreLatestFamilySession,
   restoreOrMigrateOneMemberFamilySession,
 } from "./persistence/family-session.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
@@ -111,6 +116,7 @@ import {
   type HypagoalCreationRequest,
 } from "./pi/hypagoal.js";
 import { formatDiagnostics, renderWidget, renderWorkflow, workflowSummary } from "./ui/format.js";
+import { appendFamilyStatusBlock, formatFamilyDispatchSurfaceLine } from "./ui/family-surface.js";
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
 import {
   waitingLifecycleNote,
@@ -279,8 +285,17 @@ function updateUi(
   state: HypagraphState | undefined,
   ctx: ExtensionContext,
   graphPane: GraphPaneController,
+  family?: FamilyGraphViewModel,
 ): void {
+  // Clear a stale family before the state refresh so an open pane cannot keep a
+  // previous member graph after root replacement. Apply a matching family after.
+  if (family === undefined) {
+    graphPane.updateFamily(undefined);
+  }
   graphPane.update(state);
+  if (family !== undefined) {
+    graphPane.updateFamily(family);
+  }
   if (!state) {
     ctx.ui.setStatus("hypagraph", undefined);
     ctx.ui.setWidget("hypagraph", undefined);
@@ -292,11 +307,14 @@ function updateUi(
   const work = active?.id ?? `${readyCount} ready`;
   // Keep the wait visible in the status bar. Independent ready work stays named
   // beside it, so a human gate never looks like a full goal stop.
+  const childWait = family && family.bindings.some((binding) => binding.status === "active")
+    ? " | child wait"
+    : "";
   const status = waiting === undefined
-    ? `HG ${state.phase}: ${work}`
-    : `HG ${state.phase}: ${waiting}${readyCount > 0 || active ? ` | ${work}` : ""}`;
+    ? `HG ${state.phase}: ${work}${childWait}`
+    : `HG ${state.phase}: ${waiting}${readyCount > 0 || active ? ` | ${work}` : ""}${childWait}`;
   ctx.ui.setStatus("hypagraph", status);
-  ctx.ui.setWidget("hypagraph", renderWidget(state));
+  ctx.ui.setWidget("hypagraph", renderWidget(state, family));
 }
 
 interface PendingHypagoalAuthoring {
@@ -360,6 +378,41 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     activeProcessCount: () => isolatedPiHost.activeProcessCount(),
     teardownOnRestore: (input: { reason: string; kind: "restore" | "branch" | "user" | "other" }) =>
       isolatedPiHost.teardownOnRestore(input),
+  };
+
+  /** Pure host snapshot for family executor UI. Does not spawn processes. */
+  const executorHostSnapshot = (): FamilyExecutorHostSnapshot => ({
+    kind: ISOLATED_PI_PROFILE.kind,
+    executorId: isolatedPiController.host.executor.id,
+    profileKind: ISOLATED_PI_PROFILE.kind,
+    activeProcessCount: isolatedPiController.activeProcessCount(),
+  });
+
+  /**
+   * Resolve family projection for product UI from an existing family record.
+   * Does not migrate or append on paint paths. Session restore still migrates
+   * one-member roots. Requires the live goal to be a family member; a replaced
+   * root with a previous family record yields no family chrome.
+   */
+  const resolveFamilyView = (ctx: ExtensionContext): FamilyGraphViewModel | undefined => {
+    if (!state?.goal) return undefined;
+    try {
+      const familyRecord = restoreLatestFamilySession(ctx.sessionManager.getBranch());
+      if (!familyRecord) return undefined;
+      // Match check lives in projectProductFamilyView; mismatched roots return undefined.
+      return projectProductFamilyView(
+        familyRecord,
+        state,
+        executorHostSnapshot(),
+      );
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Update status, widget, and graph pane with optional family chrome. */
+  const paintUi = (ctx: ExtensionContext): void => {
+    updateUi(state, ctx, graphPane, resolveFamilyView(ctx));
   };
 
   const presentationExecutionKey = (workflowId: string, nodeId: string, attemptId: string): string =>
@@ -537,7 +590,7 @@ ${formatDiagnostics(closed.diagnostics)}`, "warning");
 ${formatDiagnostics(paused.diagnostics)}`, "warning");
       }
     }
-    updateUi(state, ctx, graphPane);
+    paintUi(ctx);
   };
 
   const runCommands = async (commands: readonly HypagraphCommand[]): Promise<void> => {
@@ -954,7 +1007,7 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
           if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
           state = next;
           events.push(...committed);
-          updateUi(state, ctx, graphPane);
+          paintUi(ctx);
         },
       });
       if (!dispatch.ok) {
@@ -1001,7 +1054,7 @@ ${dispatch.reason ?? "The check dispatch did not complete."}`, "warning");
           if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
           state = next;
           events.push(...committed);
-          updateUi(state, ctx, graphPane);
+          paintUi(ctx);
         },
       });
       if (!dispatch.ok) {
@@ -1079,7 +1132,7 @@ ${dispatch.reason ?? "The code dispatch did not complete."}`, "warning");
           if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
           state = next;
           events.push(...committed);
-          updateUi(state, ctx, graphPane);
+          paintUi(ctx);
         },
       });
       if (!dispatch.ok) {
@@ -1193,10 +1246,10 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
           if (awaiting) {
             const outcome = await presentAwaitingInteraction(ctx, awaiting);
             if (outcome === "answered") {
-              updateUi(state, ctx, graphPane);
+              paintUi(ctx);
               continue;
             }
-            updateUi(state, ctx, graphPane);
+            paintUi(ctx);
             // Keep the wait durable on dismiss or missing dialog. A failed
             // presentation leaves an explicit failed node instead of a wait.
             if (outcome === "presentation-failed") {
@@ -1282,7 +1335,7 @@ ${formatDiagnostics(dispatched.diagnostics)}`, "warning");
         state = dispatched.state;
         events.push(...dispatched.events);
         deterministicDispatches += 1;
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         if (dispatched.outcome === "failed") {
           ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
 ${formatDiagnostics(dispatched.diagnostics)}`, "warning");
@@ -1316,7 +1369,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
       }
       state = request.value.state;
       events.push(...request.value.events);
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       if (state.goal?.status === "budget_limited") {
         ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
         return;
@@ -1381,7 +1434,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         await abandonPendingContinuation("Interactive input interrupted the automatic continuation.");
         pendingContinuation = undefined;
         deliveredContinuation = undefined;
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         return;
       }
       const goal = state?.goal;
@@ -1412,7 +1465,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
         }
       }
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
     }
     if (deliveredContinuation) {
       const delivered = deliveredContinuation;
@@ -1455,7 +1508,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           commandId: `pause-goal:usage-invalid:${randomUUID()}`,
           at: new Date().toISOString(),
         }]);
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         ctx.ui.notify(`Hypagoal paused because usage could not be accounted. ${normalized.message}`, "warning");
         ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "warning");
         return;
@@ -1489,7 +1542,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       }
       state = recorded.value.state;
       events.push(...recorded.value.events);
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       if (state.goal?.status === "budget_limited") {
         ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
         return;
@@ -1670,7 +1723,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       if (result.kind === "created") {
         state = result.state;
         events = [...result.events];
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         return {
           content: [{ type: "text" as const, text: renderHypagoalCreated(result) }],
           details: {
@@ -1749,7 +1802,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       if (!result.ok) return throwDiagnostics(result.diagnostics);
       state = result.state;
       events = [...result.events];
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       return textResult(`${renderWorkflow(state)}\n\nHypagraph accepted the definition.`);
     },
   });
@@ -1852,12 +1905,12 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
             if (sessionGeneration !== runGeneration) return;
             state = transition.state;
             events.push(...transition.events);
-            updateUi(state, ctx, graphPane);
+            paintUi(ctx);
           },
         });
         if (sessionGeneration !== runGeneration) throw new Error("The Pi session changed while the check was active.");
         state = lifecycle.state;
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         if (!lifecycle.ok) return throwDiagnostics(lifecycle.diagnostics);
         const text = `${formatPiCheckResult(state, nodeId, lifecycle.result)}\n\n${renderWorkflow(state)}`;
         return {
@@ -1996,7 +2049,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         }
       }
       await runCommands(commands);
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       return textResult(renderWorkflow(state));
     },
   });
@@ -2040,7 +2093,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       if (!awaiting) throw new Error(`Interaction '${nodeId}' is not awaiting a response.`);
 
       const outcome = await presentAwaitingInteraction(ctx, awaiting);
-      updateUi(state!, ctx, graphPane);
+      paintUi(ctx);
       if (outcome === "answered") {
         return textResult(`${renderWorkflow(state!)}\n\nHypagraph stored the answer for interaction '${nodeId}'.`);
       }
@@ -2142,7 +2195,7 @@ ${formatDiagnostics(result.diagnostics)}` }],
       }
       state = result.value.state;
       events.push(...result.value.events);
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       const attempt = state.goal?.automaticRevision.lastAttempt;
       const accepted = attempt?.outcome === "applied";
       return {
@@ -2170,7 +2223,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         throw new Error("An automatic bounded revision is pending. Use hypagoal_submit_revision for that turn.");
       }
       await runCommands([{ type: "revise", definition: normalizeDefinition(params), commandId: randomUUID(), at: new Date().toISOString() }]);
-      updateUi(state, ctx, graphPane);
+      paintUi(ctx);
       return textResult(`${renderWorkflow(state!)}\n\nHypagraph accepted the revision.`);
     },
   });
@@ -2188,10 +2241,17 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       }
       if (action === "status") {
         if (!state?.goal) throw new Error("There is no active Hypagoal to inspect.");
-        ctx.ui.notify(renderHypagoalStatus(state), "info");
+        const familyView = resolveFamilyView(ctx);
+        const rootStatus = renderHypagoalStatus(state);
+        ctx.ui.notify(
+          appendFamilyStatusBlock(rootStatus, familyView, 100, { showOneMember: true }),
+          "info",
+        );
         return;
       }
       if (action === "graph") {
+        // Refresh family chrome before open so nested membership is current.
+        paintUi(ctx);
         graphPane.open(ctx);
         return;
       }
@@ -2211,7 +2271,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           commandId: `pause-goal:explicit:${randomUUID()}`,
           at: new Date().toISOString(),
         }]);
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "info");
         return;
       }
@@ -2219,7 +2279,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         ensureNoActiveExecution();
         if (!state?.goal) throw new Error("There is no active Hypagoal to resume.");
         await runCommands([{ type: "resume-goal", commandId: `resume-goal:${randomUUID()}`, at: new Date().toISOString() }]);
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         if (state?.goal?.status === "active") {
           ctx.ui.notify(renderHypagoalLifecycleMessage(state), "info");
           await queueGoalContinuation(ctx);
@@ -2241,7 +2301,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           commandId: `cancel-goal:${randomUUID()}`,
           at: new Date().toISOString(),
         }]);
-        updateUi(state, ctx, graphPane);
+        paintUi(ctx);
         ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "warning");
         return;
       }
@@ -2307,7 +2367,10 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words.map((word) => word.toLowerCase()).join(" ");
       if (action === "help") ctx.ui.notify(hypagraphUsage(), "info");
-      else if (action === "graph" || action === "graph open") graphPane.open(ctx);
+      else if (action === "graph" || action === "graph open") {
+        paintUi(ctx);
+        graphPane.open(ctx);
+      }
       else if (action === "graph close") graphPane.close();
       else if (action === "graph toggle") graphPane.toggle(ctx);
       else if (action === "graph focus") graphPane.focus();
@@ -2331,16 +2394,26 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         // cancel: user-initiated host teardown of in-flight isolated processes.
         const sub = (words[1] ?? "status").toLowerCase();
         if (sub === "status") {
-          ctx.ui.notify(
-            [
-              `Isolated Pi host: ${isolatedPiController.host.executor.id}`,
-              `Profile kind: ${ISOLATED_PI_PROFILE.kind}`,
-              `Active processes: ${isolatedPiController.activeProcessCount()}`,
-              "Dispatch seam: dispatchIsolatedPiAttempt (profile kind isolated-pi)",
-              "Cancel: /hypagraph executor cancel",
-            ].join("\n"),
-            "info",
-          );
+          const familyView = resolveFamilyView(ctx);
+          const host = executorHostSnapshot();
+          const lines = [
+            `Isolated Pi host: ${host.executorId ?? isolatedPiController.host.executor.id}`,
+            `Profile kind: ${host.profileKind ?? ISOLATED_PI_PROFILE.kind}`,
+            `Active processes: ${host.activeProcessCount ?? 0}`,
+            "Dispatch seam: dispatchIsolatedPiAttempt (profile kind isolated-pi)",
+            "Cancel: /hypagraph executor cancel",
+          ];
+          if (familyView?.scheduler.pending) {
+            lines.push(formatFamilyDispatchSurfaceLine("pending", familyView.scheduler.pending));
+          } else if (familyView?.scheduler.lastOutcome) {
+            lines.push(formatFamilyDispatchSurfaceLine("last", familyView.scheduler.lastOutcome));
+          } else if (familyView) {
+            lines.push(`Family: ${familyView.familyId}; dispatch idle`);
+          }
+          if (familyView?.executor) {
+            lines.push(`Executor projection: ${familyView.executor.summary}`);
+          }
+          ctx.ui.notify(lines.join("\n"), "info");
         } else if (sub === "cancel") {
           const before = isolatedPiController.activeProcessCount();
           const teardown = await isolatedPiController.teardownOnRestore({
@@ -2436,7 +2509,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         }
         ensureNoActiveExecution();
         const outcome = await presentAwaitingInteraction(ctx, awaiting);
-        updateUi(state!, ctx, graphPane);
+        paintUi(ctx);
         if (outcome === "answered") {
           ctx.ui.notify(renderWorkflow(state!), "info");
           // The person often recovers with /hypagraph ask after a dismiss. Resume
