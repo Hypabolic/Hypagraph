@@ -152,6 +152,19 @@ export interface ChildReturnRecord {
 }
 
 /**
+ * One parent fact value captured for a child at creation time.
+ * Materialized into the child executor context as selected facts.
+ */
+export interface CapturedChildInputFact {
+  name: string;
+  type: FactType;
+  value: FactValue;
+  producerNodeId: string;
+  attemptId: string;
+  revision: number;
+}
+
+/**
  * Parent-to-child binding recorded on the family aggregate.
  */
 export interface ChildGoalBinding {
@@ -162,6 +175,11 @@ export interface ChildGoalBinding {
   parentNodeId: string;
   parentAttemptId: string;
   inputFacts: string[];
+  /**
+   * Parent fact values captured when the child is created.
+   * Order matches inputFacts. Empty when the binding declares no input facts.
+   */
+  capturedInputFacts: CapturedChildInputFact[];
   outputFacts: FactContract[];
   budget: GoalBudgetDefinition;
   failurePolicy: ChildGoalFailurePolicy;
@@ -1206,6 +1224,11 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
     const first = factsValidated.diagnostics[0]!;
     restoreFail(first.code, `${location}: ${first.message}`);
   }
+  const capturedInputFacts = requireCapturedChildInputFacts(
+    raw.capturedInputFacts,
+    factsValidated.inputFacts,
+    `${location} capturedInputFacts`,
+  );
   if (!Array.isArray(raw.scopePaths) || raw.scopePaths.some((item) => typeof item !== "string" || !item.trim())) {
     restoreFail(
       "invalid_goal_family_binding",
@@ -1280,6 +1303,7 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
     parentNodeId,
     parentAttemptId,
     inputFacts: factsValidated.inputFacts,
+    capturedInputFacts,
     outputFacts: factsValidated.outputFacts,
     budget,
     failurePolicy: raw.failurePolicy as ChildGoalFailurePolicy,
@@ -1288,6 +1312,87 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
     createdAt,
     ...(returnRecord === undefined ? {} : { returnRecord: structuredClone(returnRecord) }),
   };
+}
+
+/**
+ * Validate captured parent input facts on a binding.
+ * Names must match inputFacts in order. Empty array when inputFacts is empty.
+ * Before first external adoption, missing capturedInputFacts is treated as empty
+ * only when inputFacts is also empty.
+ */
+function requireCapturedChildInputFacts(
+  value: unknown,
+  inputFacts: readonly string[],
+  location: string,
+): CapturedChildInputFact[] {
+  if (value === undefined || value === null) {
+    if (inputFacts.length === 0) return [];
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} must capture parent values for declared inputFacts.`,
+    );
+  }
+  if (!Array.isArray(value)) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} must be an array.`,
+    );
+  }
+  if (value.length !== inputFacts.length) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `${location} length (${value.length}) must match inputFacts length (${inputFacts.length}).`,
+    );
+  }
+  const captured: CapturedChildInputFact[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location}[${index}] must be a plain object.`,
+      );
+    }
+    const raw = item as Record<string, unknown>;
+    const name = requireIdentity(raw.name, `${location}[${index}] name`);
+    if (name !== inputFacts[index]) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location}[${index}].name '${name}' does not match inputFacts[${index}] `
+        + `'${inputFacts[index]}'.`,
+      );
+    }
+    if (typeof raw.type !== "string" || !isKnownFactType(raw.type)) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location}[${index}] requires a known fact type.`,
+      );
+    }
+    const factType = raw.type as FactType;
+    if (!isFactValueOfType(factType, raw.value as FactValue)) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location}[${index}] has an invalid value for type '${factType}'.`,
+      );
+    }
+    const producerNodeId = requireIdentity(raw.producerNodeId, `${location}[${index}] producerNodeId`);
+    const attemptId = requireIdentity(raw.attemptId, `${location}[${index}] attemptId`);
+    if (!Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location}[${index}] requires a non-negative safe integer revision.`,
+      );
+    }
+    captured.push({
+      name,
+      type: factType,
+      value: structuredClone(raw.value) as FactValue,
+      producerNodeId,
+      attemptId,
+      revision: raw.revision as number,
+    });
+  }
+  return captured;
 }
 
 function applyMemberAddedEvent(

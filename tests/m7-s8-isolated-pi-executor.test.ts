@@ -24,6 +24,7 @@ import {
   bindActiveIsolatedPiHost,
   buildIsolatedPiResultPayload,
   clampExecutorDiagnostics,
+  buildIsolatedPiRpcPrompt,
   createChildProcessIsolatedPiTransport,
   createFakeIsolatedPiTransport,
   createIsolatedPiExecutor,
@@ -31,6 +32,7 @@ import {
   createNodeExecutorForProfile,
   dispatchIsolatedPiAttempt,
   executeAndSettleIsolatedPi,
+  extractStructuredResultFromAssistantText,
   killPidBestEffort,
   materializeIsolatedPiContext,
   normalizeExecutorUsage,
@@ -1401,21 +1403,33 @@ describe("m7-s8 isolated Pi executor", () => {
     expect(result.diagnostics.some((item) => item.location === "hostTeardown.kind:restore")).toBe(true);
   });
 
-  it("real child_process transport echoes structured JSONL result", async () => {
+  it("real child_process transport speaks Pi RPC prompt and agent_settled flow", async () => {
     const { context } = materializeDefault();
     const untrusted = matchingResult(context, {
       summary: "echo child_process transport result",
     });
-    // Worker: read one JSON line from stdin, write a structured result line to stdout.
+    // Mock Pi RPC worker: accept prompt, emit agent_settled, return structured JSON via
+    // get_last_assistant_text. This is the supported Pi RPC protocol shape.
     const workerSource = [
       "let buf='';",
       "process.stdin.setEncoding('utf8');",
-      "process.stdin.on('data',(c)=>{buf+=c;const i=buf.indexOf('\\n');if(i<0)return;",
-      "const line=buf.slice(0,i);buf=buf.slice(i+1);",
+      "process.stdin.on('data',(c)=>{buf+=c;",
+      "while(true){const i=buf.indexOf('\\n');if(i<0)return;",
+      "const line=buf.slice(0,i);buf=buf.slice(i+1);if(!line.trim())continue;",
       "const req=JSON.parse(line);",
+      "const write=(obj)=>process.stdout.write(JSON.stringify(obj)+'\\n');",
+      "if(req.type==='prompt'){",
+      "write({id:req.id,type:'response',command:'prompt',success:true});",
+      "write({type:'agent_start'});",
+      "write({type:'agent_settled'});",
+      "} else if(req.type==='get_last_assistant_text'){",
       `const result=${JSON.stringify(untrusted)};`,
-      "process.stdout.write(JSON.stringify(result)+'\\n');",
-      "});",
+      "write({id:req.id,type:'response',command:'get_last_assistant_text',success:true,",
+      "data:{text:JSON.stringify(result)}});",
+      "} else if(req.type==='abort'){",
+      "write({id:req.id,type:'response',command:'abort',success:true});",
+      "}",
+      "}});",
     ].join("");
     const transport = createChildProcessIsolatedPiTransport({
       piBin: process.execPath,
@@ -1433,6 +1447,30 @@ describe("m7-s8 isolated Pi executor", () => {
     expect(result.outcome).toBe("submitted");
     expect(result.summary).toBe("echo child_process transport result");
     expect(result.attemptId).toBe(context.identity.attemptId);
+  });
+
+  it("buildIsolatedPiRpcPrompt and extractStructuredResultFromAssistantText cover protocol shape", () => {
+    const { context } = materializeDefault();
+    const prompt = buildIsolatedPiRpcPrompt(context, "token-protocol");
+    expect(prompt).toContain("Hypagraph isolated executor attempt.");
+    expect(prompt).toContain("token-protocol");
+    expect(prompt).toContain(context.identity.attemptId);
+    expect(prompt).toContain('"resultProtocol"');
+
+    const result = matchingResult(context, { summary: "from assistant text" });
+    const plain = extractStructuredResultFromAssistantText(JSON.stringify(result));
+    expect(plain.ok).toBe(true);
+    if (plain.ok) {
+      expect((plain.value as { summary: string }).summary).toBe("from assistant text");
+    }
+
+    const fenced = extractStructuredResultFromAssistantText(
+      `Here is the result:\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`,
+    );
+    expect(fenced.ok).toBe(true);
+
+    const raw = extractStructuredResultFromAssistantText("the model finished successfully");
+    expect(raw.ok).toBe(false);
   });
 
   it("real child_process mid-exit maps to interrupted session loss", async () => {

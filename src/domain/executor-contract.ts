@@ -1011,6 +1011,11 @@ export function materializeExecutorContext(
       : {}),
   });
 
+  // Project parent input facts captured on the child binding into the envelope.
+  // Parent values are stored on the binding at child creation; they are not
+  // re-read from parent runtime at materialize time.
+  mergeCapturedChildInputFacts(family, identity.goalId, selectedFacts, maxSelectedFacts);
+
   const taskContext = projectTaskContext(state, identity.nodeId);
   const selectedArtifacts: SelectedArtifactRef[] = taskContext.feedbackArtifacts
     .slice(0, maxSelectedArtifacts)
@@ -1112,6 +1117,40 @@ function selectUpstreamFacts(
     });
   }
   return selected;
+}
+
+/**
+ * Merge parent facts captured on the child-goal binding into selectedFacts.
+ * Parent inputs are prepended so they remain available under the selection bound.
+ * Child runtime facts with the same name keep the child value.
+ */
+function mergeCapturedChildInputFacts(
+  family: GoalFamilyRuntime,
+  goalId: string,
+  selectedFacts: SelectedUpstreamFact[],
+  maxSelectedFacts: number,
+): void {
+  const binding = Object.values(family.bindings).find((item) => item.childGoalId === goalId);
+  if (!binding || !Array.isArray(binding.capturedInputFacts) || binding.capturedInputFacts.length === 0) {
+    return;
+  }
+  const childNames = new Set(selectedFacts.map((item) => item.name));
+  const parentFacts: SelectedUpstreamFact[] = [];
+  for (const captured of binding.capturedInputFacts) {
+    if (childNames.has(captured.name)) continue;
+    parentFacts.push({
+      name: captured.name,
+      type: captured.type,
+      value: structuredClone(captured.value),
+      producerNodeId: captured.producerNodeId,
+      attemptId: captured.attemptId,
+      revision: captured.revision,
+    });
+  }
+  if (parentFacts.length === 0) return;
+  const merged = [...parentFacts, ...selectedFacts].slice(0, maxSelectedFacts);
+  selectedFacts.length = 0;
+  selectedFacts.push(...merged);
 }
 
 function buildPredecessorSummaries(
@@ -1326,6 +1365,22 @@ export function validateExecutorResult(
     else workspace = workspaceValidation.value;
   }
 
+  // Protocol contract checks run only after shape validation so diagnostics stay clear.
+  if (
+    factsValidation.ok
+    && evidenceValidation.ok
+    && typeof raw.outcome === "string"
+    && EXECUTOR_OUTCOME_SET.has(raw.outcome)
+  ) {
+    const protocolChecks = validateExecutorResultProtocolContracts(
+      protocol,
+      raw.outcome as ExecutorOutcome,
+      factsValidation.facts,
+      evidenceValidation.evidence,
+    );
+    if (!protocolChecks.ok) diagnostics.push(...protocolChecks.diagnostics);
+  }
+
   if (diagnostics.length > 0) return rejectMany(diagnostics);
   if (
     !factsValidation.ok
@@ -1355,6 +1410,70 @@ export function validateExecutorResult(
   };
 
   return { ok: true, value: accepted };
+}
+
+/**
+ * Validate result facts and evidence against the structured result protocol.
+ *
+ * - Facts that are present must be declared in protocol.factContracts with matching types.
+ * - When outcome is "submitted" and protocol.requiredEvidence is non-empty, each
+ *   required evidence ref must appear on the result.
+ * - Required fact contracts are not forced onto the executor result when empty:
+ *   callers may publish required facts through a separate publish-facts step.
+ *   The reducer still enforces required produces contracts on publish.
+ */
+function validateExecutorResultProtocolContracts(
+  protocol: StructuredResultProtocolDescriptor,
+  outcome: ExecutorOutcome,
+  facts: readonly FactInput[],
+  evidence: readonly EvidenceReference[],
+): { ok: true } | { ok: false; diagnostics: Diagnostic[] } {
+  const diagnostics: Diagnostic[] = [];
+  const contracts = Array.isArray(protocol.factContracts) ? protocol.factContracts : [];
+  const contractByName = new Map(contracts.map((contract) => [contract.name, contract]));
+
+  for (let index = 0; index < facts.length; index += 1) {
+    const fact = facts[index]!;
+    const contract = contractByName.get(fact.name);
+    if (!contract) {
+      diagnostics.push({
+        code: "executor_result_fact_not_declared",
+        message: `Executor result fact '${fact.name}' is not declared by the result protocol fact contracts.`,
+        location: `facts[${index}].name`,
+      });
+      continue;
+    }
+    if (fact.type !== contract.type) {
+      diagnostics.push({
+        code: "executor_result_fact_type_mismatch",
+        message: `Executor result fact '${fact.name}' has type '${fact.type}' but the protocol `
+          + `requires type '${contract.type}'.`,
+        location: `facts[${index}].type`,
+      });
+    }
+  }
+
+  if (outcome === "submitted") {
+    const requiredEvidence = Array.isArray(protocol.requiredEvidence)
+      ? protocol.requiredEvidence
+      : [];
+    if (requiredEvidence.length > 0) {
+      const evidenceRefs = new Set(evidence.map((item) => item.ref));
+      for (let index = 0; index < requiredEvidence.length; index += 1) {
+        const required = requiredEvidence[index]!;
+        if (!evidenceRefs.has(required)) {
+          diagnostics.push({
+            code: "executor_result_required_evidence_missing",
+            message: `Executor result is missing required evidence '${required}'.`,
+            location: `resultProtocol.requiredEvidence[${index}]`,
+          });
+        }
+      }
+    }
+  }
+
+  if (diagnostics.length > 0) return { ok: false, diagnostics };
+  return { ok: true };
 }
 
 function validateExecutorFactInputs(

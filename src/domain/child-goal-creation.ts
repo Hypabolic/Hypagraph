@@ -10,6 +10,7 @@ import {
   applyFamilyEvent,
   requireGoalFamilyNonEmpty,
   requireGoalFamilyTimestamp,
+  type CapturedChildInputFact,
   type ChildGoalBinding,
   type ChildGoalFailurePolicy,
   type GoalFamilyEvent,
@@ -196,6 +197,14 @@ export function createBoundedChildGoal(input: CreateBoundedChildGoalInput): Boun
 
   const factsValidated = validateChildBindingFacts(input.inputFacts, input.outputFacts);
   if (!factsValidated.ok) return { ok: false, diagnostics: factsValidated.diagnostics };
+
+  const capturedInputFactsResult = captureParentInputFacts(
+    input.parentState,
+    factsValidated.inputFacts,
+  );
+  if (!capturedInputFactsResult.ok) {
+    return { ok: false, diagnostics: capturedInputFactsResult.diagnostics };
+  }
 
   const budgetDiagnostics = validateGoalBudgetDefinition(input.budget);
   if (budgetDiagnostics.length > 0) {
@@ -447,6 +456,7 @@ export function createBoundedChildGoal(input: CreateBoundedChildGoalInput): Boun
     parentNodeId: input.parentNodeId,
     parentAttemptId: parentNodeRuntime.currentAttemptId,
     inputFacts: factsValidated.inputFacts,
+    capturedInputFacts: capturedInputFactsResult.captured,
     outputFacts: factsValidated.outputFacts,
     budget: structuredClone(budget),
     failurePolicy,
@@ -524,5 +534,39 @@ export function createBoundedChildGoal(input: CreateBoundedChildGoalInput): Boun
     childEvents: childCreated.events,
     binding: structuredClone(binding),
   };
+}
+
+/**
+ * Verify the parent holds each declared input fact and capture pure values for the child.
+ * Captured values are stored on the binding and later projected into child executor context.
+ */
+export function captureParentInputFacts(
+  parentState: HypagraphState,
+  inputFacts: readonly string[],
+): { ok: true; captured: CapturedChildInputFact[] } | { ok: false; diagnostics: Diagnostic[] } {
+  const captured: CapturedChildInputFact[] = [];
+  const diagnostics: Diagnostic[] = [];
+  for (let index = 0; index < inputFacts.length; index += 1) {
+    const name = inputFacts[index]!;
+    const record = parentState.runtime.facts[name];
+    if (!record) {
+      diagnostics.push({
+        code: "child_input_fact_missing",
+        message: `Parent workflow does not have input fact '${name}' required by the child binding.`,
+        location: `inputFacts[${index}]`,
+      });
+      continue;
+    }
+    captured.push({
+      name: record.name,
+      type: record.type,
+      value: structuredClone(record.value),
+      producerNodeId: record.producerNodeId,
+      attemptId: record.attemptId,
+      revision: record.revision,
+    });
+  }
+  if (diagnostics.length > 0) return { ok: false, diagnostics };
+  return { ok: true, captured };
 }
 

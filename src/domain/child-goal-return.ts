@@ -21,11 +21,13 @@ import {
   type GoalFamilyEvent,
   type GoalFamilyRuntime,
 } from "./goal-family.js";
+import { goalIsTerminal } from "./goal-policy.js";
 import type {
   Diagnostic,
   DomainEvent,
   EvidenceReference,
   FactInput,
+  GoalStatus,
   HypagraphState,
 } from "./model.js";
 import { handleCommand } from "./reducer.js";
@@ -44,6 +46,11 @@ export interface ReturnChildGoalInput {
   family: GoalFamilyRuntime;
   /** Parent workflow state that owns the waiting task. */
   parentState: HypagraphState;
+  /**
+   * Child workflow state for the binding.
+   * Must already be terminal with a goal status that matches outcome.
+   */
+  childState: HypagraphState;
   bindingId: string;
   at: string;
   /**
@@ -187,6 +194,14 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
       "bindingId",
     );
   }
+
+  const childStateCheck = validateChildStateForReturn(
+    binding.childGoalId,
+    input.childState,
+    input.outcome,
+    input.family.members[binding.childGoalId]!.workflowId,
+  );
+  if (!childStateCheck.ok) return childStateCheck;
 
   const parentNode = input.parentState.runtime.nodes[binding.parentNodeId];
   if (!parentNode) {
@@ -369,6 +384,83 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
     binding: structuredClone(nextBinding),
     returnRecord: structuredClone(returnRecord),
   };
+}
+
+/**
+ * Map a child return outcome to the required terminal goal status.
+ */
+export function goalStatusForChildReturnOutcome(
+  outcome: ChildReturnOutcomeKind,
+): Extract<GoalStatus, "completed" | "failed" | "cancelled" | "budget_limited"> {
+  switch (outcome) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "budget_limited":
+      return "budget_limited";
+  }
+}
+
+/**
+ * Require the child workflow to be terminal with a goal status that matches the return outcome.
+ */
+export function validateChildStateForReturn(
+  childGoalId: string,
+  childState: HypagraphState,
+  outcome: ChildReturnOutcomeKind,
+  expectedWorkflowId: string,
+): ReturnChildGoalResult | { ok: true } {
+  if (!childState || typeof childState !== "object") {
+    return reject(
+      "child_return_child_state_missing",
+      "Child return requires the child workflow state.",
+      "childState",
+    );
+  }
+  if (childState.workflowId !== expectedWorkflowId) {
+    return reject(
+      "child_return_child_workflow_mismatch",
+      `Child workflow '${childState.workflowId}' does not match binding child workflow `
+      + `'${expectedWorkflowId}'.`,
+      "childState.workflowId",
+    );
+  }
+  const childGoal = childState.goal;
+  if (!childGoal) {
+    return reject(
+      "child_return_child_goal_missing",
+      `Child workflow '${childState.workflowId}' has no goal runtime.`,
+      "childState.goal",
+    );
+  }
+  if (childGoal.goalId !== childGoalId) {
+    return reject(
+      "child_return_child_goal_mismatch",
+      `Child goal '${childGoal.goalId}' does not match binding child '${childGoalId}'.`,
+      "childState.goal.goalId",
+    );
+  }
+  if (!goalIsTerminal(childGoal)) {
+    return reject(
+      "child_return_child_not_terminal",
+      `Child goal '${childGoalId}' is still '${childGoal.status}'. `
+      + "A child return requires a terminal child goal status that matches the outcome.",
+      "childState.goal.status",
+    );
+  }
+  const expectedStatus = goalStatusForChildReturnOutcome(outcome);
+  if (childGoal.status !== expectedStatus) {
+    return reject(
+      "child_return_outcome_status_mismatch",
+      `Child return outcome '${outcome}' requires child goal status '${expectedStatus}', `
+      + `but child goal '${childGoalId}' is '${childGoal.status}'.`,
+      "outcome",
+    );
+  }
+  return { ok: true };
 }
 
 // Re-export policy type for callers that type against failure policies.

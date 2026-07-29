@@ -1566,12 +1566,73 @@ export interface ChildProcessIsolatedPiTransportOptions {
 }
 
 /**
+ * Build the Pi RPC prompt message for one isolated attempt.
+ * The agent must return a structured ExecutorResult JSON object as final text.
+ */
+export function buildIsolatedPiRpcPrompt(
+  context: ExecutorContextEnvelope,
+  ownershipToken: string,
+): string {
+  return [
+    "Hypagraph isolated executor attempt.",
+    "Complete only the selected node attempt described by the context envelope.",
+    "Return exactly one structured ExecutorResult JSON object as your final assistant message.",
+    "Do not return free-form prose as the only final content.",
+    "The JSON object must include identity fields that match the context, plus outcome,",
+    "facts, evidence, artifacts, summary, diagnostics, and usage.",
+    "You may wrap the JSON in a ```json fenced block.",
+    `Ownership token: ${ownershipToken}`,
+    "Context envelope (JSON):",
+    JSON.stringify(context),
+  ].join("\n");
+}
+
+/**
+ * Extract a structured result object from Pi assistant text.
+ * Accepts a full JSON object body or a ```json fenced block.
+ * Returns { ok:false } when no plain JSON object is present.
+ */
+export function extractStructuredResultFromAssistantText(
+  text: string,
+): { ok: true; value: unknown } | { ok: false; message: string } {
+  if (typeof text !== "string" || text.trim().length === 0) {
+    return {
+      ok: false,
+      message: "The isolated Pi assistant returned no text for the structured result.",
+    };
+  }
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = fenced ? [fenced[1]!.trim(), trimmed] : [trimmed];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return { ok: true, value: parsed };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return {
+    ok: false,
+    message:
+      "The isolated Pi assistant text did not contain a structured JSON result object. "
+      + "Raw assistant text is not a valid canonical result.",
+  };
+}
+
+/**
  * Child-process transport that bootstraps Pi in RPC/JSONL mode.
  *
- * Protocol (Hypagraph-owned, minimal):
- * - Host writes one JSON line: { type: "run-attempt", ownershipToken, context }
- * - Worker writes one JSON line: structured ExecutorResult plain object,
- *   { type: "result", result, ownershipToken? }, or { type: "error", code, message }
+ * Uses the supported Pi RPC protocol:
+ * 1. Host writes { id, type: "prompt", message }
+ * 2. Host reads the matching { type: "response", command: "prompt", ... }
+ * 3. Host streams events until { type: "agent_settled" }
+ * 4. Host writes { id, type: "get_last_assistant_text" }
+ * 5. Host extracts a structured ExecutorResult JSON object from assistant text
+ *
+ * Abort sends { type: "abort" } when the signal fires during the attempt.
  *
  * When the Pi binary is missing, start fails with a clear error. The adapter
  * maps that to outcome "failed" with diagnostic isolated_pi_start_failed.
@@ -1632,6 +1693,7 @@ export function createChildProcessIsolatedPiTransport(
       let terminated = false;
       let sessionLost = false;
       let lastChildError: Error | undefined;
+      let nextRequestId = 1;
 
       // Attach error listener immediately so missing-binary ENOENT is not uncaught.
       // spawn() with a missing binary does not throw; it emits 'error' asynchronously
@@ -1664,7 +1726,6 @@ export function createChildProcessIsolatedPiTransport(
 
       // sessionId is an id; sessionPath is an optional file path for continuity.
       const sessionId = `pi-rpc-${startOptions.ownershipToken.slice(0, 8)}`;
-      const sessionPath = startOptions.sessionPath;
 
       // Bounded stderr drain so logs cannot fill the OS pipe and hang the child.
       const stderrChunks: Buffer[] = [];
@@ -1689,6 +1750,11 @@ export function createChildProcessIsolatedPiTransport(
         sessionLost = true;
       });
 
+      const writeJsonLine = (payload: unknown): void => {
+        const line = `${JSON.stringify(payload)}\n`;
+        piped.stdin.write(line);
+      };
+
       const handle: IsolatedPiProcessHandle = {
         pid: child.pid,
         sessionId,
@@ -1709,18 +1775,21 @@ export function createChildProcessIsolatedPiTransport(
             );
           }
 
-          const request = {
-            type: "run-attempt",
-            ownershipToken: startOptions.ownershipToken,
+          const promptId = `hypagraph-prompt-${nextRequestId++}`;
+          const textId = `hypagraph-text-${nextRequestId++}`;
+          const promptMessage = buildIsolatedPiRpcPrompt(
             context,
-            ...(sessionPath !== undefined ? { sessionPath } : {}),
-          };
-          const line = `${JSON.stringify(request)}\n`;
+            startOptions.ownershipToken,
+          );
 
           return await new Promise<unknown>((resolve, reject) => {
             let settled = false;
             let byteCount = 0;
-            const chunks: Buffer[] = [];
+            let lineBuffer = "";
+            let promptAccepted = false;
+            let agentSettled = false;
+            let awaitingAssistantText = false;
+            let abortSent = false;
 
             const cleanup = (): void => {
               piped.stdout.removeListener("data", onData);
@@ -1738,6 +1807,14 @@ export function createChildProcessIsolatedPiTransport(
             };
 
             const onAbort = (): void => {
+              if (!abortSent && !sessionLost && !terminated) {
+                abortSent = true;
+                try {
+                  writeJsonLine({ id: `hypagraph-abort-${nextRequestId++}`, type: "abort" });
+                } catch {
+                  // best effort
+                }
+              }
               finish(() => {
                 reject(new IsolatedPiSessionLostError(
                   "The isolated Pi attempt was aborted during run.",
@@ -1757,6 +1834,112 @@ export function createChildProcessIsolatedPiTransport(
               });
             };
 
+            const requestAssistantText = (): void => {
+              if (awaitingAssistantText || settled) return;
+              awaitingAssistantText = true;
+              try {
+                writeJsonLine({ id: textId, type: "get_last_assistant_text" });
+              } catch (error) {
+                sessionLost = true;
+                finish(() => {
+                  reject(new IsolatedPiSessionLostError(
+                    errorMessage(error, "Failed to request assistant text from isolated Pi."),
+                  ));
+                });
+              }
+            };
+
+            const handleParsedLine = (parsed: unknown): void => {
+              if (!isStrictPlainObject(parsed)) {
+                // Non-object stdout lines are ignored (protocol events must be objects).
+                return;
+              }
+              const record = parsed as Record<string, unknown>;
+
+              if (record.type === "response") {
+                if (record.id === promptId) {
+                  if (record.success === false) {
+                    const errorText = isNonEmptyString(record.error)
+                      ? record.error
+                      : "The Pi RPC prompt command failed.";
+                    finish(() => {
+                      resolve({
+                        type: "error",
+                        code: "isolated_pi_rpc_prompt_failed",
+                        message: errorText,
+                      });
+                    });
+                    return;
+                  }
+                  promptAccepted = true;
+                  if (agentSettled) requestAssistantText();
+                  return;
+                }
+                if (record.id === textId) {
+                  if (record.success === false) {
+                    const errorText = isNonEmptyString(record.error)
+                      ? record.error
+                      : "The Pi RPC get_last_assistant_text command failed.";
+                    finish(() => {
+                      resolve({
+                        type: "error",
+                        code: "isolated_pi_rpc_assistant_text_failed",
+                        message: errorText,
+                      });
+                    });
+                    return;
+                  }
+                  const data = isStrictPlainObject(record.data)
+                    ? record.data as Record<string, unknown>
+                    : undefined;
+                  const text = data && typeof data.text === "string" ? data.text : null;
+                  if (text === null) {
+                    finish(() => {
+                      resolve({
+                        type: "error",
+                        code: "isolated_pi_rpc_assistant_text_missing",
+                        message:
+                          "The isolated Pi session returned no assistant text after agent_settled.",
+                      });
+                    });
+                    return;
+                  }
+                  const extracted = extractStructuredResultFromAssistantText(text);
+                  if (!extracted.ok) {
+                    finish(() => {
+                      resolve({
+                        type: "error",
+                        code: "isolated_pi_rpc_result_not_structured",
+                        message: extracted.message,
+                      });
+                    });
+                    return;
+                  }
+                  // Echo ownership so parseWorkerReply can verify the host token.
+                  if (isStrictPlainObject(extracted.value)) {
+                    const value = {
+                      ...(extracted.value as Record<string, unknown>),
+                    };
+                    if (value.ownershipToken === undefined) {
+                      value.ownershipToken = startOptions.ownershipToken;
+                    }
+                    finish(() => resolve(value));
+                    return;
+                  }
+                  finish(() => resolve(extracted.value));
+                  return;
+                }
+                // Unrelated response ids (e.g. abort) are ignored during the attempt.
+                return;
+              }
+
+              // Events do not carry request ids.
+              if (record.type === "agent_settled") {
+                agentSettled = true;
+                if (promptAccepted) requestAssistantText();
+              }
+            };
+
             const onData = (chunk: Buffer): void => {
               byteCount += chunk.length;
               if (byteCount > maxReplyBytes) {
@@ -1767,21 +1950,26 @@ export function createChildProcessIsolatedPiTransport(
                 });
                 return;
               }
-              chunks.push(chunk);
-              const text = Buffer.concat(chunks).toString("utf8");
-              const newline = text.indexOf("\n");
-              if (newline < 0) return;
-              const rawLine = text.slice(0, newline).replace(/\r$/, "");
-              let parsed: unknown;
-              try {
-                parsed = JSON.parse(rawLine) as unknown;
-              } catch {
-                finish(() => {
-                  reject(new Error("Isolated Pi worker reply is not valid JSON."));
-                });
-                return;
+              lineBuffer += chunk.toString("utf8");
+              // Pi RPC framing uses LF only; strip optional CR before parse.
+              while (true) {
+                const newline = lineBuffer.indexOf("\n");
+                if (newline < 0) break;
+                const rawLine = lineBuffer.slice(0, newline).replace(/\r$/, "");
+                lineBuffer = lineBuffer.slice(newline + 1);
+                if (rawLine.trim().length === 0) continue;
+                let parsed: unknown;
+                try {
+                  parsed = JSON.parse(rawLine) as unknown;
+                } catch {
+                  finish(() => {
+                    reject(new Error("Isolated Pi worker reply is not valid JSON."));
+                  });
+                  return;
+                }
+                handleParsedLine(parsed);
+                if (settled) return;
               }
-              finish(() => resolve(parsed));
             };
 
             // on("data") switches from flowing-empty to capture for this attempt.
@@ -1803,21 +1991,16 @@ export function createChildProcessIsolatedPiTransport(
             }
 
             try {
-              piped.stdin.write(line, (writeError) => {
-                if (writeError) {
-                  sessionLost = true;
-                  finish(() => {
-                    reject(new IsolatedPiSessionLostError(
-                      errorMessage(writeError, "Failed to write attempt request to isolated Pi."),
-                    ));
-                  });
-                }
+              writeJsonLine({
+                id: promptId,
+                type: "prompt",
+                message: promptMessage,
               });
             } catch (error) {
               sessionLost = true;
               finish(() => {
                 reject(new IsolatedPiSessionLostError(
-                  errorMessage(error, "Failed to write attempt request to isolated Pi."),
+                  errorMessage(error, "Failed to write Pi RPC prompt to isolated Pi."),
                 ));
               });
             }

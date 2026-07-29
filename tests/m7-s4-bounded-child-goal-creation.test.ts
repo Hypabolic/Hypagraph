@@ -17,6 +17,7 @@ import {
   type FamilyBounds,
   type GoalFamilyEvent,
 } from "../src/domain/goal-family.js";
+import { materializeExecutorContext } from "../src/domain/executor-contract.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
 import type { DomainEvent, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { replayEvents } from "../src/domain/projection.js";
@@ -1124,6 +1125,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "attempt-work",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1163,6 +1165,7 @@ describe("M7-S4 bounded child-goal creation", () => {
       parentNodeId: "work",
       parentAttemptId: "attempt-work",
       inputFacts: [],
+      capturedInputFacts: [],
       outputFacts: [],
       budget: {},
       failurePolicy: "fail-parent-node",
@@ -1411,6 +1414,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "attempt-work",
           inputFacts: ["Bad.Name"],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1449,6 +1453,7 @@ describe("M7-S4 bounded child-goal creation", () => {
       parentNodeId: "work",
       parentAttemptId: "attempt-work",
       inputFacts: ["result"],
+      capturedInputFacts: [],
       outputFacts: [],
       budget: {},
       failurePolicy: "fail-parent-node",
@@ -1562,6 +1567,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "a1",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1598,6 +1604,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "a2",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1674,6 +1681,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "a2",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1722,6 +1730,7 @@ describe("M7-S4 bounded child-goal creation", () => {
       parentNodeId: "work",
       parentAttemptId: "attempt-work",
       inputFacts: [],
+      capturedInputFacts: [],
       outputFacts: [],
       budget: { maximumTurns: 10, maximumTokens: 50 },
       failurePolicy: "fail-parent-node",
@@ -1838,6 +1847,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "gate-one",
           parentAttemptId: "forged-attempt",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -1896,6 +1906,7 @@ describe("M7-S4 bounded child-goal creation", () => {
             parentNodeId: "gate-one",
             parentAttemptId: "forged-attempt",
             inputFacts: [],
+            capturedInputFacts: [],
             outputFacts: [],
             budget: {},
             failurePolicy: "fail-parent-node" as const,
@@ -2089,6 +2100,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "attempt-work",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -2134,6 +2146,7 @@ describe("M7-S4 bounded child-goal creation", () => {
             parentNodeId: "work",
             parentAttemptId: "attempt-work",
             inputFacts: [],
+            capturedInputFacts: [],
             outputFacts: [],
             budget: {},
             failurePolicy: "fail-parent-node" as const,
@@ -2366,6 +2379,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "attempt-nested",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -2436,6 +2450,7 @@ describe("M7-S4 bounded child-goal creation", () => {
           parentNodeId: "work",
           parentAttemptId: "attempt-nested",
           inputFacts: [],
+          capturedInputFacts: [],
           outputFacts: [],
           budget: {},
           failurePolicy: "fail-parent-node",
@@ -2502,4 +2517,101 @@ describe("M7-S4 bounded child-goal creation", () => {
       .toBe("waiting_for_child");
     expect(result.family.workflows["workflow-child"]?.snapshot.goal?.status).toBe("active");
   });
+
+  it("captures parent input facts and projects them into child executor context", () => {
+    const { family, rootState } = createFamilyWithRoot({
+      rootDefinition: {
+        title: "Root with fact",
+        goal: "Root with fact",
+        nodes: [{
+          id: "work",
+          title: "Work",
+          requires: [],
+          acceptance: [],
+          produces: [{ name: "parent.ready", type: "boolean", required: true }],
+          scope: { paths: ["src/**"] },
+        }],
+        loops: [],
+        policy: { mode: "guided", requireEvidence: false },
+      },
+    });
+    // createFamilyWithRoot already starts the parent task with attempt-work.
+    const published = handleCommand(rootState, {
+      type: "publish-facts",
+      nodeId: "work",
+      attemptId: "attempt-work",
+      facts: [{
+        name: "parent.ready",
+        type: "boolean",
+        value: true,
+        evidence: [{ ref: "evidence://parent-ready", kind: "note" }],
+      }],
+      commandId: "publish-parent-ready",
+      correlationId: "publish-parent-ready",
+      at: later,
+    });
+    if (!published.ok) throw new Error(JSON.stringify(published.diagnostics));
+    const parent = published.state;
+
+    const missing = createBoundedChildGoal({
+      family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: singleTask("Child", ["src/**"]),
+      childGoalId: "goal-child-missing",
+      childWorkflowId: "workflow-child-missing",
+      bindingId: "binding-missing-input",
+      at: later,
+      scopePaths: ["src/**"],
+      inputFacts: ["parent.ready"],
+    });
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error("Expected missing parent input fact rejection.");
+    expect(missing.diagnostics[0]?.code).toBe("child_input_fact_missing");
+
+    const created = createBoundedChildGoal({
+      family,
+      parentState: parent,
+      parentNodeId: "work",
+      childDefinition: singleTask("Child", ["src/**"]),
+      childGoalId: "goal-child",
+      childWorkflowId: "workflow-child",
+      bindingId: "binding-input-facts",
+      at: later,
+      scopePaths: ["src/**"],
+      inputFacts: ["parent.ready"],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    expect(created.binding.inputFacts).toEqual(["parent.ready"]);
+    expect(created.binding.capturedInputFacts).toEqual([
+      expect.objectContaining({
+        name: "parent.ready",
+        type: "boolean",
+        value: true,
+        producerNodeId: "work",
+      }),
+    ]);
+
+    const childRunning = startTask(created.childState, "work", "attempt-child-work");
+    const envelope = materializeExecutorContext({
+      family: created.family,
+      state: childRunning,
+      identity: {
+        familyId: created.family.familyId,
+        goalId: "goal-child",
+        workflowId: "workflow-child",
+        revision: childRunning.revision,
+        nodeId: "work",
+        attemptId: "attempt-child-work",
+      },
+      profile: { profileId: "current-session-default", kind: "current-session" },
+    });
+    expect(envelope.ok).toBe(true);
+    if (!envelope.ok) throw new Error(JSON.stringify(envelope.diagnostics));
+    expect(envelope.value.selectedFacts.some((fact) =>
+      fact.name === "parent.ready" && fact.value === true,
+    )).toBe(true);
+  });
+
 });

@@ -249,7 +249,7 @@ export function createBoundedChildGoalInFamily(
  */
 export type ReturnChildGoalInFamilyInput = Omit<
   ReturnChildGoalInput,
-  "family" | "parentState"
+  "family" | "parentState" | "childState"
 > & {
   family: PersistedGoalFamily;
   parentGoalId: string;
@@ -262,8 +262,9 @@ export type ReturnChildGoalInFamilyResult =
 /**
  * Record a child terminal return on a persisted family record.
  *
- * Loads the parent workflow from the family record, runs returnChildGoal,
- * and commits family plus parent workflow streams through commitChildReturnToPersistedFamily.
+ * Loads the parent and child workflows from the family record, requires the
+ * child goal status to match the reported outcome, runs returnChildGoal, and
+ * commits family plus parent workflow streams through commitChildReturnToPersistedFamily.
  * The input family record is not mutated.
  *
  * Pi tool surface wiring waits for a later M7 slice. Controllers and tests use this API.
@@ -297,9 +298,49 @@ export function returnChildGoalInFamily(
     };
   }
 
+  const binding = input.family.familySnapshot.bindings[input.bindingId];
+  if (!binding) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_binding_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' has no binding `
+          + `'${input.bindingId}'.`,
+        location: "bindingId",
+      }],
+    };
+  }
+
+  const childMember = input.family.familySnapshot.members[binding.childGoalId];
+  if (!childMember) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_binding_child_missing",
+        message: `Binding '${input.bindingId}' references missing child member `
+          + `'${binding.childGoalId}'.`,
+        location: "bindingId",
+      }],
+    };
+  }
+
+  const childWorkflow = input.family.workflows[childMember.workflowId];
+  if (!childWorkflow) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_member_workflow_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' child '${binding.childGoalId}' `
+          + `references missing workflow '${childMember.workflowId}'.`,
+        location: "binding.childGoalId",
+      }],
+    };
+  }
+
   const returned = returnChildGoal({
     family: input.family.familySnapshot,
     parentState: parentWorkflow.snapshot,
+    childState: childWorkflow.snapshot,
     bindingId: input.bindingId,
     at: input.at,
     outcome: input.outcome,

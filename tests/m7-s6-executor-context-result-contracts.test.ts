@@ -886,11 +886,88 @@ describe("m7-s6 executor context and result contracts", () => {
     for (const outcome of EXECUTOR_OUTCOMES) {
       const validated = validateExecutorResult(
         context,
-        matchingResult(context, { outcome: outcome as ExecutorOutcome }),
+        matchingResult(context, {
+          outcome: outcome as ExecutorOutcome,
+          // Non-submitted outcomes do not require facts; keep declared facts empty.
+          ...(outcome === "submitted"
+            ? {}
+            : { facts: [], evidence: [] }),
+        }),
       );
       expect(validated.ok, `outcome ${outcome}`).toBe(true);
       if (!validated.ok) continue;
       expect(validated.value.outcome).toBe(outcome);
     }
+  });
+
+  it("validate rejects undeclared facts, wrong contract types, and missing required evidence", () => {
+    const materialized = materializeDefault({
+      requiredEvidence: ["evidence://required-proof"],
+    });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
+    const context = materialized.value;
+    expect(context.resultProtocol.requiredEvidence).toEqual(["evidence://required-proof"]);
+
+    const undeclared = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [
+          { name: "work.done", type: "boolean", value: true },
+          { name: "extra.undeclared", type: "string", value: "nope" },
+        ],
+        evidence: [{ ref: "evidence://required-proof", kind: "note" }],
+      }),
+    );
+    expect(undeclared.ok).toBe(false);
+    if (!undeclared.ok) {
+      expect(undeclared.diagnostics.some((d) => d.code === "executor_result_fact_not_declared")).toBe(true);
+    }
+
+    const wrongType = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [{ name: "work.done", type: "string", value: "yes" }],
+        evidence: [{ ref: "evidence://required-proof", kind: "note" }],
+      }),
+    );
+    expect(wrongType.ok).toBe(false);
+    if (!wrongType.ok) {
+      expect(wrongType.diagnostics.some((d) => d.code === "executor_result_fact_type_mismatch")).toBe(true);
+    }
+
+    // Empty facts remain valid on the executor result. Required produces facts can
+    // be published through a separate publish-facts command before settlement.
+    const emptyFacts = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [],
+        evidence: [{ ref: "evidence://required-proof", kind: "note" }],
+      }),
+    );
+    expect(emptyFacts.ok).toBe(true);
+
+    const missingRequiredEvidence = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [{ name: "work.done", type: "boolean", value: true }],
+        evidence: [{ ref: "evidence://other", kind: "note" }],
+      }),
+    );
+    expect(missingRequiredEvidence.ok).toBe(false);
+    if (!missingRequiredEvidence.ok) {
+      expect(missingRequiredEvidence.diagnostics.some((d) =>
+        d.code === "executor_result_required_evidence_missing",
+      )).toBe(true);
+    }
+
+    const accepted = validateExecutorResult(
+      context,
+      matchingResult(context, {
+        facts: [{ name: "work.done", type: "boolean", value: true }],
+        evidence: [{ ref: "evidence://required-proof", kind: "note" }],
+      }),
+    );
+    expect(accepted.ok).toBe(true);
   });
 });

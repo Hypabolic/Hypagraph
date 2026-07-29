@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createBoundedChildGoal } from "../src/domain/child-goal-creation.js";
-import { returnChildGoal } from "../src/domain/child-goal-return.js";
+import {
+  goalStatusForChildReturnOutcome,
+  returnChildGoal,
+} from "../src/domain/child-goal-return.js";
 import {
   GOAL_FAMILY_EVENT_VERSION,
   GOAL_FAMILY_SCHEMA_VERSION,
@@ -10,11 +13,12 @@ import {
   replayFamilyEvents,
   restoreFamilyProjection,
   type ChildGoalFailurePolicy,
+  type ChildReturnOutcomeKind,
   type FamilyBounds,
   type GoalFamilyEvent,
 } from "../src/domain/goal-family.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
-import type { FactInput, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
+import type { DomainEvent, FactInput, HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { replayEvents } from "../src/domain/projection.js";
 import { handleCommand } from "../src/domain/reducer.js";
 import {
@@ -161,6 +165,198 @@ const completedFacts = (): FactInput[] => [
   { name: "child.note", type: "string", value: "done" },
 ];
 
+/**
+ * Produce a terminal child workflow for return validation.
+ * Domain returnChildGoal only requires matching terminal goal status.
+ * For completed and cancelled, drive real commands. For failed and budget_limited,
+ * set the terminal goal status on a clone so tests stay focused on return policy.
+ */
+const terminalChildState = (
+  state: HypagraphState,
+  outcome: ChildReturnOutcomeKind,
+): HypagraphState => {
+  if (outcome === "completed") {
+    const nodeId = state.definition.nodes[0]?.id ?? "work";
+    const attemptId = `attempt-${nodeId}-terminal`;
+    let next = state;
+    const apply = (command: Parameters<typeof handleCommand>[1]): void => {
+      const result = handleCommand(next, command);
+      if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+      next = result.state;
+    };
+    const runtime = next.runtime.nodes[nodeId];
+    if (!runtime || runtime.status === "ready" || runtime.status === "pending") {
+      apply({
+        type: "start-node",
+        nodeId,
+        attemptId,
+        commandId: `start-${attemptId}`,
+        correlationId: `start-${attemptId}`,
+        at: returnAt,
+      });
+    }
+    const activeAttempt = next.runtime.nodes[nodeId]?.currentAttemptId ?? attemptId;
+    if (next.runtime.nodes[nodeId]?.status === "running") {
+      apply({
+        type: "submit-result",
+        nodeId,
+        attemptId: activeAttempt,
+        evidence: [{ ref: `evidence://${nodeId}-terminal`, kind: "note" }],
+        commandId: `submit-${attemptId}`,
+        correlationId: `submit-${attemptId}`,
+        at: returnAt,
+      });
+      apply({
+        type: "begin-verification",
+        nodeId,
+        attemptId: activeAttempt,
+        commandId: `begin-${attemptId}`,
+        correlationId: `begin-${attemptId}`,
+        at: returnAt,
+      });
+      apply({
+        type: "complete-verification",
+        nodeId,
+        attemptId: activeAttempt,
+        passed: true,
+        commandId: `complete-${attemptId}`,
+        correlationId: `complete-${attemptId}`,
+        at: returnAt,
+      });
+    }
+    if (next.goal?.status !== "completed") {
+      throw new Error(`Expected completed child goal, got '${next.goal?.status}'.`);
+    }
+    return next;
+  }
+  if (outcome === "cancelled") {
+    const result = handleCommand(state, {
+      type: "cancel-goal",
+      reason: "Test cancelled the child goal.",
+      commandId: "cancel-child-terminal",
+      correlationId: "cancel-child-terminal",
+      at: returnAt,
+    });
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    return result.state;
+  }
+  const status = goalStatusForChildReturnOutcome(outcome);
+  const next = structuredClone(state);
+  if (!next.goal) throw new Error("Child state has no goal runtime.");
+  next.goal = {
+    ...next.goal,
+    status,
+    stopReason: `Test terminal child status '${status}'.`,
+    completedAt: returnAt,
+  };
+  if (status === "failed") next.phase = "failed";
+  return next;
+};
+
+/**
+ * Drive the persisted child workflow to a terminal status that matches outcome.
+ * Completed and cancelled use real commands so restore remains valid.
+ * Failed and budget_limited set terminal status on the snapshot and append no events;
+ * those product cases use domain returnChildGoal + commit rather than product return.
+ */
+const withTerminalChildInFamily = (
+  family: PersistedGoalFamily,
+  childGoalId: string,
+  outcome: ChildReturnOutcomeKind,
+): PersistedGoalFamily => {
+  const member = family.familySnapshot.members[childGoalId];
+  if (!member) throw new Error(`Missing child member '${childGoalId}'.`);
+  const workflow = family.workflows[member.workflowId];
+  if (!workflow) throw new Error(`Missing child workflow '${member.workflowId}'.`);
+
+  if (outcome === "completed" || outcome === "cancelled") {
+    const driven = driveChildWithEvents(workflow.snapshot, outcome);
+    return {
+      ...family,
+      workflows: {
+        ...family.workflows,
+        [member.workflowId]: {
+          events: [...workflow.events, ...driven.events],
+          snapshot: driven.state,
+        },
+      },
+    };
+  }
+
+  const terminal = terminalChildState(workflow.snapshot, outcome);
+  return {
+    ...family,
+    workflows: {
+      ...family.workflows,
+      [member.workflowId]: {
+        events: workflow.events,
+        snapshot: terminal,
+      },
+    },
+  };
+};
+
+const driveChildWithEvents = (
+  state: HypagraphState,
+  outcome: "completed" | "cancelled",
+): { state: HypagraphState; events: DomainEvent[] } => {
+  const events: DomainEvent[] = [];
+  let next = state;
+  const apply = (command: Parameters<typeof handleCommand>[1]): void => {
+    const result = handleCommand(next, command);
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    events.push(...result.events);
+    next = result.state;
+  };
+  if (outcome === "cancelled") {
+    apply({
+      type: "cancel-goal",
+      reason: "Test cancelled the child goal.",
+      commandId: "cancel-child-terminal",
+      correlationId: "cancel-child-terminal",
+      at: returnAt,
+    });
+    return { state: next, events };
+  }
+  const nodeId = next.definition.nodes[0]?.id ?? "work";
+  const attemptId = `attempt-${nodeId}-terminal`;
+  apply({
+    type: "start-node",
+    nodeId,
+    attemptId,
+    commandId: `start-${attemptId}`,
+    correlationId: `start-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "submit-result",
+    nodeId,
+    attemptId,
+    evidence: [{ ref: `evidence://${nodeId}-terminal`, kind: "note" }],
+    commandId: `submit-${attemptId}`,
+    correlationId: `submit-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "begin-verification",
+    nodeId,
+    attemptId,
+    commandId: `begin-${attemptId}`,
+    correlationId: `begin-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "complete-verification",
+    nodeId,
+    attemptId,
+    passed: true,
+    commandId: `complete-${attemptId}`,
+    correlationId: `complete-${attemptId}`,
+    at: returnAt,
+  });
+  return { state: next, events };
+};
+
 describe("M7-S5 child return and parent failure policy", () => {
   it("validates output facts against binding contracts and resumes the parent task without completing it", () => {
     const setup = createFamilyWithChild();
@@ -170,6 +366,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -223,6 +420,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -246,6 +444,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const wrongType = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -260,6 +459,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const undeclared = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -281,6 +481,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "failed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "failed",
@@ -302,6 +503,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "failed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "failed",
@@ -327,6 +529,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "failed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "failed",
@@ -351,6 +554,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "budget_limited"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "budget_limited",
@@ -376,6 +580,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "cancelled"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "cancelled",
@@ -398,6 +603,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const missingBinding = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: "binding-missing",
       at: returnAt,
       outcome: "completed",
@@ -412,6 +618,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const wrongAttempt = returnChildGoal({
       family: setup.family,
       parentState: wrongAttemptState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -424,6 +631,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const first = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -435,6 +643,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const second = returnChildGoal({
       family: first.family,
       parentState: first.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -453,6 +662,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const wrongGoal = returnChildGoal({
       family: setup.family,
       parentState: wrongParentGoal,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -471,6 +681,7 @@ describe("M7-S5 child return and parent failure policy", () => {
         schemaVersion: 99 as typeof GOAL_FAMILY_SCHEMA_VERSION,
       },
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -497,6 +708,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -516,6 +728,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const returned = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "failed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "failed",
@@ -585,8 +798,9 @@ describe("M7-S5 child return and parent failure policy", () => {
     if (!creation.ok) throw new Error(JSON.stringify(creation.diagnostics));
 
     const withChild = commitBoundedChildGoalToPersistedFamily(oneMember, creation);
+    const withTerminalChild = withTerminalChildInFamily(withChild, "goal-child", "completed");
     const productReturn = returnChildGoalInFamily({
-      family: withChild,
+      family: withTerminalChild,
       parentGoalId: "goal-root",
       bindingId: "binding-child-1",
       at: returnAt,
@@ -652,6 +866,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const returned = returnChildGoal({
       family: withChild.familySnapshot,
       parentState: withChild.workflows["workflow-root"]!.snapshot,
+      childState: terminalChildState(creation.childState, "cancelled"),
       bindingId: "binding-child-1",
       at: returnAt,
       outcome: "cancelled",
@@ -678,6 +893,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     };
 
     const result = returnChildGoal({
+      childState: terminalChildState(setup.childState, "failed"),
       family: setup.family,
       parentState,
       bindingId: setup.bindingId,
@@ -706,6 +922,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     parentState.runtime.nodes[setup.parentNodeId]!.attempts[attemptId]!.status = "submitted";
 
     const result = returnChildGoal({
+      childState: terminalChildState(setup.childState, "failed"),
       family: setup.family,
       parentState,
       bindingId: setup.bindingId,
@@ -921,6 +1138,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const good = returnChildGoal({
       family: withChild.familySnapshot,
       parentState: withChild.workflows["workflow-root"]!.snapshot,
+      childState: terminalChildState(creation.childState, "failed"),
       bindingId: "binding-child-1",
       at: returnAt,
       outcome: "failed",
@@ -986,6 +1204,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const successReturn = returnChildGoal({
       family: successWithChild.familySnapshot,
       parentState: successWithChild.workflows["workflow-root"]!.snapshot,
+      childState: terminalChildState(successBaseCreation.childState, "completed"),
       bindingId: "binding-child-1",
       at: returnAt,
       outcome: "completed",
@@ -1059,6 +1278,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const result = returnChildGoal({
       family: setup.family,
       parentState: setup.parentState,
+      childState: terminalChildState(setup.childState, "completed"),
       bindingId: setup.bindingId,
       at: returnAt,
       outcome: "completed",
@@ -1114,6 +1334,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const returned = returnChildGoal({
       family: withChild.familySnapshot,
       parentState: withChild.workflows["workflow-root"]!.snapshot,
+      childState: terminalChildState(creation.childState, "completed"),
       bindingId: "binding-child-1",
       at: returnAt,
       outcome: "completed",
@@ -1222,6 +1443,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     const firstReturn = returnChildGoal({
       family: withFirst.familySnapshot,
       parentState: withFirst.workflows["workflow-root"]!.snapshot,
+      childState: terminalChildState(firstCreation.childState, "completed"),
       bindingId: "binding-child-1",
       at: returnAt,
       outcome: "completed",
@@ -1264,5 +1486,96 @@ describe("M7-S5 child return and parent failure policy", () => {
     expect(restored.workflows["workflow-child-1"]?.snapshot.goal?.goalId).toBe("goal-child-1");
     expect(restored.workflows["workflow-child-2"]?.snapshot.goal?.goalId).toBe("goal-child-2");
   });
-});
 
+  it("rejects return when the child goal is still active", () => {
+    const setup = createFamilyWithChild();
+    const result = returnChildGoal({
+      family: setup.family,
+      parentState: setup.parentState,
+      childState: setup.childState,
+      bindingId: setup.bindingId,
+      at: returnAt,
+      outcome: "completed",
+      facts: completedFacts(),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected active-child rejection.");
+    expect(result.diagnostics[0]?.code).toBe("child_return_child_not_terminal");
+    expect(setup.family.bindings[setup.bindingId]?.status).toBe("active");
+  });
+
+  it("rejects return when child status does not match the reported outcome", () => {
+    const setup = createFamilyWithChild();
+    const cancelledChild = terminalChildState(setup.childState, "cancelled");
+    const result = returnChildGoal({
+      family: setup.family,
+      parentState: setup.parentState,
+      childState: cancelledChild,
+      bindingId: setup.bindingId,
+      at: returnAt,
+      outcome: "completed",
+      facts: completedFacts(),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected outcome-status mismatch rejection.");
+    expect(result.diagnostics[0]?.code).toBe("child_return_outcome_status_mismatch");
+  });
+
+  it("product path rejects return while the persisted child workflow is still active", () => {
+    let rootState = createStartedWorkflow(singleTask("Root", ["src/**"]), "workflow-root", "goal-root");
+    rootState = startTask(rootState, "work");
+    const rootCreated = createHypagoalWorkflow(singleTask("Root", ["src/**"]), {
+      workflowId: "workflow-root",
+      goalId: "goal-root",
+      goalWorkflowId: "workflow-root",
+      at,
+    });
+    if (!rootCreated.ok) throw new Error(JSON.stringify(rootCreated.diagnostics));
+    const started = handleCommand(rootCreated.state, {
+      type: "start-node",
+      nodeId: "work",
+      attemptId: "attempt-work",
+      commandId: "start-work",
+      correlationId: "start-work",
+      at: later,
+    });
+    if (!started.ok) throw new Error(JSON.stringify(started.diagnostics));
+    const oneMember = buildOneMemberPersistedFamily({
+      familyId: "family-s5-active-child",
+      rootGoalId: "goal-root",
+      workflow: {
+        events: [...rootCreated.events, ...started.events],
+        snapshot: started.state,
+      },
+      at,
+    });
+    const creation = createBoundedChildGoal({
+      family: oneMember.familySnapshot,
+      parentState: oneMember.workflows["workflow-root"]!.snapshot,
+      parentNodeId: "work",
+      childDefinition: singleTask("Child", ["src/**"]),
+      childGoalId: "goal-child",
+      childWorkflowId: "workflow-child",
+      bindingId: "binding-child-1",
+      at: later,
+      scopePaths: ["src/**"],
+      outputFacts,
+    });
+    if (!creation.ok) throw new Error(JSON.stringify(creation.diagnostics));
+    const withChild = commitBoundedChildGoalToPersistedFamily(oneMember, creation);
+    const productReturn = returnChildGoalInFamily({
+      family: withChild,
+      parentGoalId: "goal-root",
+      bindingId: "binding-child-1",
+      at: returnAt,
+      outcome: "completed",
+      facts: completedFacts(),
+    });
+    expect(productReturn.ok).toBe(false);
+    if (productReturn.ok) throw new Error("Expected active child rejection on product path.");
+    expect(productReturn.diagnostics[0]?.code).toBe("child_return_child_not_terminal");
+    expect(withChild.familySnapshot.bindings["binding-child-1"]?.status).toBe("active");
+    expect(withChild.workflows["workflow-child"]?.snapshot.goal?.status).toBe("active");
+  });
+
+});
