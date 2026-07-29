@@ -52,6 +52,7 @@ import {
   markIntegrationIntegrating,
   parseIntegrationPreconditions,
   registerPendingIntegration,
+  type MarkIntegrationIntegratedOptions,
   type WorkspaceIntegration,
   type WorkspaceIntegrationSet,
 } from "../domain/workspace-integration.js";
@@ -141,6 +142,16 @@ export interface IntegrateWorkerCommitInput {
    */
   persist?: (set: WorkspaceIntegrationSet) => Promise<void> | void;
   signal?: AbortSignal;
+  /**
+   * Attempt ids that must not accept integrate success (cancel race guard).
+   * When the worker commit holder is listed, markIntegrationIntegrated rejects
+   * and the set is unchanged. Explicit cancelledAttemptIds always block late
+   * success on every success path, including aborted cherry-pick that proves
+   * HEAD advanced. An aborted AbortSignal alone does not add the holder to
+   * this list; AbortSignal keeps the m8-s5 prove-or-fail path when this field
+   * is omitted (HEAD advanced with evidence may integrate).
+   */
+  cancelledAttemptIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +163,28 @@ const reject = (code: string, message: string, location?: string): Diagnostic =>
   message,
   ...(location !== undefined ? { location } : {}),
 });
+
+/**
+ * Build mark-integrated cancel options from the host cancelled-attempt list.
+ * An aborted AbortSignal still follows the existing prove-or-fail cancel path
+ * (HEAD advanced with evidence may integrate). Explicit cancelledAttemptIds
+ * always block late success while status remains integrating.
+ */
+function markIntegratedCancelOptions(
+  cancelledAttemptIds: readonly string[] | undefined,
+): MarkIntegrationIntegratedOptions | undefined {
+  if (cancelledAttemptIds === undefined) return undefined;
+  const ids = new Set<string>();
+  for (const item of cancelledAttemptIds) {
+    if (typeof item === "string" && item.trim().length > 0) {
+      ids.add(item.trim());
+    }
+  }
+  if (ids.size === 0) return undefined;
+  return {
+    cancelledAttemptIds: [...ids].sort((left, right) => left.localeCompare(right)),
+  };
+}
 
 function mapGitFailure(
   failure: Extract<GitRunResult, { ok: false }>,
@@ -790,6 +823,7 @@ async function completeAfterHeadAdvance(
   expectedIdentity: ExpectedIdentity,
   integration: WorkspaceIntegration | undefined,
   signal?: AbortSignal,
+  markOptions?: MarkIntegrationIntegratedOptions,
 ): Promise<IntegrateWorkerCommitResult> {
   if (headAfter === headBeforePick) {
     return markFailedAndReturn(
@@ -885,6 +919,7 @@ async function completeAfterHeadAdvance(
     integrationId,
     headAfter,
     expectedIdentity,
+    markOptions,
   );
   if (!integrated.ok) {
     return {
@@ -1176,6 +1211,9 @@ async function recordOwnedConflictResult(
 /**
  * After cherry-pick returns aborted, inspect conflict without the caller signal.
  * Prefer conflicted over failed when this call owns conflict evidence.
+ * When HEAD advanced and completion is proved, mark integrated only when
+ * markOptions does not list the holder as cancelled. Explicit
+ * cancelledAttemptIds always block late success.
  * Exported for deterministic tests of the abort-with-conflict path.
  */
 export async function resolveAfterAbortedCherryPick(input: {
@@ -1195,6 +1233,12 @@ export async function resolveAfterAbortedCherryPick(input: {
   };
   integration?: WorkspaceIntegration;
   cherryMessage?: string;
+  /**
+   * Cancel gate for prove-after-abort success.
+   * When omitted, AbortSignal-only prove-or-fail may mark integrated.
+   * When cancelledAttemptIds includes the holder, late success is rejected.
+   */
+  markOptions?: MarkIntegrationIntegratedOptions;
 }): Promise<IntegrateWorkerCommitResult> {
   const inspect = await inspectConflictStateUncancelled(
     input.baseCwd,
@@ -1242,6 +1286,7 @@ export async function resolveAfterAbortedCherryPick(input: {
       input.expectedIdentity,
       input.integration,
       undefined,
+      input.markOptions,
     );
     if (completion.ok) {
       return completion;
@@ -1708,6 +1753,10 @@ export async function integrateWorkerCommit(
     baseRevision: commit.baseRevision,
   };
 
+  // Cancel gate for success transitions when the controller listed the attempt.
+  const markCancelOptions = (): MarkIntegrationIntegratedOptions | undefined =>
+    markIntegratedCancelOptions(input.cancelledAttemptIds);
+
   // Range start for reconcile. Never use current HEAD to fill a missing
   // baseHeadBeforeIntegrate (that collapses the range).
   const reconcileRangeStart = wasAlreadyIntegrating
@@ -1736,6 +1785,7 @@ export async function integrateWorkerCommit(
       resolvedIntegrationId,
       currentHead,
       expectedIdentity,
+      markCancelOptions(),
     );
     if (!integrated.ok) {
       return {
@@ -1877,6 +1927,7 @@ export async function integrateWorkerCommit(
         resolvedIntegrationId,
         headForRangeEnd,
         expectedIdentity,
+        markCancelOptions(),
       );
       if (!integrated.ok) {
         return {
@@ -1991,13 +2042,16 @@ export async function integrateWorkerCommit(
       expectedIdentity,
       integration,
       undefined,
+      markCancelOptions(),
     );
   }
 
   // ---- Cancel after cherry-pick started ----
   // Inspect conflict evidence before cleanup so a late cancel cannot hide it.
+  // Thread markCancelOptions so explicit cancelledAttemptIds block late success
+  // even when HEAD advanced with evidence (AbortSignal-only still prove-or-fail).
   if (cherry.kind === "aborted") {
-    return resolveAfterAbortedCherryPick({
+    const abortResolveInput: Parameters<typeof resolveAfterAbortedCherryPick>[0] = {
       baseCwd,
       workerCommitHash: commit.commitHash,
       abortExpectedHead,
@@ -2007,7 +2061,12 @@ export async function integrateWorkerCommit(
       expectedIdentity,
       integration,
       cherryMessage: cherry.message,
-    });
+    };
+    const cancelOptions = markCancelOptions();
+    if (cancelOptions !== undefined) {
+      abortResolveInput.markOptions = cancelOptions;
+    }
+    return resolveAfterAbortedCherryPick(abortResolveInput);
   }
 
   // ---- Classify failure: empty / already-applied / conflict / other ----
@@ -2061,6 +2120,7 @@ export async function integrateWorkerCommit(
           resolvedIntegrationId,
           headNow.hash,
           expectedIdentity,
+          markCancelOptions(),
         );
         if (integrated.ok) {
           return {
@@ -2086,6 +2146,7 @@ export async function integrateWorkerCommit(
           resolvedIntegrationId,
           headNow.hash,
           expectedIdentity,
+          markCancelOptions(),
         );
         if (integrated.ok) {
           return {

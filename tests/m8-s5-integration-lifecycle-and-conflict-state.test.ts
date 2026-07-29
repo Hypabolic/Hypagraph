@@ -1274,6 +1274,86 @@ describe("m8-s5 integration lifecycle and conflict state", () => {
       expect(afterOwned.owned).toBe(false);
     });
 
+    it("rejects prove-after-abort success when cancelledAttemptIds lists the holder", async () => {
+      const base = await repository();
+      const headBefore = await headOf(base);
+
+      // Worker commit that cleanly applies to base.
+      await run("git", ["checkout", "-b", "worker-cancel-block", headBefore], { cwd: base });
+      await writeFile(join(base, "src", "cancel-block.ts"), "export const n = 1;\n", "utf8");
+      await run("git", ["add", "src/cancel-block.ts"], { cwd: base });
+      await run("git", ["commit", "-m", "Worker cancel block"], { cwd: base });
+      const workerHash = await headOf(base);
+
+      await run("git", ["checkout", "main"], { cwd: base });
+      await run("git", ["reset", "--hard", headBefore], { cwd: base });
+      // Apply the worker commit so HEAD advanced with evidence (simulate finish-before-abort).
+      await run("git", ["cherry-pick", workerHash], { cwd: base });
+      const headAfter = await headOf(base);
+      expect(headAfter).not.toBe(headBefore);
+
+      const reg = registerIntegration(
+        createEmptyWorkspaceIntegrationSet(),
+        pendingIntegration({
+          integrationId: "int-lease-cancel-block",
+          leaseId: "lease-cancel-block",
+          worktreeId: "wt-lease-cancel-block",
+          holder: holder("lease-cancel-block"),
+          workerCommitHash: workerHash,
+          baseRevision: headBefore,
+        }),
+      );
+      expect(reg.ok).toBe(true);
+      if (!reg.ok) return;
+      const integrating = markIntegrationIntegrating(
+        reg.set,
+        "int-lease-cancel-block",
+        undefined,
+        { baseHeadBeforeIntegrate: headBefore },
+      );
+      expect(integrating.ok).toBe(true);
+      if (!integrating.ok) return;
+      const beforeSet = structuredClone(integrating.set);
+
+      const expectedIdentity = {
+        integrationId: "int-lease-cancel-block",
+        leaseId: "lease-cancel-block",
+        worktreeId: "wt-lease-cancel-block",
+        holder: holder("lease-cancel-block"),
+        workerCommitHash: workerHash,
+        baseRevision: headBefore,
+      };
+
+      // Explicit cancel list must block late success even when HEAD advanced.
+      const result = await resolveAfterAbortedCherryPick({
+        baseCwd: base,
+        workerCommitHash: workerHash,
+        abortExpectedHead: headBefore,
+        thisCallOwnedSequencer: false,
+        set: integrating.set,
+        integrationId: "int-lease-cancel-block",
+        expectedIdentity,
+        integration: integrating.integration,
+        cherryMessage: "The integration operation was cancelled.",
+        markOptions: { cancelledAttemptIds: ["lease-cancel-block"] },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(
+        result.diagnostics.some((d) =>
+          d.code === "workspace_integration_cancelled_stale_success"
+        ),
+      ).toBe(true);
+      // Input set is not mutated by the cancel gate.
+      expect(integrating.set).toEqual(beforeSet);
+      // Late success must not mark integrated. The abort path may then mark failed.
+      const status = result.set.integrations.find(
+        (item) => item.integrationId === "int-lease-cancel-block",
+      )?.status;
+      expect(status).not.toBe("integrated");
+      expect(status === "integrating" || status === "failed").toBe(true);
+    });
+
     it("parses unmerged path lists from git -z output", () => {
       const sample =
         "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tsrc/a.ts\0"

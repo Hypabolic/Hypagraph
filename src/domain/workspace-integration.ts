@@ -1975,8 +1975,23 @@ export function markIntegrationIntegrating(
 }
 
 /**
+ * Optional gates for markIntegrationIntegrated.
+ * cancelledAttemptIds rejects late success for cancelled holders while status
+ * is still integrating (cancel race before abort/failed is durable).
+ */
+export interface MarkIntegrationIntegratedOptions {
+  /**
+   * Attempt ids that must not accept integrate success.
+   * When the record holder is listed, return diagnostics and leave the set
+   * unchanged. Empty or omitted list does not add a cancel gate.
+   */
+  cancelledAttemptIds?: readonly string[];
+}
+
+/**
  * Mark an integration as integrated with the resulting base commit hash.
  * Accepts integrating. Idempotent when already integrated with the same hash.
+ * Rejects cancelled holders listed in options.cancelledAttemptIds.
  * Does not mutate the input set.
  */
 export function markIntegrationIntegrated(
@@ -1984,6 +1999,7 @@ export function markIntegrationIntegrated(
   integrationId: string,
   integratedCommitHash: string,
   expected?: WorkspaceIntegrationExpectedIdentity,
+  options?: MarkIntegrationIntegratedOptions,
 ): WorkspaceIntegrationTransitionResult {
   const opened = openSetClone(set);
   if (!opened.ok) {
@@ -2034,6 +2050,46 @@ export function markIntegrationIntegrated(
     const identityDiagnostics = validateIntegrationIdentity(current, expected);
     if (identityDiagnostics.length > 0) {
       return { ok: false, diagnostics: identityDiagnostics };
+    }
+  }
+
+  // Cancel gate: a still-integrating cancelled attempt must not become integrated.
+  // Hosts pass cancelledAttemptIds from cancel state or an aborted signal.
+  if (options?.cancelledAttemptIds !== undefined) {
+    if (!Array.isArray(options.cancelledAttemptIds)) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "workspace_integration_invalid_cancelled_attempts",
+          "cancelledAttemptIds must be an array when present.",
+          "options.cancelledAttemptIds",
+        )],
+      };
+    }
+    const cancelled = new Set<string>();
+    for (const item of options.cancelledAttemptIds) {
+      if (typeof item !== "string" || item.trim().length === 0) {
+        return {
+          ok: false,
+          diagnostics: [reject(
+            "workspace_integration_invalid_cancelled_attempts",
+            "Each cancelledAttemptIds entry must be a non-empty string.",
+            "options.cancelledAttemptIds",
+          )],
+        };
+      }
+      cancelled.add(item.trim());
+    }
+    if (cancelled.has(current.holder.attemptId)) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "workspace_integration_cancelled_stale_success",
+          `Attempt '${current.holder.attemptId}' was cancelled. `
+            + "A late success result must not change integration state.",
+          "integration.holder.attemptId",
+        )],
+      };
     }
   }
 
