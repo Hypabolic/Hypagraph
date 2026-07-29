@@ -6,12 +6,23 @@ import {
   type GoalDispatchableContinuation,
 } from "./goal-continuation.js";
 import {
+  excludePendingFamilyConcurrentCandidates as excludePendingConcurrent,
+  liftFamilyConcurrentCandidates as liftConcurrent,
+  parseFamilyPendingDispatchOwnData,
+  selectFamilyConcurrentBatch as selectFamilyConcurrentBatchCore,
+  type FamilyConcurrentBatchInput,
+  type FamilyConcurrentCandidate,
+  type FamilyConcurrentCandidateAttributes,
+  type FamilyConcurrentDecision,
+} from "./family-concurrent-dispatch.js";
+import {
   GOAL_FAMILY_EVENT_VERSION,
   GOAL_FAMILY_SCHEMA_VERSION,
   applyFamilyEvent,
   rejectGoalFamily,
   requireGoalFamilyNonEmpty,
   requireGoalFamilyTimestamp,
+  type FamilyPendingDispatch,
   type FamilySelectedAction,
   type GoalFamilyEvent,
   type GoalFamilyMember,
@@ -20,6 +31,29 @@ import {
   type ScheduledActionIdentity,
 } from "./goal-family.js";
 import type { Diagnostic, GoalContinuationAction, HypagraphState } from "./model.js";
+
+export {
+  FAMILY_CONCURRENT_OCCUPANCY_SCHEMA_VERSION,
+  DEFAULT_FAMILY_CONCURRENT_EXECUTOR_KIND,
+  buildFamilyConcurrentAttemptId,
+  buildFamilyConcurrentAttemptIdFromSelection,
+  defaultFamilyConcurrentBatchCapacity,
+  encodeFamilyConcurrentIdField,
+  excludePendingFamilyConcurrentCandidates,
+  liftFamilyConcurrentCandidates,
+  parseFamilyConcurrentLeaseSet,
+  parseFamilyPendingDispatchOwnData,
+  selectFamilyConcurrentBatch as selectFamilyConcurrentBatchFromCandidates,
+  validateFamilyConcurrentOccupancySchema,
+  validateLeaseHolderMatchesCandidate,
+  workspaceLeasesCanonicallyEqual,
+  type FamilyConcurrentBatchInput,
+  type FamilyConcurrentCandidate,
+  type FamilyConcurrentCandidateAttributes,
+  type FamilyConcurrentDecision,
+  type FamilyConcurrentOccupancy,
+  type FamilyConcurrentSourceCandidate,
+} from "./family-concurrent-dispatch.js";
 
 /**
  * One runnable or dispatchable candidate tagged with family identity.
@@ -711,4 +745,236 @@ export function interruptFamilyAction(input: {
   causationId?: string;
 }): GoalFamilyResult {
   return completeFamilyActionWithStatus({ ...input, status: "interrupted" });
+}
+
+/**
+ * Concurrent family selection decision extended with incomplete-input reporting
+ * for missing or mismatched member states (same contract as sequential select).
+ */
+export type FamilyConcurrentSchedulerDecision =
+  | FamilyConcurrentDecision
+  | {
+    kind: "incomplete-input";
+    reason: string;
+    missingGoalIds: string[];
+    mismatchedGoalIds: string[];
+  };
+
+/**
+ * Pure concurrent family scheduler selection for independent loops and child workflows.
+ *
+ * Unlike sequential selectFamilySchedulerAction, this helper does not block when
+ * pendingDispatch is set. The pending dispatch occupies one concurrency slot and
+ * excludes that goal from re-selection. Other compatible members remain selectable
+ * when global limits, groups, and leases permit.
+ *
+ * Selection composes:
+ * - preferred (default) or runnable family candidates;
+ * - global and per-executor concurrency limits (default global capacity 2);
+ * - concurrency groups and fair batch selection;
+ * - optional workspace lease compatibility.
+ *
+ * This helper does not commit multi-pending family state. Multi-pending persistence
+ * is deferred. Sequential commitFamilySelection remains the event-backed single
+ * selection path. Does not read the clock and does not mutate inputs.
+ */
+export function selectFamilyConcurrentActions(input: {
+  family: GoalFamilyRuntime;
+  memberStates: Readonly<Record<string, HypagraphState>>;
+  candidateSource?: "preferred" | "runnable";
+  attributesByAttemptId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+  attributesByGoalId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+  concurrencyLimits?: unknown;
+  groupRegistry?: unknown;
+  concurrencyState?: FamilyConcurrentBatchInput["concurrencyState"];
+  groupState?: FamilyConcurrentBatchInput["groupState"];
+  leaseSet?: FamilyConcurrentBatchInput["leaseSet"];
+  fairnessOrdinal?: number;
+  maxBatchSize?: number;
+  treatPendingAsOccupancy?: boolean;
+}): FamilyConcurrentSchedulerDecision {
+  const schemaError = assertFamilySchema(input.family);
+  if (schemaError) {
+    return {
+      kind: "rejected",
+      reason: schemaError[0]!.message,
+      diagnostics: schemaError,
+    };
+  }
+
+  const { missingGoalIds, mismatchedGoalIds } = classifyMemberStateInput(
+    input.family,
+    input.memberStates,
+  );
+  if (missingGoalIds.length > 0 || mismatchedGoalIds.length > 0) {
+    return {
+      kind: "incomplete-input",
+      reason:
+        "Member states are incomplete or mismatched. "
+        + "Supply every family member state before pure concurrent selection.",
+      missingGoalIds,
+      mismatchedGoalIds,
+    };
+  }
+
+  const source = input.candidateSource ?? "preferred";
+  const candidates = source === "runnable"
+    ? enumerateFamilyRunnableCandidates(input.family, input.memberStates)
+    : enumerateFamilyPreferredDispatchables(input.family, input.memberStates);
+
+  const batchInput: FamilyConcurrentBatchInput = {
+    family: input.family,
+    candidates,
+  };
+  if (input.attributesByAttemptId !== undefined) {
+    batchInput.attributesByAttemptId = input.attributesByAttemptId;
+  }
+  if (input.attributesByGoalId !== undefined) {
+    batchInput.attributesByGoalId = input.attributesByGoalId;
+  }
+  if (input.concurrencyLimits !== undefined) {
+    batchInput.concurrencyLimits = input.concurrencyLimits;
+  }
+  if (input.groupRegistry !== undefined) {
+    batchInput.groupRegistry = input.groupRegistry;
+  }
+  if (input.concurrencyState !== undefined) {
+    batchInput.concurrencyState = input.concurrencyState;
+  }
+  if (input.groupState !== undefined) {
+    batchInput.groupState = input.groupState;
+  }
+  if (input.leaseSet !== undefined) {
+    batchInput.leaseSet = input.leaseSet;
+  }
+  if (input.fairnessOrdinal !== undefined) {
+    batchInput.fairnessOrdinal = input.fairnessOrdinal;
+  }
+  if (input.maxBatchSize !== undefined) {
+    batchInput.maxBatchSize = input.maxBatchSize;
+  }
+  if (input.treatPendingAsOccupancy !== undefined) {
+    batchInput.treatPendingAsOccupancy = input.treatPendingAsOccupancy;
+  }
+
+  return selectFamilyConcurrentBatchCore(batchInput);
+}
+
+/**
+ * True when a sequential pending dispatch is present and concurrent selection
+ * can still choose at least one other compatible action under pending occupancy.
+ * Returns false when the family has no pending dispatch.
+ * Forces treatPendingAsOccupancy for this predicate. Pure. Does not mutate inputs.
+ */
+export function familyConcurrentSelectionAllowsOverlapWithPending(
+  family: GoalFamilyRuntime,
+  memberStates: Readonly<Record<string, HypagraphState>>,
+  options?: Omit<
+    Parameters<typeof selectFamilyConcurrentActions>[0],
+    "family" | "memberStates" | "treatPendingAsOccupancy"
+  >,
+): boolean {
+  // Parse pendingDispatch with own data properties only. Do not read it normally.
+  const pendingParse = parseFamilyPendingDispatchOwnData(
+    family as object,
+    "family.pendingDispatch",
+  );
+  if (!pendingParse.ok || pendingParse.value === undefined) {
+    return false;
+  }
+  const decision = selectFamilyConcurrentActions({
+    family,
+    memberStates,
+    ...options,
+    treatPendingAsOccupancy: true,
+  });
+  return decision.kind === "select-batch" && decision.candidates.length > 0;
+}
+
+/**
+ * Enumerate concurrent candidates after lifting preferred or runnable family work.
+ * Excludes sequential pending goals when treatPendingAsOccupancy is true (default).
+ * Does not mutate inputs.
+ */
+export function enumerateFamilyConcurrentCandidates(
+  family: GoalFamilyRuntime,
+  memberStates: Readonly<Record<string, HypagraphState>>,
+  options?: {
+    candidateSource?: "preferred" | "runnable";
+    attributesByAttemptId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+    attributesByGoalId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+    treatPendingAsOccupancy?: boolean;
+  },
+):
+  | {
+    ok: true;
+    candidates: FamilyConcurrentCandidate[];
+    pendingAttemptId?: string;
+  }
+  | { ok: false; diagnostics: Diagnostic[] }
+  | {
+    ok: false;
+    incomplete: true;
+    missingGoalIds: string[];
+    mismatchedGoalIds: string[];
+  } {
+  const schemaError = assertFamilySchema(family);
+  if (schemaError) {
+    return { ok: false, diagnostics: schemaError };
+  }
+
+  const { missingGoalIds, mismatchedGoalIds } = classifyMemberStateInput(family, memberStates);
+  if (missingGoalIds.length > 0 || mismatchedGoalIds.length > 0) {
+    return {
+      ok: false,
+      incomplete: true,
+      missingGoalIds,
+      mismatchedGoalIds,
+    };
+  }
+
+  const source = options?.candidateSource ?? "preferred";
+  const base = source === "runnable"
+    ? enumerateFamilyRunnableCandidates(family, memberStates)
+    : enumerateFamilyPreferredDispatchables(family, memberStates);
+
+  const liftOptions: {
+    attributesByAttemptId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+    attributesByGoalId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+  } = {};
+  if (options?.attributesByAttemptId !== undefined) {
+    liftOptions.attributesByAttemptId = options.attributesByAttemptId;
+  }
+  if (options?.attributesByGoalId !== undefined) {
+    liftOptions.attributesByGoalId = options.attributesByGoalId;
+  }
+  const lifted = liftConcurrent(base, liftOptions);
+  if (!lifted.ok) {
+    return lifted;
+  }
+
+  const treatPending = options?.treatPendingAsOccupancy !== false;
+  let cleanPending: FamilyPendingDispatch | undefined;
+  if (treatPending) {
+    const pendingParse = parseFamilyPendingDispatchOwnData(
+      family as object,
+      "family.pendingDispatch",
+    );
+    if (!pendingParse.ok) {
+      return { ok: false, diagnostics: pendingParse.diagnostics };
+    }
+    cleanPending = pendingParse.value;
+  }
+  const filtered = excludePendingConcurrent(
+    lifted.candidates,
+    cleanPending,
+  );
+
+  return {
+    ok: true,
+    candidates: filtered.candidates,
+    ...(filtered.pendingAttemptId !== undefined
+      ? { pendingAttemptId: filtered.pendingAttemptId }
+      : {}),
+  };
 }

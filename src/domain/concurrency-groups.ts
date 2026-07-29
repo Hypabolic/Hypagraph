@@ -15,8 +15,8 @@
  * properties are rejected with diagnostics. Returned records contain only
  * validated group and fairness fields.
  *
- * Product family-scheduler wiring is deferred to a later M8 slice. This module
- * is the pure domain contract only.
+ * Family concurrent selection (m8-s9) composes this module through
+ * selectFamilyConcurrentActions on the family scheduler surface.
  */
 
 import type { Diagnostic } from "./model.js";

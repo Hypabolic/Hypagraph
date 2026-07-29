@@ -16,6 +16,8 @@
  * validated concurrency fields.
  * The concurrency state is an in-memory value. Persistence and schema restore
  * belong to later M8 slices; the state type carries schemaVersion for that work.
+ * Family concurrent selection (m8-s9) composes these limits through
+ * selectFamilyConcurrentActions on the family scheduler surface.
  */
 
 import type { ExecutorKind } from "./executor-contract.js";
