@@ -1,10 +1,16 @@
 /**
- * Pure workspace integration lifecycle for worker commits (M8-s5).
+ * Pure workspace integration lifecycle for worker commits (M8-s5, M8-s6).
  *
  * After pre-integration validation (m8-s4), the controller registers an
  * integration record, marks it integrating before any base git mutation, then
  * records integrated, conflicted, or failed outcomes. Conflict is an explicit
  * recoverable state. It is never treated as success or silent overwrite.
+ *
+ * After a successful integrate (status integrated), the controller must run
+ * post-integration checks in the base workspace (m8-s6). Statuses checking,
+ * checks_passed, and checks_failed track that phase. Node completion requires
+ * checks_passed. Integration success and post-integration check success remain
+ * separate.
  *
  * Execution success and integration success remain separate states.
  *
@@ -37,11 +43,19 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Schema version for a future persisted integration set. Always 1 in this slice. */
-export const WORKSPACE_INTEGRATION_SET_SCHEMA_VERSION = 1 as const;
+/**
+ * Schema version for a future persisted integration set.
+ * Version 2 matches member records that include post-integration check statuses.
+ * Version 1 is rejected (incompatible status model).
+ */
+export const WORKSPACE_INTEGRATION_SET_SCHEMA_VERSION = 2 as const;
 
-/** Schema version for one integration record. Always 1 in this slice. */
-export const WORKSPACE_INTEGRATION_SCHEMA_VERSION = 1 as const;
+/**
+ * Schema version for one integration record.
+ * Version 2 adds checking, checks_passed, and checks_failed with new invariants.
+ * Version 1 is rejected as unsupported.
+ */
+export const WORKSPACE_INTEGRATION_SCHEMA_VERSION = 2 as const;
 
 /** Default maximum integration records in one set. */
 export const DEFAULT_MAX_INTEGRATIONS = 64;
@@ -52,6 +66,10 @@ export const DEFAULT_MAX_INTEGRATIONS = 64;
  * - pending: validated, not started.
  * - integrating: host integrate is in progress (durable before base mutates).
  * - integrated: worker commit successfully integrated into base.
+ *   Not sufficient for node completion after m8-s6.
+ * - checking: post-integration checks are running in the base workspace.
+ * - checks_passed: post-integration checks succeeded; node completion is allowed.
+ * - checks_failed: post-integration checks failed; node must not complete.
  * - conflicted: merge or apply conflict; explicit recoverable state.
  * - failed: non-conflict failure (identity, validation, git process, stale).
  *   Host cancellation also uses failed with workspace_integration_aborted so
@@ -65,25 +83,56 @@ export const WORKSPACE_INTEGRATION_STATUSES = [
   "pending",
   "integrating",
   "integrated",
+  "checking",
+  "checks_passed",
+  "checks_failed",
   "conflicted",
   "failed",
   "aborted",
   "released",
 ] as const;
 
-/** Status values that still allow a start or progress transition. */
+/**
+ * Status values that still allow a start or progress transition for integrate.
+ * Checking is not integrate-active; it is check-phase active.
+ */
 export const WORKSPACE_INTEGRATION_ACTIVE_STATUSES = [
   "pending",
   "integrating",
 ] as const;
 
-/** Terminal status values that block a second integrate attempt. */
+/**
+ * Status values that mean post-integration checks are in progress.
+ * Records in the check phase must not be released as complete.
+ */
+export const WORKSPACE_INTEGRATION_CHECK_ACTIVE_STATUSES = [
+  "checking",
+] as const;
+
+/**
+ * Terminal status values that block a second integrate attempt.
+ * Includes integrated and all post-integration check statuses that retain
+ * completion identity.
+ */
 export const WORKSPACE_INTEGRATION_TERMINAL_STATUSES = [
   "integrated",
+  "checking",
+  "checks_passed",
+  "checks_failed",
   "conflicted",
   "failed",
   "aborted",
   "released",
+] as const;
+
+/**
+ * Status values that retain integratedCommitHash after a successful integrate.
+ */
+export const WORKSPACE_INTEGRATION_POST_INTEGRATE_STATUSES = [
+  "integrated",
+  "checking",
+  "checks_passed",
+  "checks_failed",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -129,7 +178,10 @@ export interface WorkspaceIntegration {
   baseHeadBeforeIntegrate?: string;
   /** Present when status is conflicted. */
   conflict?: WorkspaceIntegrationConflict;
-  /** Diagnostics from the latest failed transition when status is failed. */
+  /**
+   * Diagnostics from the latest failed transition when status is failed
+   * or checks_failed.
+   */
   diagnostics?: Diagnostic[];
   /** Optional human-readable failure or abort message. */
   message?: string;
@@ -183,6 +235,11 @@ export interface WorkspaceIntegrationExpectedIdentity {
   holder?: WorkspaceLeaseHolder;
   workerCommitHash?: string;
   baseRevision?: string;
+  /**
+   * Full git object id of the integrated base HEAD.
+   * Post-integration checks bind to this commit.
+   */
+  integratedCommitHash?: string;
 }
 
 export interface WorkspaceIntegrationBounds {
@@ -210,8 +267,14 @@ const WORKSPACE_INTEGRATION_STATUS_SET = new Set<string>(
 const WORKSPACE_INTEGRATION_ACTIVE_STATUS_SET = new Set<string>(
   WORKSPACE_INTEGRATION_ACTIVE_STATUSES,
 );
+const WORKSPACE_INTEGRATION_CHECK_ACTIVE_STATUS_SET = new Set<string>(
+  WORKSPACE_INTEGRATION_CHECK_ACTIVE_STATUSES,
+);
 const WORKSPACE_INTEGRATION_TERMINAL_STATUS_SET = new Set<string>(
   WORKSPACE_INTEGRATION_TERMINAL_STATUSES,
+);
+const WORKSPACE_INTEGRATION_POST_INTEGRATE_STATUS_SET = new Set<string>(
+  WORKSPACE_INTEGRATION_POST_INTEGRATE_STATUSES,
 );
 
 /**
@@ -354,17 +417,34 @@ function isActiveStatus(status: string): boolean {
   return WORKSPACE_INTEGRATION_ACTIVE_STATUS_SET.has(status);
 }
 
+function isCheckActiveStatus(status: string): boolean {
+  return WORKSPACE_INTEGRATION_CHECK_ACTIVE_STATUS_SET.has(status);
+}
+
 function isTerminalStatus(status: string): boolean {
   return WORKSPACE_INTEGRATION_TERMINAL_STATUS_SET.has(status);
 }
 
+function hasPostIntegrateStatus(status: string): boolean {
+  return WORKSPACE_INTEGRATION_POST_INTEGRATE_STATUS_SET.has(status);
+}
+
 /**
- * Report whether a status is active (pending or integrating).
+ * Report whether a status is active for integrate (pending or integrating).
  */
 export function isActiveIntegrationStatus(
   status: WorkspaceIntegrationStatus,
 ): boolean {
   return isActiveStatus(status);
+}
+
+/**
+ * Report whether a status is active for the post-integration check phase.
+ */
+export function isCheckPhaseActiveStatus(
+  status: WorkspaceIntegrationStatus,
+): boolean {
+  return isCheckActiveStatus(status);
 }
 
 /**
@@ -374,6 +454,29 @@ export function isTerminalIntegrationStatus(
   status: WorkspaceIntegrationStatus,
 ): boolean {
   return isTerminalStatus(status);
+}
+
+/**
+ * Report whether the integration retains a successful integrate outcome.
+ * Includes integrated and all post-integration check statuses.
+ */
+export function isPostIntegrateIntegrationStatus(
+  status: WorkspaceIntegrationStatus,
+): boolean {
+  return hasPostIntegrateStatus(status);
+}
+
+/**
+ * Report whether the integration is eligible for node completion.
+ * Requires successful post-integration checks (checks_passed).
+ * Status integrated alone is not enough after m8-s6.
+ */
+export function isIntegrationEligibleForNodeCompletion(
+  integration: WorkspaceIntegration,
+): boolean {
+  return integration.status === "checks_passed"
+    && typeof integration.integratedCommitHash === "string"
+    && isFullGitObjectId(integration.integratedCommitHash);
 }
 
 /**
@@ -636,35 +739,62 @@ export function validateWorkspaceIntegration(
   }
 
   // Status-field invariants: each optional field belongs to one status only.
-  if (record.status === "integrated") {
+  // integratedCommitHash is required for all post-integrate statuses.
+  if (
+    typeof record.status === "string"
+    && hasPostIntegrateStatus(record.status)
+  ) {
     if (
       record.integratedCommitHash === undefined
       || !isNonEmptyString(record.integratedCommitHash)
     ) {
       diagnostics.push(reject(
         "workspace_integration_missing_integrated_commit",
-        "An integrated record must include integratedCommitHash.",
+        "A post-integrate record must include integratedCommitHash.",
         `${location}.integratedCommitHash`,
       ));
     }
     if (record.conflict !== undefined) {
       diagnostics.push(reject(
         "workspace_integration_status_field_mismatch",
-        "An integrated record must not include conflict details.",
+        "A post-integrate record must not include conflict details.",
         `${location}.conflict`,
       ));
     }
-    if (record.diagnostics !== undefined) {
+    // diagnostics only on checks_failed among post-integrate statuses.
+    // checks_failed requires a non-empty diagnostics array (restore invariant).
+    if (record.status === "checks_failed") {
+      if (record.diagnostics === undefined) {
+        diagnostics.push(reject(
+          "workspace_integration_missing_check_diagnostics",
+          "A checks_failed record must include a non-empty diagnostics array.",
+          `${location}.diagnostics`,
+        ));
+      } else {
+        const list = validateDiagnosticsList(
+          record.diagnostics,
+          `${location}.diagnostics`,
+          diagnostics,
+        );
+        if (list !== undefined && list.length === 0) {
+          diagnostics.push(reject(
+            "workspace_integration_missing_check_diagnostics",
+            "A checks_failed record must include a non-empty diagnostics array.",
+            `${location}.diagnostics`,
+          ));
+        }
+      }
+    } else if (record.diagnostics !== undefined) {
       diagnostics.push(reject(
         "workspace_integration_status_field_mismatch",
-        "An integrated record must not include failure diagnostics.",
+        "Failure diagnostics on a post-integrate record are permitted only when status is checks_failed.",
         `${location}.diagnostics`,
       ));
     }
   } else if (record.integratedCommitHash !== undefined) {
     diagnostics.push(reject(
       "workspace_integration_status_field_mismatch",
-      "integratedCommitHash is permitted only when status is integrated.",
+      "integratedCommitHash is permitted only after a successful integrate.",
       `${location}.integratedCommitHash`,
     ));
   }
@@ -688,10 +818,12 @@ export function validateWorkspaceIntegration(
   }
 
   if (record.diagnostics !== undefined) {
-    if (record.status !== "failed") {
+    if (record.status === "checks_failed") {
+      // Already validated under post-integrate invariants above.
+    } else if (record.status !== "failed") {
       diagnostics.push(reject(
         "workspace_integration_status_field_mismatch",
-        "diagnostics is permitted only when status is failed.",
+        "diagnostics is permitted only when status is failed or checks_failed.",
         `${location}.diagnostics`,
       ));
     } else {
@@ -943,7 +1075,7 @@ export function pruneTerminalIntegrations(
     return { ok: false, diagnostics: validated };
   }
   const kept = set.integrations.filter((item) => {
-    // Completion markers and in-flight records stay. Terminal rows without a
+    // Completion markers and active records stay. Terminal rows without a
     // completion marker are removed.
     if (item.integratedCommitHash !== undefined) return true;
     if (item.status === "pending" || item.status === "integrating") return true;
@@ -978,6 +1110,9 @@ export function alreadyTerminalDiagnosticCode(
   status: WorkspaceIntegrationStatus,
 ): string {
   if (status === "integrated") return "workspace_integration_already_integrated";
+  if (status === "checking") return "workspace_integration_already_checking";
+  if (status === "checks_passed") return "workspace_integration_already_checks_passed";
+  if (status === "checks_failed") return "workspace_integration_already_checks_failed";
   if (status === "conflicted") return "workspace_integration_already_conflicted";
   if (status === "failed") return "workspace_integration_already_failed";
   return "workspace_integration_already_terminal";
@@ -1030,6 +1165,103 @@ export function validateIntegrationCrossEntityIdentity(
 // ---------------------------------------------------------------------------
 
 /**
+ * Parse and clone an expected-identity object from untrusted input.
+ * Rejects class instances and non-string identity fields.
+ * Does not mutate input. Never throws for shape errors.
+ */
+export function parseWorkspaceIntegrationExpectedIdentity(
+  value: unknown,
+  location = "expected",
+):
+  | { ok: true; value: WorkspaceIntegrationExpectedIdentity }
+  | { ok: false; diagnostics: Diagnostic[] } {
+  if (!isStrictPlainObject(value)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_expected_identity",
+        "Expected identity must be a plain object when present.",
+        location,
+      )],
+    };
+  }
+
+  const record = value;
+  const diagnostics: Diagnostic[] = [];
+  const result: WorkspaceIntegrationExpectedIdentity = {};
+
+  const stringFields: Array<
+    keyof Pick<
+      WorkspaceIntegrationExpectedIdentity,
+      | "integrationId"
+      | "leaseId"
+      | "worktreeId"
+      | "workerCommitHash"
+      | "baseRevision"
+      | "integratedCommitHash"
+    >
+  > = [
+    "integrationId",
+    "leaseId",
+    "worktreeId",
+    "workerCommitHash",
+    "baseRevision",
+    "integratedCommitHash",
+  ];
+
+  for (const field of stringFields) {
+    if (record[field] === undefined) continue;
+    if (typeof record[field] !== "string") {
+      diagnostics.push(reject(
+        "workspace_integration_invalid_expected_identity",
+        `Expected identity.${field} must be a string when present.`,
+        `${location}.${field}`,
+      ));
+      continue;
+    }
+    const trimmed = (record[field] as string).trim();
+    if (trimmed.length === 0) {
+      diagnostics.push(reject(
+        "workspace_integration_invalid_expected_identity",
+        `Expected identity.${field} must be a non-empty string when present.`,
+        `${location}.${field}`,
+      ));
+      continue;
+    }
+    if (
+      (field === "workerCommitHash"
+        || field === "baseRevision"
+        || field === "integratedCommitHash")
+      && !isFullGitObjectId(trimmed)
+    ) {
+      diagnostics.push(reject(
+        "workspace_integration_invalid_expected_identity",
+        `Expected identity.${field} must be a full git object id when present.`,
+        `${location}.${field}`,
+      ));
+      continue;
+    }
+    result[field] = field === "workerCommitHash"
+      || field === "baseRevision"
+      || field === "integratedCommitHash"
+      ? trimmed.toLowerCase()
+      : trimmed;
+  }
+
+  if (record.holder !== undefined) {
+    const holder = validateHolder(record.holder, `${location}.holder`, diagnostics);
+    if (holder !== undefined) {
+      result.holder = holder;
+    }
+  }
+
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  return { ok: true, value: result };
+}
+
+/**
  * Report whether an integration matches expected identity fields.
  * Present expected fields must match. Omitted fields are not checked.
  * Does not mutate inputs.
@@ -1038,30 +1270,31 @@ export function integrationMatchesExpectedIdentity(
   integration: WorkspaceIntegration,
   expected: WorkspaceIntegrationExpectedIdentity,
 ): boolean {
-  if (expected.integrationId !== undefined) {
-    if (integration.integrationId !== expected.integrationId.trim()) return false;
+  const parsed = parseWorkspaceIntegrationExpectedIdentity(expected, "expected");
+  if (!parsed.ok) return false;
+  const safe = parsed.value;
+  if (safe.integrationId !== undefined) {
+    if (integration.integrationId !== safe.integrationId) return false;
   }
-  if (expected.leaseId !== undefined) {
-    if (integration.leaseId !== expected.leaseId.trim()) return false;
+  if (safe.leaseId !== undefined) {
+    if (integration.leaseId !== safe.leaseId) return false;
   }
-  if (expected.worktreeId !== undefined) {
-    if (integration.worktreeId !== expected.worktreeId.trim()) return false;
+  if (safe.worktreeId !== undefined) {
+    if (integration.worktreeId !== safe.worktreeId) return false;
   }
-  if (expected.holder !== undefined) {
-    if (!holdersEqual(integration.holder, expected.holder)) return false;
+  if (safe.holder !== undefined) {
+    if (!holdersEqual(integration.holder, safe.holder)) return false;
   }
-  if (expected.workerCommitHash !== undefined) {
+  if (safe.workerCommitHash !== undefined) {
+    if (integration.workerCommitHash !== safe.workerCommitHash) return false;
+  }
+  if (safe.baseRevision !== undefined) {
+    if (integration.baseRevision !== safe.baseRevision) return false;
+  }
+  if (safe.integratedCommitHash !== undefined) {
     if (
-      integration.workerCommitHash
-      !== expected.workerCommitHash.trim().toLowerCase()
-    ) {
-      return false;
-    }
-  }
-  if (expected.baseRevision !== undefined) {
-    if (
-      integration.baseRevision
-      !== expected.baseRevision.trim().toLowerCase()
+      integration.integratedCommitHash === undefined
+      || integration.integratedCommitHash !== safe.integratedCommitHash
     ) {
       return false;
     }
@@ -1071,68 +1304,53 @@ export function integrationMatchesExpectedIdentity(
 
 /**
  * Validate identity against expected fields. Returns diagnostics when stale.
- * Does not mutate inputs.
+ * Accepts a typed expected object or untrusted unknown shape.
+ * Does not mutate inputs. Never throws for shape errors.
  */
 export function validateIntegrationIdentity(
   integration: WorkspaceIntegration,
-  expected: WorkspaceIntegrationExpectedIdentity,
+  expected: WorkspaceIntegrationExpectedIdentity | unknown,
   location = "integration",
 ): Diagnostic[] {
+  const parsed = parseWorkspaceIntegrationExpectedIdentity(expected, "expected");
+  if (!parsed.ok) {
+    return parsed.diagnostics;
+  }
+  const safe = parsed.value;
   const diagnostics: Diagnostic[] = [];
 
-  if (expected.integrationId !== undefined) {
-    const expectedId = expected.integrationId.trim();
-    if (expectedId.length === 0) {
+  if (safe.integrationId !== undefined) {
+    if (integration.integrationId !== safe.integrationId) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
-        "Expected integrationId must be a non-empty string when present.",
-        "expected.integrationId",
-      ));
-    } else if (integration.integrationId !== expectedId) {
-      diagnostics.push(reject(
-        "workspace_integration_stale_identity",
-        `Integration id '${integration.integrationId}' does not match expected id '${expectedId}'.`,
+        `Integration id '${integration.integrationId}' does not match expected id '${safe.integrationId}'.`,
         `${location}.integrationId`,
       ));
     }
   }
 
-  if (expected.leaseId !== undefined) {
-    const expectedLease = expected.leaseId.trim();
-    if (expectedLease.length === 0) {
+  if (safe.leaseId !== undefined) {
+    if (integration.leaseId !== safe.leaseId) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
-        "Expected leaseId must be a non-empty string when present.",
-        "expected.leaseId",
-      ));
-    } else if (integration.leaseId !== expectedLease) {
-      diagnostics.push(reject(
-        "workspace_integration_stale_identity",
-        `Integration leaseId '${integration.leaseId}' does not match expected leaseId '${expectedLease}'.`,
+        `Integration leaseId '${integration.leaseId}' does not match expected leaseId '${safe.leaseId}'.`,
         `${location}.leaseId`,
       ));
     }
   }
 
-  if (expected.worktreeId !== undefined) {
-    const expectedWorktree = expected.worktreeId.trim();
-    if (expectedWorktree.length === 0) {
+  if (safe.worktreeId !== undefined) {
+    if (integration.worktreeId !== safe.worktreeId) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
-        "Expected worktreeId must be a non-empty string when present.",
-        "expected.worktreeId",
-      ));
-    } else if (integration.worktreeId !== expectedWorktree) {
-      diagnostics.push(reject(
-        "workspace_integration_stale_identity",
-        `Integration worktreeId '${integration.worktreeId}' does not match expected worktreeId '${expectedWorktree}'.`,
+        `Integration worktreeId '${integration.worktreeId}' does not match expected worktreeId '${safe.worktreeId}'.`,
         `${location}.worktreeId`,
       ));
     }
   }
 
-  if (expected.holder !== undefined) {
-    if (!holdersEqual(integration.holder, expected.holder)) {
+  if (safe.holder !== undefined) {
+    if (!holdersEqual(integration.holder, safe.holder)) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
         "Integration holder does not match the expected lease holder.",
@@ -1141,15 +1359,8 @@ export function validateIntegrationIdentity(
     }
   }
 
-  if (expected.workerCommitHash !== undefined) {
-    const expectedHash = expected.workerCommitHash.trim().toLowerCase();
-    if (expectedHash.length === 0 || !isFullGitObjectId(expectedHash)) {
-      diagnostics.push(reject(
-        "workspace_integration_stale_identity",
-        "Expected workerCommitHash must be a full git object id when present.",
-        "expected.workerCommitHash",
-      ));
-    } else if (integration.workerCommitHash !== expectedHash) {
+  if (safe.workerCommitHash !== undefined) {
+    if (integration.workerCommitHash !== safe.workerCommitHash) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
         "Integration workerCommitHash does not match the expected worker commit.",
@@ -1158,19 +1369,25 @@ export function validateIntegrationIdentity(
     }
   }
 
-  if (expected.baseRevision !== undefined) {
-    const expectedBase = expected.baseRevision.trim().toLowerCase();
-    if (expectedBase.length === 0 || !isFullGitObjectId(expectedBase)) {
-      diagnostics.push(reject(
-        "workspace_integration_stale_identity",
-        "Expected baseRevision must be a full git object id when present.",
-        "expected.baseRevision",
-      ));
-    } else if (integration.baseRevision !== expectedBase) {
+  if (safe.baseRevision !== undefined) {
+    if (integration.baseRevision !== safe.baseRevision) {
       diagnostics.push(reject(
         "workspace_integration_stale_identity",
         "Integration baseRevision does not match the expected base revision.",
         `${location}.baseRevision`,
+      ));
+    }
+  }
+
+  if (safe.integratedCommitHash !== undefined) {
+    if (
+      integration.integratedCommitHash === undefined
+      || integration.integratedCommitHash !== safe.integratedCommitHash
+    ) {
+      diagnostics.push(reject(
+        "workspace_integration_stale_identity",
+        "Integration integratedCommitHash does not match the expected integrated commit.",
+        `${location}.integratedCommitHash`,
       ));
     }
   }
@@ -1821,12 +2038,29 @@ export function markIntegrationIntegrated(
   }
 
   // Idempotent success when already integrated with the same resulting commit.
-  if (current.status === "integrated") {
+  // Post-integration check statuses with the same hash also count as already
+  // integrated.
+  if (
+    current.status === "integrated"
+    || current.status === "checking"
+    || current.status === "checks_passed"
+    || current.status === "checks_failed"
+  ) {
     if (current.integratedCommitHash === hash) {
+      if (current.status === "integrated") {
+        return {
+          ok: true,
+          set: opened.set,
+          integration: structuredClone(current),
+        };
+      }
       return {
-        ok: true,
-        set: opened.set,
-        integration: structuredClone(current),
+        ok: false,
+        diagnostics: [reject(
+          alreadyTerminalDiagnosticCode(current.status),
+          `Integration '${current.integrationId}' already completed integrate and is in status '${current.status}'.`,
+          "integration.status",
+        )],
       };
     }
     return {
@@ -2119,7 +2353,13 @@ export function markIntegrationFailed(
     }
   }
 
-  if (current.status === "integrated" || current.status === "conflicted") {
+  if (
+    current.status === "integrated"
+    || current.status === "checking"
+    || current.status === "checks_passed"
+    || current.status === "checks_failed"
+    || current.status === "conflicted"
+  ) {
     return {
       ok: false,
       diagnostics: [reject(
@@ -2177,8 +2417,9 @@ export function markIntegrationFailed(
 
 /**
  * Mark an integration as aborted.
- * Accepts only pending or integrating. Rejects integrated, conflicted, failed,
- * and released so failure diagnostics and completion identity survive.
+ * Accepts only pending or integrating. Rejects integrated, checking,
+ * checks_passed, checks_failed, conflicted, failed, and released so failure
+ * diagnostics and completion identity survive.
  * Idempotent for aborted. Does not mutate the input set.
  */
 export function markIntegrationAborted(
@@ -2226,6 +2467,9 @@ export function markIntegrationAborted(
 
   if (
     current.status === "integrated"
+    || current.status === "checking"
+    || current.status === "checks_passed"
+    || current.status === "checks_failed"
     || current.status === "conflicted"
     || current.status === "failed"
     || current.status === "released"
@@ -2280,6 +2524,385 @@ export function markIntegrationAborted(
 }
 
 /**
+ * Options for starting the post-integration check phase.
+ */
+export interface MarkIntegrationCheckingOptions {
+  /**
+   * When true, permit resume from status checking after the caller asserts
+   * that no host runner is active. Use this only for crash recovery.
+   * Default false. A second concurrent host runner must not use this flag.
+   */
+  allowResume?: boolean;
+}
+
+/**
+ * Mark an integration as checking (post-integration checks in progress).
+ * Accepts integrated. Rejects status checking unless allowResume is true
+ * (recovery path only). Rejects other statuses. Does not mutate the input set.
+ */
+export function markIntegrationChecking(
+  set: WorkspaceIntegrationSet,
+  integrationId: string,
+  expected?: WorkspaceIntegrationExpectedIdentity,
+  options?: MarkIntegrationCheckingOptions,
+): WorkspaceIntegrationTransitionResult {
+  const opened = openSetClone(set);
+  if (!opened.ok) {
+    return { ok: false, diagnostics: opened.diagnostics };
+  }
+
+  if (typeof integrationId !== "string" || integrationId.trim().length === 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_id",
+        "integrationId must be a non-empty string.",
+        "integrationId",
+      )],
+    };
+  }
+
+  const index = findIntegrationIndex(opened.set, integrationId);
+  if (index < 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_not_found",
+        `Integration id '${integrationId.trim()}' was not found.`,
+        "integrationId",
+      )],
+    };
+  }
+
+  const current = opened.set.integrations[index]!;
+
+  if (expected !== undefined) {
+    const identityDiagnostics = validateIntegrationIdentity(current, expected);
+    if (identityDiagnostics.length > 0) {
+      return { ok: false, diagnostics: identityDiagnostics };
+    }
+  }
+
+  // Status checking means post-integration checks are in progress.
+  // Reject a second start unless allowResume is true for recovery.
+  if (current.status === "checking") {
+    if (options?.allowResume === true) {
+      return {
+        ok: true,
+        set: opened.set,
+        integration: structuredClone(current),
+      };
+    }
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_already_checking",
+        "Post-integration checks are already in progress. "
+          + "A concurrent second start is not permitted. "
+          + "Set allowResume only after crash recovery when no host runner is active.",
+        "integration.status",
+      )],
+    };
+  }
+
+  // Status checks_passed is not a valid start of the check phase.
+  if (current.status === "checks_passed") {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_already_checks_passed",
+        "Post-integration checks already passed. Cannot start checking again.",
+        "integration.status",
+      )],
+    };
+  }
+
+  if (current.status === "checks_failed") {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_already_checks_failed",
+        "Post-integration checks already failed. Cannot start checking again from this record.",
+        "integration.status",
+      )],
+    };
+  }
+
+  if (current.status !== "integrated") {
+    const code = isTerminalStatus(current.status)
+      ? alreadyTerminalDiagnosticCode(current.status)
+      : "workspace_integration_invalid_transition";
+    return {
+      ok: false,
+      diagnostics: [reject(
+        code,
+        `Cannot start post-integration checks from status '${current.status}'. Expected 'integrated'.`,
+        "integration.status",
+      )],
+    };
+  }
+
+  if (
+    current.integratedCommitHash === undefined
+    || !isFullGitObjectId(current.integratedCommitHash)
+  ) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_missing_integrated_commit",
+        "An integrated record must include integratedCommitHash before checks start.",
+        "integration.integratedCommitHash",
+      )],
+    };
+  }
+
+  const updated: WorkspaceIntegration = {
+    ...structuredClone(current),
+    status: "checking",
+  };
+  delete updated.conflict;
+  delete updated.diagnostics;
+  delete updated.message;
+  opened.set.integrations[index] = updated;
+  return {
+    ok: true,
+    set: opened.set,
+    integration: structuredClone(updated),
+  };
+}
+
+/**
+ * Mark an integration as checks_passed after successful base-workspace checks.
+ * Accepts checking. Idempotent when already checks_passed with matching identity.
+ * Does not mutate the input set.
+ */
+export function markIntegrationChecksPassed(
+  set: WorkspaceIntegrationSet,
+  integrationId: string,
+  expected?: WorkspaceIntegrationExpectedIdentity,
+): WorkspaceIntegrationTransitionResult {
+  const opened = openSetClone(set);
+  if (!opened.ok) {
+    return { ok: false, diagnostics: opened.diagnostics };
+  }
+
+  if (typeof integrationId !== "string" || integrationId.trim().length === 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_id",
+        "integrationId must be a non-empty string.",
+        "integrationId",
+      )],
+    };
+  }
+
+  const index = findIntegrationIndex(opened.set, integrationId);
+  if (index < 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_not_found",
+        `Integration id '${integrationId.trim()}' was not found.`,
+        "integrationId",
+      )],
+    };
+  }
+
+  const current = opened.set.integrations[index]!;
+
+  if (expected !== undefined) {
+    const identityDiagnostics = validateIntegrationIdentity(current, expected);
+    if (identityDiagnostics.length > 0) {
+      return { ok: false, diagnostics: identityDiagnostics };
+    }
+  }
+
+  if (current.status === "checks_passed") {
+    return {
+      ok: true,
+      set: opened.set,
+      integration: structuredClone(current),
+    };
+  }
+
+  if (current.status !== "checking") {
+    const code = isTerminalStatus(current.status)
+      ? alreadyTerminalDiagnosticCode(current.status)
+      : "workspace_integration_invalid_transition";
+    return {
+      ok: false,
+      diagnostics: [reject(
+        code,
+        `Cannot mark checks_passed from status '${current.status}'. Expected 'checking'.`,
+        "integration.status",
+      )],
+    };
+  }
+
+  const updated: WorkspaceIntegration = {
+    ...structuredClone(current),
+    status: "checks_passed",
+  };
+  delete updated.conflict;
+  delete updated.diagnostics;
+  delete updated.message;
+  opened.set.integrations[index] = updated;
+  return {
+    ok: true,
+    set: opened.set,
+    integration: structuredClone(updated),
+  };
+}
+
+/**
+ * Mark an integration as checks_failed with diagnostics from base-workspace checks.
+ * Accepts checking. Idempotent when already checks_failed.
+ * Does not mutate the input set.
+ */
+export function markIntegrationChecksFailed(
+  set: WorkspaceIntegrationSet,
+  integrationId: string,
+  failureDiagnostics: readonly Diagnostic[],
+  message?: string,
+  expected?: WorkspaceIntegrationExpectedIdentity,
+): WorkspaceIntegrationTransitionResult {
+  const opened = openSetClone(set);
+  if (!opened.ok) {
+    return { ok: false, diagnostics: opened.diagnostics };
+  }
+
+  if (typeof integrationId !== "string" || integrationId.trim().length === 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_id",
+        "integrationId must be a non-empty string.",
+        "integrationId",
+      )],
+    };
+  }
+
+  if (!Array.isArray(failureDiagnostics)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_diagnostics",
+        "failure diagnostics must be an array.",
+        "diagnostics",
+      )],
+    };
+  }
+
+  // Validate the original diagnostic objects before any clone or spread.
+  // Spreading first would convert class instances into plain objects.
+  const listDiagnostics: Diagnostic[] = [];
+  const parsedList = validateDiagnosticsList(
+    failureDiagnostics,
+    "diagnostics",
+    listDiagnostics,
+  );
+  if (parsedList === undefined) {
+    return {
+      ok: false,
+      diagnostics: listDiagnostics.length > 0
+        ? listDiagnostics
+        : [reject(
+          "workspace_integration_invalid_diagnostics",
+          "failure diagnostics are invalid.",
+          "diagnostics",
+        )],
+    };
+  }
+
+  if (parsedList.length === 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_invalid_diagnostics",
+        "checks_failed requires at least one diagnostic.",
+        "diagnostics",
+      )],
+    };
+  }
+
+  const index = findIntegrationIndex(opened.set, integrationId);
+  if (index < 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_not_found",
+        `Integration id '${integrationId.trim()}' was not found.`,
+        "integrationId",
+      )],
+    };
+  }
+
+  const current = opened.set.integrations[index]!;
+
+  if (expected !== undefined) {
+    const identityDiagnostics = validateIntegrationIdentity(current, expected);
+    if (identityDiagnostics.length > 0) {
+      return { ok: false, diagnostics: identityDiagnostics };
+    }
+  }
+
+  if (current.status === "checks_failed") {
+    return {
+      ok: true,
+      set: opened.set,
+      integration: structuredClone(current),
+    };
+  }
+
+  if (current.status === "checks_passed") {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_integration_already_checks_passed",
+        "Cannot mark checks_failed: post-integration checks already passed.",
+        "integration.status",
+      )],
+    };
+  }
+
+  if (current.status !== "checking") {
+    const code = isTerminalStatus(current.status)
+      ? alreadyTerminalDiagnosticCode(current.status)
+      : "workspace_integration_invalid_transition";
+    return {
+      ok: false,
+      diagnostics: [reject(
+        code,
+        `Cannot mark checks_failed from status '${current.status}'. Expected 'checking'.`,
+        "integration.status",
+      )],
+    };
+  }
+
+  // Clone only after validation succeeds.
+  const updated: WorkspaceIntegration = {
+    ...structuredClone(current),
+    status: "checks_failed",
+    diagnostics: parsedList.map((item) => ({ ...item })),
+  };
+  delete updated.conflict;
+  if (typeof message === "string" && message.trim().length > 0) {
+    updated.message = message.trim();
+  } else if (parsedList[0] !== undefined) {
+    updated.message = parsedList[0].message;
+  } else {
+    delete updated.message;
+  }
+  opened.set.integrations[index] = updated;
+  return {
+    ok: true,
+    set: opened.set,
+    integration: structuredClone(updated),
+  };
+}
+
+/**
  * Mark an integration as released by id.
  * Refuses to release an integrated record so completion identity remains.
  * When the id is absent, released is false and the set is still cloned.
@@ -2312,12 +2935,18 @@ export function releaseIntegrationRecord(
     };
   }
 
-  if (found.status === "integrated" || found.integratedCommitHash !== undefined) {
+  if (
+    found.status === "integrated"
+    || found.status === "checking"
+    || found.status === "checks_passed"
+    || found.status === "checks_failed"
+    || found.integratedCommitHash !== undefined
+  ) {
     return {
       ok: false,
       diagnostics: [reject(
         "workspace_integration_already_integrated",
-        `Cannot release integrated record '${id}'. Completion identity must remain for double-integrate rejection.`,
+        `Cannot release post-integrate record '${id}'. Completion identity must remain for double-integrate rejection.`,
         "integrationId",
       )],
     };
