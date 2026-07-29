@@ -1015,6 +1015,8 @@ export type EventType =
   | "hypagraph.interaction.answered"
   | "hypagraph.interaction.expired"
   | "hypagraph.task.waiting-for-child"
+  | "hypagraph.task.child-returned"
+  | "hypagraph.task.child-return-failed"
   | "hypagraph.fact.published"
   | "hypagraph.route.selected"
   | "hypagraph.verification.started"
@@ -1121,7 +1123,6 @@ export type HypagraphCommand =
   /**
    * Suspend only this parent task while a bounded child goal runs.
    * The attempt remains open. Unrelated nodes stay runnable.
-   * Child return is handled in a later family slice.
    */
   | (CommandBase & {
     type: "wait-for-child";
@@ -1129,6 +1130,23 @@ export type HypagraphCommand =
     attemptId: string;
     childGoalId: string;
     bindingId: string;
+  })
+  /**
+   * Apply a validated child-goal return against a parent task that waits for a child.
+   * Success resumes the parent attempt. Failure policies fail, block, or request revision.
+   * Child completion does not complete the parent task automatically.
+   */
+  | (CommandBase & {
+    type: "record-child-return";
+    nodeId: string;
+    attemptId: string;
+    childGoalId: string;
+    bindingId: string;
+    outcome: "completed" | "failed" | "cancelled" | "budget_limited";
+    parentEffect: "resume" | "fail-parent-node" | "block-parent-node" | "return-for-revision";
+    facts?: FactInput[];
+    evidence?: EvidenceReference[];
+    reason?: string;
   })
   | (CommandBase & { type: "evaluate-gate"; nodeId: string })
   | (CommandBase & { type: "publish-facts"; nodeId: string; attemptId: string; facts: FactInput[] })

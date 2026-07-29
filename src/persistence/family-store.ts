@@ -4,16 +4,20 @@ import {
   validateChildDefinitionScopes,
 } from "../domain/child-goal-binding.js";
 import type { BoundedChildGoalResult } from "../domain/child-goal-creation.js";
+import type { ReturnChildGoalResult } from "../domain/child-goal-return.js";
 import {
   GOAL_FAMILY_SCHEMA_VERSION,
   GoalFamilyRestoreError,
   UnsupportedGoalFamilyEventVersionError,
   UnsupportedGoalFamilySchemaError,
   assertSupportedGoalFamilySchemaVersion,
+  commandParentEffectFromDurable,
   createRootFamily,
   parseGoalContinuationActionPayload,
   restoreFamilyProjection,
   type ChildGoalBinding,
+  type ChildReturnCommandParentEffect,
+  type ChildReturnParentEffect,
   type FamilyBounds,
   type GoalFamilyEvent,
   type GoalFamilyRuntime,
@@ -285,6 +289,48 @@ export function commitBoundedChildGoalToPersistedFamily(
 }
 
 /**
+ * Commit a successful child-goal return into a persisted family record.
+ * Updates the parent workflow stream and appends the family return event.
+ * The input family record is not mutated.
+ * Rejects a failed return result with a typed restore error.
+ */
+export function commitChildReturnToPersistedFamily(
+  family: PersistedGoalFamily,
+  returned: Extract<ReturnChildGoalResult, { ok: true }>,
+): PersistedGoalFamily {
+  if (!returned.ok) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_child_return_failed",
+      "A failed child-goal return cannot be committed to a persisted family.",
+    );
+  }
+
+  const parentWorkflowId = returned.parentState.workflowId;
+  const existingParent = family.workflows[parentWorkflowId];
+  if (!existingParent) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_member_workflow_missing",
+      `Persisted family '${family.familySnapshot.familyId}' is missing parent workflow '${parentWorkflowId}'.`,
+    );
+  }
+
+  const next: PersistedGoalFamily = {
+    schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
+    familyEvents: [...structuredClone(family.familyEvents), ...structuredClone(returned.familyEvents)],
+    familySnapshot: structuredClone(returned.family),
+    workflows: {
+      ...cloneWorkflowMap(family.workflows),
+      [parentWorkflowId]: {
+        events: [...structuredClone(existingParent.events), ...structuredClone(returned.parentEvents)],
+        snapshot: structuredClone(returned.parentState),
+      },
+    },
+  };
+
+  return restorePersistedGoalFamily(next);
+}
+
+/**
  * Validate and restore a persisted family record.
  * Rebuilds membership from family events and rejects unsupported schema versions.
  * Replays each nested workflow and requires full snapshot equality with event replay.
@@ -378,7 +424,8 @@ export function restorePersistedGoalFamily(value: PersistedGoalFamily): Persiste
 /**
  * Validate that each child binding matches parent wait state and child workflow membership.
  * Active bindings require a matching hypagraph.task.waiting-for-child event and current wait status.
- * Each current parent wait requires exactly one matching binding and child workflow.
+ * Terminal bindings require a matching child-return event and a parent that left waiting_for_child.
+ * Each current parent wait requires exactly one matching active binding and child workflow.
  * Child workflow budgets must equal binding budgets. Child node scopes must not widen the binding.
  */
 function validateChildBindingWorkflowIntegrity(
@@ -429,19 +476,44 @@ function validateChildBindingWorkflowIntegrity(
     );
 
     const parentNode = parentWorkflow.snapshot.runtime.nodes[binding.parentNodeId];
-    if (!parentNode || parentNode.status !== "waiting_for_child") {
+    if (!parentNode) {
       throw new GoalFamilyRestoreError(
-        "goal_family_binding_parent_not_waiting",
-        `Binding '${binding.bindingId}' requires parent node '${binding.parentNodeId}' `
-        + "to be in waiting_for_child status.",
+        "goal_family_binding_parent_node_missing",
+        `Binding '${binding.bindingId}' references missing parent node '${binding.parentNodeId}'.`,
       );
     }
-    if (parentNode.currentAttemptId !== binding.parentAttemptId) {
-      throw new GoalFamilyRestoreError(
-        "goal_family_binding_parent_attempt_mismatch",
-        `Binding '${binding.bindingId}' parent attempt '${binding.parentAttemptId}' does not match `
-        + `current attempt '${parentNode.currentAttemptId ?? "none"}' on node '${binding.parentNodeId}'.`,
-      );
+
+    if (binding.status === "active") {
+      if (parentNode.status !== "waiting_for_child") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_not_waiting",
+          `Binding '${binding.bindingId}' requires parent node '${binding.parentNodeId}' `
+          + "to be in waiting_for_child status.",
+        );
+      }
+      if (parentNode.currentAttemptId !== binding.parentAttemptId) {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_attempt_mismatch",
+          `Binding '${binding.bindingId}' parent attempt '${binding.parentAttemptId}' does not match `
+          + `current attempt '${parentNode.currentAttemptId ?? "none"}' on node '${binding.parentNodeId}'.`,
+        );
+      }
+    } else {
+      if (!binding.returnRecord) {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_return_missing",
+          `Terminal binding '${binding.bindingId}' requires a return record.`,
+        );
+      }
+      const returnMatch = findMatchingReturnEvent(parentWorkflow, binding);
+      if (!returnMatch) {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_return_event_missing",
+          `Binding '${binding.bindingId}' has no matching parent child-return event on workflow `
+          + `'${binding.parentWorkflowId}' for node '${binding.parentNodeId}'.`,
+        );
+      }
+      assertTerminalReturnEventMatchesBinding(binding, returnMatch, parentWorkflow);
     }
 
     const childGoalBudget = childWorkflow.snapshot.goal?.budget.limits ?? {};
@@ -476,7 +548,7 @@ function validateChildBindingWorkflowIntegrity(
     }
   }
 
-  // Reverse direction: each current parent wait must have exactly one matching binding.
+  // Reverse direction: each current parent wait must have exactly one matching active binding.
   for (const [workflowId, workflow] of Object.entries(workflows)) {
     const parentGoalId = workflow.snapshot.goal?.goalId;
     if (!parentGoalId) continue;
@@ -510,7 +582,8 @@ function validateChildBindingWorkflowIntegrity(
       }
 
       const matches = bindings.filter((binding) =>
-        binding.parentWorkflowId === workflowId
+        binding.status === "active"
+        && binding.parentWorkflowId === workflowId
         && binding.parentGoalId === parentGoalId
         && binding.parentNodeId === nodeId
         && binding.parentAttemptId === attemptId
@@ -569,6 +642,190 @@ function findMatchingWaitEvent(
   }
   return undefined;
 }
+
+/**
+ * Find the parent child-return event that matches a terminal binding identity.
+ */
+function findMatchingReturnEvent(
+  parentWorkflow: PersistedHypagraph,
+  binding: ChildGoalBinding,
+): { event: DomainEvent; index: number } | undefined {
+  for (let index = 0; index < parentWorkflow.events.length; index += 1) {
+    const event = parentWorkflow.events[index]!;
+    if (
+      (event.type === "hypagraph.task.child-returned"
+        || event.type === "hypagraph.task.child-return-failed")
+      && event.nodeId === binding.parentNodeId
+      && event.attemptId === binding.parentAttemptId
+      && event.data?.childGoalId === binding.childGoalId
+      && event.data?.bindingId === binding.bindingId
+    ) {
+      return { event, index };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Require parent return event type, outcome, and parent effect to match the binding.
+ * Immediate post-return status is checked from the parent stream prefix through the return event.
+ * The final parent snapshot is not locked: a later second wait on the same node is allowed.
+ * Full-stream snapshot equality and reverse active-wait binding checks cover later waits.
+ * Command-effect values on parent events map to durable binding parentEffect values.
+ */
+function assertTerminalReturnEventMatchesBinding(
+  binding: ChildGoalBinding,
+  returnMatch: { event: DomainEvent; index: number },
+  parentWorkflow: PersistedHypagraph,
+): void {
+  const returnRecord = binding.returnRecord;
+  if (!returnRecord) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_return_missing",
+      `Terminal binding '${binding.bindingId}' requires a return record.`,
+    );
+  }
+
+  const event = returnMatch.event;
+  const expectedEventType = returnRecord.outcome === "completed"
+    ? "hypagraph.task.child-returned"
+    : "hypagraph.task.child-return-failed";
+  if (event.type !== expectedEventType) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_return_event_type_mismatch",
+      `Binding '${binding.bindingId}' outcome '${returnRecord.outcome}' requires parent event type `
+      + `'${expectedEventType}', but found '${event.type}'.`,
+    );
+  }
+
+  if (event.data?.outcome !== returnRecord.outcome) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_return_outcome_mismatch",
+      `Binding '${binding.bindingId}' return outcome '${returnRecord.outcome}' does not match parent `
+      + `event outcome '${String(event.data?.outcome)}'.`,
+    );
+  }
+
+  const eventCommandEffect = event.data?.parentEffect;
+  const expectedCommandEffect = commandParentEffectFromDurable(returnRecord.parentEffect);
+  if (eventCommandEffect !== expectedCommandEffect) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_return_parent_effect_mismatch",
+      `Binding '${binding.bindingId}' durable parent effect '${returnRecord.parentEffect}' requires `
+      + `parent event effect '${expectedCommandEffect}', but found '${String(eventCommandEffect)}'.`,
+    );
+  }
+
+  // Status as projected immediately after the matched return event.
+  // A later second child wait may set final snapshot status back to waiting_for_child.
+  const prefix = parentWorkflow.events.slice(0, returnMatch.index + 1);
+  let postReturnState: HypagraphState;
+  try {
+    postReturnState = replayEvents(prefix);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_return_prefix_replay_failed",
+      `Binding '${binding.bindingId}' parent stream could not be replayed through the return event: `
+      + message,
+    );
+  }
+  const postReturnNode = postReturnState.runtime.nodes[binding.parentNodeId];
+  if (!postReturnNode) {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_parent_node_missing",
+      `Binding '${binding.bindingId}' parent node '${binding.parentNodeId}' is missing after the return event.`,
+    );
+  }
+  assertImmediatePostReturnNodeStatus(
+    binding.bindingId,
+    returnRecord.parentEffect,
+    postReturnNode,
+    binding,
+  );
+}
+
+/**
+ * Require parent node status immediately after the child-return event to match the durable effect.
+ * This does not constrain later parent progress on the final snapshot.
+ */
+function assertImmediatePostReturnNodeStatus(
+  bindingId: string,
+  parentEffect: ChildReturnParentEffect,
+  parentNode: NonNullable<HypagraphState["runtime"]["nodes"][string]>,
+  binding: ChildGoalBinding,
+): void {
+  if (parentNode.status === "waiting_for_child") {
+    throw new GoalFamilyRestoreError(
+      "goal_family_binding_parent_still_waiting",
+      `Terminal binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
+      + "to leave waiting_for_child immediately after the return event.",
+    );
+  }
+
+  switch (parentEffect) {
+    case "resumed":
+      if (parentNode.status !== "running") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_status_mismatch",
+          `Returned binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
+          + `status 'running' immediately after return, but found '${parentNode.status}'.`,
+        );
+      }
+      if (parentNode.currentAttemptId !== binding.parentAttemptId) {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_attempt_mismatch",
+          `Returned binding '${bindingId}' requires parent attempt '${binding.parentAttemptId}' `
+          + `immediately after return, but found '${parentNode.currentAttemptId ?? "none"}'.`,
+        );
+      }
+      break;
+    case "failed":
+      if (parentNode.status !== "failed") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_status_mismatch",
+          `Failed-return binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
+          + `status 'failed' immediately after return, but found '${parentNode.status}'.`,
+        );
+      }
+      break;
+    case "blocked":
+      if (parentNode.status !== "blocked") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_status_mismatch",
+          `Blocked-return binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
+          + `status 'blocked' immediately after return, but found '${parentNode.status}'.`,
+        );
+      }
+      if (parentNode.blockerKind !== "external-dependency") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_blocker_mismatch",
+          `Blocked-return binding '${bindingId}' requires parent blockerKind 'external-dependency' `
+          + `immediately after return, but found '${parentNode.blockerKind ?? "none"}'.`,
+        );
+      }
+      break;
+    case "revision-requested":
+      if (parentNode.status !== "blocked") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_status_mismatch",
+          `Revision-return binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
+          + `status 'blocked' immediately after return, but found '${parentNode.status}'.`,
+        );
+      }
+      if (parentNode.blockerKind !== "repository-work") {
+        throw new GoalFamilyRestoreError(
+          "goal_family_binding_parent_blocker_mismatch",
+          `Revision-return binding '${bindingId}' requires parent blockerKind 'repository-work' `
+          + `immediately after return, but found '${parentNode.blockerKind ?? "none"}'.`,
+        );
+      }
+      break;
+  }
+}
+
+/** Exported for tests that assert command-effect mapping. */
+export type { ChildReturnCommandParentEffect };
 
 /**
  * Find the latest wait-for-child event for a node attempt (current wait identity).
@@ -904,6 +1161,8 @@ const KNOWN_WORKFLOW_EVENT_TYPES = new Set<string>([
   "hypagraph.interaction.answered",
   "hypagraph.interaction.expired",
   "hypagraph.task.waiting-for-child",
+  "hypagraph.task.child-returned",
+  "hypagraph.task.child-return-failed",
   "hypagraph.fact.published",
   "hypagraph.route.selected",
   "hypagraph.verification.started",
@@ -1130,6 +1389,64 @@ function assertFamilyEventShape(event: unknown, index: number): void {
       throw new GoalFamilyRestoreError(
         "invalid_goal_family_event",
         `Family child-created event at index ${index} binding must include a non-empty childGoalId.`,
+      );
+    }
+    return;
+  }
+
+  if (event.type === "hypagraph.family.child-return-recorded") {
+    if (typeof event.data.bindingId !== "string" || !event.data.bindingId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty bindingId.`,
+      );
+    }
+    if (typeof event.data.childGoalId !== "string" || !event.data.childGoalId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty childGoalId.`,
+      );
+    }
+    if (typeof event.data.parentGoalId !== "string" || !event.data.parentGoalId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty parentGoalId.`,
+      );
+    }
+    if (typeof event.data.parentWorkflowId !== "string" || !event.data.parentWorkflowId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty parentWorkflowId.`,
+      );
+    }
+    if (typeof event.data.parentNodeId !== "string" || !event.data.parentNodeId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty parentNodeId.`,
+      );
+    }
+    if (typeof event.data.parentAttemptId !== "string" || !event.data.parentAttemptId.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a non-empty parentAttemptId.`,
+      );
+    }
+    if (typeof event.data.outcome !== "string" || !event.data.outcome.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include an outcome string.`,
+      );
+    }
+    if (typeof event.data.parentEffect !== "string" || !event.data.parentEffect.trim()) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a parentEffect string.`,
+      );
+    }
+    if (!isPlainObject(event.data.returnRecord)) {
+      throw new GoalFamilyRestoreError(
+        "invalid_goal_family_event",
+        `Family child-return-recorded event at index ${index} must include a returnRecord object.`,
       );
     }
     return;

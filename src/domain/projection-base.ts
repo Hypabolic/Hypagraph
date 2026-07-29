@@ -622,6 +622,58 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
         node.status = "waiting_for_child";
       }
       break;
+    case "hypagraph.task.child-returned":
+      // Leave waiting_for_child and resume the same open attempt for integration.
+      // Child completion does not mark the parent task succeeded.
+      if (node && event.attemptId && node.currentAttemptId === event.attemptId) {
+        if (Array.isArray(event.data.evidence)) {
+          const evidence = structuredClone(event.data.evidence as AttemptRuntime["evidence"]);
+          const attempt = node.attempts[event.attemptId];
+          if (attempt) attempt.evidence = evidence;
+          node.evidence = evidence;
+        }
+        node.status = "running";
+      }
+      break;
+    case "hypagraph.task.child-return-failed":
+      // Leave waiting_for_child and apply the declared parent failure effect.
+      if (node && event.attemptId && node.currentAttemptId === event.attemptId) {
+        const parentEffect = event.data.parentEffect;
+        const reason = typeof event.data.reason === "string" && event.data.reason.trim()
+          ? event.data.reason.trim()
+          : "The child goal did not complete successfully.";
+        if (parentEffect === "fail-parent-node") {
+          const attempt = node.attempts[event.attemptId];
+          if (attempt) {
+            attempt.status = "failed";
+            attempt.completedAt = event.timestamp;
+            attempt.failureReason = reason;
+          }
+          node.status = "failed";
+          delete node.currentAttemptId;
+        } else if (parentEffect === "block-parent-node" || parentEffect === "return-for-revision") {
+          node.status = "blocked";
+          node.blockedReason = reason;
+          node.blockerKind = parentEffect === "return-for-revision"
+            ? "repository-work"
+            : "external-dependency";
+          // Terminalise any open attempt, including starting and awaiting_evidence.
+          // Child wait preserves the attempt across those statuses.
+          const attempt = node.attempts[event.attemptId];
+          if (
+            attempt
+            && attempt.status !== "succeeded"
+            && attempt.status !== "failed"
+            && attempt.status !== "cancelled"
+          ) {
+            attempt.status = "cancelled";
+            attempt.completedAt = event.timestamp;
+            attempt.failureReason = reason;
+          }
+          delete node.currentAttemptId;
+        }
+      }
+      break;
     case "hypagraph.interaction.expired":
       if (node && attempt) {
         const onTimeout = event.data.onTimeout;

@@ -11,6 +11,7 @@ import type {
   EffectObservation,
   EventType,
   EvidenceReference,
+  GoalBlockerIdentity,
   HypagraphCommand,
   HypagraphDefinition,
   HypagraphState,
@@ -22,7 +23,7 @@ import type {
 import { HYPAGRAPH_EVENT_VERSION } from "./model.js";
 import type { FactInput } from "./model.js";
 import type { PublishedFact } from "./facts.js";
-import { validatePublishedFact } from "./facts.js";
+import { isFactValueOfType, validatePublishedFact } from "./facts.js";
 import { CONDITION_SEMANTICS_VERSION, evaluateCondition } from "./conditions.js";
 import { applyEvent, replayEvents } from "./projection.js";
 import { dependenciesAreSatisfied, dependenciesSelectSkip } from "./readiness.js";
@@ -1685,6 +1686,206 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           bindingId: command.bindingId,
         },
       });
+      break;
+    }
+    case "record-child-return": {
+      if ((definitionNode.kind ?? "task") !== "task") {
+        return reject(
+          "child_goal_parent_not_task",
+          `Node '${command.nodeId}' cannot record a child return. Only a task node can wait for a child goal.`,
+          "nodeId",
+        );
+      }
+      if (node.status !== "waiting_for_child") {
+        return reject(
+          "child_return_parent_not_waiting",
+          `Node '${command.nodeId}' is '${node.status}'. A child return requires waiting_for_child status.`,
+          "nodeId",
+        );
+      }
+      if (!node.currentAttemptId || node.currentAttemptId !== command.attemptId) {
+        return reject(
+          "stale_child_return",
+          "The child return does not match the current parent attempt.",
+          "attemptId",
+        );
+      }
+      if (typeof command.childGoalId !== "string" || !command.childGoalId.trim()) {
+        return reject("invalid_child_goal_id", "The child goal ID must be a non-empty string.", "childGoalId");
+      }
+      if (typeof command.bindingId !== "string" || !command.bindingId.trim()) {
+        return reject("invalid_child_binding_id", "The child binding ID must be a non-empty string.", "bindingId");
+      }
+      const allowedOutcomes = new Set(["completed", "failed", "cancelled", "budget_limited"]);
+      if (!allowedOutcomes.has(command.outcome)) {
+        return reject(
+          "invalid_child_return_outcome",
+          `Unsupported child return outcome '${String(command.outcome)}'.`,
+          "outcome",
+        );
+      }
+      const allowedEffects = new Set(["resume", "fail-parent-node", "block-parent-node", "return-for-revision"]);
+      if (!allowedEffects.has(command.parentEffect)) {
+        return reject(
+          "invalid_child_return_parent_effect",
+          `Unsupported child return parent effect '${String(command.parentEffect)}'.`,
+          "parentEffect",
+        );
+      }
+      if (command.outcome === "completed" && command.parentEffect !== "resume") {
+        return reject(
+          "invalid_child_return_parent_effect",
+          "A completed child return must use parent effect 'resume'.",
+          "parentEffect",
+        );
+      }
+      if (command.outcome !== "completed" && command.parentEffect === "resume") {
+        return reject(
+          "invalid_child_return_parent_effect",
+          "A non-completed child return cannot use parent effect 'resume'.",
+          "parentEffect",
+        );
+      }
+      if (command.parentEffect === "return-for-revision") {
+        const revision = state.goal?.automaticRevision;
+        if (!state.goal || !revision || revision.consumedAttempts >= revision.maximumAttempts) {
+          return reject(
+            "child_return_revision_exhausted",
+            "A child return cannot request revision when the parent goal automatic revision "
+            + "allowance is exhausted.",
+            "parentEffect",
+          );
+        }
+      }
+
+      const reason = command.reason?.trim()
+        || (command.outcome === "completed"
+          ? "The child goal returned successfully."
+          : command.outcome === "budget_limited"
+            ? "The child goal stopped because its budget was exhausted."
+            : command.outcome === "cancelled"
+              ? "The child goal was cancelled."
+              : "The child goal failed.");
+
+      if (command.outcome === "completed") {
+        const facts = command.facts ?? [];
+        if (new Set(facts.map((fact) => fact.name)).size !== facts.length) {
+          return reject(
+            "duplicate_child_return_fact",
+            "A child return must not publish the same fact more than once.",
+            "facts",
+          );
+        }
+        for (const input of facts) {
+          if (typeof input.name !== "string" || !input.name.trim()) {
+            return reject("invalid_child_return_facts", "Each returned fact requires a non-empty name.", "facts");
+          }
+          if (!isFactValueOfType(input.type, input.value)) {
+            return reject(
+              "fact_value_invalid",
+              `Fact '${input.name}' has an invalid value for type '${input.type}'.`,
+              `facts.${input.name}`,
+            );
+          }
+        }
+        const attempt = node.attempts[command.attemptId]!;
+        for (const input of facts) {
+          const fact: PublishedFact = {
+            name: input.name,
+            type: input.type,
+            value: structuredClone(input.value),
+            producerNodeId: command.nodeId,
+            attemptId: command.attemptId,
+            revision: state.revision,
+            evidence: structuredClone(input.evidence ?? []),
+            ...(attempt.loopId === undefined ? {} : { loopId: attempt.loopId }),
+            ...(attempt.iteration === undefined ? {} : { iteration: attempt.iteration }),
+          };
+          next = append(next, events, command, {
+            type: "hypagraph.fact.published",
+            nodeId: command.nodeId,
+            attemptId: command.attemptId,
+            data: { fact: structuredClone(fact) },
+          });
+        }
+        next = append(next, events, command, {
+          type: "hypagraph.task.child-returned",
+          nodeId: command.nodeId,
+          attemptId: command.attemptId,
+          data: {
+            childGoalId: command.childGoalId,
+            bindingId: command.bindingId,
+            outcome: command.outcome,
+            parentEffect: command.parentEffect,
+            reason,
+            ...(command.evidence ? { evidence: structuredClone(command.evidence) } : {}),
+          },
+        });
+      } else {
+        next = append(next, events, command, {
+          type: "hypagraph.task.child-return-failed",
+          nodeId: command.nodeId,
+          attemptId: command.attemptId,
+          data: {
+            childGoalId: command.childGoalId,
+            bindingId: command.bindingId,
+            outcome: command.outcome,
+            parentEffect: command.parentEffect,
+            reason,
+            ...(command.evidence ? { evidence: structuredClone(command.evidence) } : {}),
+          },
+        });
+        if (command.parentEffect === "return-for-revision" && next.goal && next.goal.status === "active") {
+          const goalId = next.goal.goalId;
+          const revisionAllowance = next.goal.automaticRevision;
+          if (revisionAllowance.consumedAttempts < revisionAllowance.maximumAttempts) {
+            // Capture selection identity after the parent node effect and before revision events.
+            const selectedRevision = next.revision;
+            const selectedSequence = next.sequence;
+            const selectedSnapshotHash = next.snapshotHash;
+            const ordinal = next.goal.continuationOrdinal + 1;
+            const blocker: GoalBlockerIdentity = {
+              kind: "blocked-node",
+              id: command.nodeId,
+              reason,
+              sourceRevision: selectedRevision,
+              sourceSequence: selectedSequence,
+              sourceSnapshotHash: selectedSnapshotHash,
+            };
+            next = append(next, events, command, {
+              type: "hypagraph.goal.blocked",
+              data: { goalId, reason },
+            });
+            next = append(next, events, command, {
+              type: "hypagraph.goal.revision-requested",
+              data: {
+                goalId,
+                operationId: command.commandId,
+                blocker: structuredClone(blocker),
+                sourceRevision: blocker.sourceRevision,
+                sourceSequence: blocker.sourceSequence,
+                sourceSnapshotHash: blocker.sourceSnapshotHash,
+                sessionGeneration: 0,
+                branchGeneration: 0,
+              },
+            });
+            next = append(next, events, command, {
+              type: "hypagraph.goal.continuation-requested",
+              data: {
+                goalId,
+                operationId: command.commandId,
+                ordinal,
+                action: { kind: "request-revision", blocker: structuredClone(blocker) },
+                selectedRevision,
+                selectedSequence,
+                selectedSnapshotHash,
+                sessionGeneration: 0,
+                branchGeneration: 0,
+              },
+            });
+          }
+        }
+      }
       break;
     }
     case "cancel-attempt": {

@@ -2,6 +2,10 @@ import {
   createBoundedChildGoal,
   type CreateBoundedChildGoalInput,
 } from "../domain/child-goal-creation.js";
+import {
+  returnChildGoal,
+  type ReturnChildGoalInput,
+} from "../domain/child-goal-return.js";
 import type {
   Diagnostic,
   HypagraphDefinition,
@@ -12,6 +16,7 @@ import {
   HYPAGRAPH_FAMILY_RECORD_TYPE,
   assertPersistedGoalFamilyShape,
   commitBoundedChildGoalToPersistedFamily,
+  commitChildReturnToPersistedFamily,
   defaultOneMemberFamilyId,
   migrateRootWorkflowToOneMemberFamily,
   restorePersistedGoalFamily,
@@ -231,6 +236,91 @@ export function createBoundedChildGoalInFamily(
     const code = error && typeof error === "object" && "code" in error
       ? String((error as { code: unknown }).code)
       : "goal_family_child_commit_failed";
+    return {
+      ok: false,
+      diagnostics: [{ code, message }],
+    };
+  }
+}
+
+/**
+ * Input for product-path child return against a persisted family.
+ * Pure identities and timestamps are caller-supplied.
+ */
+export type ReturnChildGoalInFamilyInput = Omit<
+  ReturnChildGoalInput,
+  "family" | "parentState"
+> & {
+  family: PersistedGoalFamily;
+  parentGoalId: string;
+};
+
+export type ReturnChildGoalInFamilyResult =
+  | { ok: true; family: PersistedGoalFamily }
+  | { ok: false; diagnostics: Diagnostic[] };
+
+/**
+ * Record a child terminal return on a persisted family record.
+ *
+ * Loads the parent workflow from the family record, runs returnChildGoal,
+ * and commits family plus parent workflow streams through commitChildReturnToPersistedFamily.
+ * The input family record is not mutated.
+ *
+ * Pi tool surface wiring waits for a later M7 slice. Controllers and tests use this API.
+ */
+export function returnChildGoalInFamily(
+  input: ReturnChildGoalInFamilyInput,
+): ReturnChildGoalInFamilyResult {
+  const parentMember = input.family.familySnapshot.members[input.parentGoalId];
+  if (!parentMember) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_parent_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' does not contain parent goal `
+          + `'${input.parentGoalId}'.`,
+        location: "parentGoalId",
+      }],
+    };
+  }
+
+  const parentWorkflow = input.family.workflows[parentMember.workflowId];
+  if (!parentWorkflow) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_member_workflow_missing",
+        message: `Goal family '${input.family.familySnapshot.familyId}' parent '${input.parentGoalId}' `
+          + `references missing workflow '${parentMember.workflowId}'.`,
+        location: "parentGoalId",
+      }],
+    };
+  }
+
+  const returned = returnChildGoal({
+    family: input.family.familySnapshot,
+    parentState: parentWorkflow.snapshot,
+    bindingId: input.bindingId,
+    at: input.at,
+    outcome: input.outcome,
+    ...(input.facts !== undefined ? { facts: input.facts } : {}),
+    ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+    ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
+    ...(input.causationId !== undefined ? { causationId: input.causationId } : {}),
+    ...(input.familyEventId !== undefined ? { familyEventId: input.familyEventId } : {}),
+    ...(input.parentCommandId !== undefined ? { parentCommandId: input.parentCommandId } : {}),
+  });
+  if (!returned.ok) return { ok: false, diagnostics: returned.diagnostics };
+
+  try {
+    const committed = commitChildReturnToPersistedFamily(input.family, returned);
+    return { ok: true, family: committed };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "goal_family_child_return_commit_failed";
     return {
       ok: false,
       diagnostics: [{ code, message }],

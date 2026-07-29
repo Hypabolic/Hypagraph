@@ -1,10 +1,14 @@
 import {
+  isKnownFactType,
   validateChildBindingFacts,
   validateChildBudgetAgainstFamilyLimits,
+  validateChildReturnFacts,
+  validateEvidenceReferences,
 } from "./child-goal-binding.js";
-import type { FactContract } from "./facts.js";
+import { isFactValueOfType, type FactContract, type FactType, type FactValue } from "./facts.js";
 import type {
   Diagnostic,
+  EvidenceReference,
   GoalBlockerIdentity,
   GoalBlockerKind,
   GoalBudgetDefinition,
@@ -15,7 +19,8 @@ import type {
 /**
  * Schema version for goal-family runtime and persisted family records.
  * This version is independent of HYPAGRAPH_SCHEMA_VERSION on workflow aggregates.
- * Version 2 adds family bounds, child bindings, and family budget reservation.
+ * Version 2 adds family bounds, child bindings, family budget reservation,
+ * and terminal child-return fields on bindings.
  * Before the first external family adoption, unsupported versions are rejected.
  */
 export const GOAL_FAMILY_SCHEMA_VERSION = 2 as const;
@@ -102,9 +107,49 @@ export type ChildGoalFailurePolicy =
 
 /**
  * Binding status for a child goal.
- * Terminal return handling is out of scope for the creation slice.
+ * Terminal statuses are set only by a recorded child return.
  */
-export type ChildGoalBindingStatus = "active";
+export type ChildGoalBindingStatus =
+  | "active"
+  | "returned"
+  | "failed"
+  | "cancelled"
+  | "budget_limited";
+
+/** Child terminal outcome recorded against a parent binding. */
+export type ChildReturnOutcomeKind =
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "budget_limited";
+
+/** Deterministic parent effect applied for a child return. */
+export type ChildReturnParentEffect =
+  | "resumed"
+  | "failed"
+  | "blocked"
+  | "revision-requested";
+
+/** One validated fact published onto the parent runtime on successful child return. */
+export interface ChildReturnPublishedFact {
+  name: string;
+  type: FactType;
+  value: FactValue;
+  evidence: EvidenceReference[];
+}
+
+/**
+ * Terminal return record stored on a child-goal binding.
+ * Present only when the binding status is terminal.
+ */
+export interface ChildReturnRecord {
+  outcome: ChildReturnOutcomeKind;
+  parentEffect: ChildReturnParentEffect;
+  returnedAt: string;
+  stopReason?: string;
+  publishedFacts?: ChildReturnPublishedFact[];
+  evidence?: EvidenceReference[];
+}
 
 /**
  * Parent-to-child binding recorded on the family aggregate.
@@ -123,6 +168,8 @@ export interface ChildGoalBinding {
   scopePaths: string[];
   status: ChildGoalBindingStatus;
   createdAt: string;
+  /** Present when the binding is terminal after a recorded child return. */
+  returnRecord?: ChildReturnRecord;
 }
 
 /**
@@ -219,6 +266,7 @@ export type GoalFamilyEventType =
   | "hypagraph.family.created"
   | "hypagraph.family.member-added"
   | "hypagraph.family.child-created"
+  | "hypagraph.family.child-return-recorded"
   | "hypagraph.family.action-selected"
   | "hypagraph.family.action-dispatched"
   | "hypagraph.family.action-completed"
@@ -262,6 +310,20 @@ export type GoalFamilyEvent =
       parent: GoalParentBinding;
       depth: number;
       binding: ChildGoalBinding;
+    };
+  })
+  | (GoalFamilyEventBase & {
+    type: "hypagraph.family.child-return-recorded";
+    data: {
+      bindingId: string;
+      childGoalId: string;
+      parentGoalId: string;
+      parentWorkflowId: string;
+      parentNodeId: string;
+      parentAttemptId: string;
+      outcome: ChildReturnOutcomeKind;
+      parentEffect: ChildReturnParentEffect;
+      returnRecord: ChildReturnRecord;
     };
   })
   | (GoalFamilyEventBase & {
@@ -803,6 +865,10 @@ export function applyFamilyEvent(
     return applyChildCreatedEvent(current, event);
   }
 
+  if (event.type === "hypagraph.family.child-return-recorded") {
+    return applyChildReturnRecordedEvent(current, event);
+  }
+
   if (event.type === "hypagraph.family.action-selected") {
     return applyActionSelectedEvent(current, event);
   }
@@ -884,6 +950,233 @@ const CHILD_FAILURE_POLICIES = new Set<ChildGoalFailurePolicy>([
   "return-for-revision",
 ]);
 
+const CHILD_BINDING_STATUSES = new Set<ChildGoalBindingStatus>([
+  "active",
+  "returned",
+  "failed",
+  "cancelled",
+  "budget_limited",
+]);
+
+const CHILD_RETURN_OUTCOMES = new Set<ChildReturnOutcomeKind>([
+  "completed",
+  "failed",
+  "cancelled",
+  "budget_limited",
+]);
+
+const CHILD_RETURN_PARENT_EFFECTS = new Set<ChildReturnParentEffect>([
+  "resumed",
+  "failed",
+  "blocked",
+  "revision-requested",
+]);
+
+/**
+ * Map a terminal child outcome to the corresponding binding status.
+ */
+export function childBindingStatusForOutcome(outcome: ChildReturnOutcomeKind): ChildGoalBindingStatus {
+  switch (outcome) {
+    case "completed": return "returned";
+    case "failed": return "failed";
+    case "cancelled": return "cancelled";
+    case "budget_limited": return "budget_limited";
+  }
+}
+
+/**
+ * Parent command effect applied by the parent workflow reducer for a child return.
+ * The family binding stores the durable form via durableParentEffect.
+ */
+export type ChildReturnCommandParentEffect =
+  | "resume"
+  | "fail-parent-node"
+  | "block-parent-node"
+  | "return-for-revision";
+
+/**
+ * Map a failure policy to the parent command effect for a non-success child return.
+ */
+export function parentEffectForFailurePolicy(
+  policy: ChildGoalFailurePolicy,
+): Exclude<ChildReturnCommandParentEffect, "resume"> {
+  return policy;
+}
+
+/**
+ * Map a parent command effect to the durable parent effect stored on the family binding.
+ */
+export function durableParentEffect(
+  effect: ChildReturnCommandParentEffect,
+): ChildReturnParentEffect {
+  switch (effect) {
+    case "resume": return "resumed";
+    case "fail-parent-node": return "failed";
+    case "block-parent-node": return "blocked";
+    case "return-for-revision": return "revision-requested";
+  }
+}
+
+/**
+ * Map a durable parent effect back to the parent workflow command effect.
+ */
+export function commandParentEffectFromDurable(
+  effect: ChildReturnParentEffect,
+): ChildReturnCommandParentEffect {
+  switch (effect) {
+    case "resumed": return "resume";
+    case "failed": return "fail-parent-node";
+    case "blocked": return "block-parent-node";
+    case "revision-requested": return "return-for-revision";
+  }
+}
+
+/**
+ * Deterministic durable parent effect for a non-success outcome under a failure policy.
+ */
+export function durableParentEffectForFailurePolicy(
+  policy: ChildGoalFailurePolicy,
+): ChildReturnParentEffect {
+  return durableParentEffect(parentEffectForFailurePolicy(policy));
+}
+
+/**
+ * Parse and validate a child return record payload.
+ * Shared by event application and snapshot validation.
+ */
+export function requireChildReturnRecord(value: unknown, location: string): ChildReturnRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    restoreFail("invalid_child_return_record", `${location} must include a return record object.`);
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.outcome !== "string" || !CHILD_RETURN_OUTCOMES.has(raw.outcome as ChildReturnOutcomeKind)) {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} requires a known child return outcome.`,
+    );
+  }
+  if (
+    typeof raw.parentEffect !== "string"
+    || !CHILD_RETURN_PARENT_EFFECTS.has(raw.parentEffect as ChildReturnParentEffect)
+  ) {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} requires a known parent effect.`,
+    );
+  }
+  const returnedAt = requireIdentity(raw.returnedAt, "return returnedAt");
+  if (!Number.isFinite(Date.parse(returnedAt))) {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} returnedAt must be a valid date-time string.`,
+    );
+  }
+  if (raw.stopReason !== undefined && (typeof raw.stopReason !== "string" || !raw.stopReason.trim())) {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} stopReason must be a non-empty string when present.`,
+    );
+  }
+
+  const outcome = raw.outcome as ChildReturnOutcomeKind;
+  const parentEffect = raw.parentEffect as ChildReturnParentEffect;
+  if (outcome === "completed" && parentEffect !== "resumed") {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} completed outcome requires parent effect 'resumed'.`,
+    );
+  }
+  if (outcome !== "completed" && parentEffect === "resumed") {
+    restoreFail(
+      "invalid_child_return_record",
+      `${location} non-completed outcome cannot use parent effect 'resumed'.`,
+    );
+  }
+
+  const evidence = raw.evidence === undefined
+    ? undefined
+    : requireEvidenceReferenceList(raw.evidence, `${location} evidence`);
+  const publishedFacts = raw.publishedFacts === undefined
+    ? undefined
+    : requireChildReturnPublishedFacts(raw.publishedFacts, `${location} publishedFacts`);
+
+  if (outcome === "completed" && (publishedFacts === undefined || publishedFacts.length === 0) && evidence === undefined) {
+    // Completed return may publish zero optional facts when no required output contracts exist.
+  }
+
+  return {
+    outcome,
+    parentEffect,
+    returnedAt,
+    ...(raw.stopReason === undefined ? {} : { stopReason: raw.stopReason as string }),
+    ...(publishedFacts === undefined ? {} : { publishedFacts }),
+    ...(evidence === undefined ? {} : { evidence }),
+  };
+}
+
+function requireEvidenceReferenceList(value: unknown, location: string): EvidenceReference[] {
+  const validated = validateEvidenceReferences(value, location);
+  if (!validated.ok) {
+    const first = validated.diagnostics[0]!;
+    restoreFail(first.code, `${location}: ${first.message}`);
+  }
+  return validated.evidence;
+}
+
+function requireChildReturnPublishedFacts(value: unknown, location: string): ChildReturnPublishedFact[] {
+  if (!Array.isArray(value)) {
+    restoreFail("invalid_child_return_facts", `${location} must be an array.`);
+  }
+  const seen = new Set<string>();
+  const result: ChildReturnPublishedFact[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      restoreFail(
+        "invalid_child_return_facts",
+        `${location}[${index}] must be a plain object.`,
+      );
+    }
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.name !== "string" || !raw.name.trim()) {
+      restoreFail(
+        "invalid_child_return_facts",
+        `${location}[${index}] requires a non-empty name.`,
+      );
+    }
+    if (seen.has(raw.name)) {
+      restoreFail(
+        "duplicate_child_return_fact",
+        `${location} declares fact '${raw.name}' more than once.`,
+      );
+    }
+    seen.add(raw.name);
+    if (!isKnownFactType(raw.type)) {
+      restoreFail(
+        "invalid_child_return_facts",
+        `${location}[${index}] requires a known fact type.`,
+      );
+    }
+    const factType = raw.type;
+    if (!isFactValueOfType(factType, raw.value as FactValue)) {
+      restoreFail(
+        "fact_value_invalid",
+        `${location}[${index}]: Child return fact '${raw.name}' has an invalid value for type '${factType}'.`,
+      );
+    }
+    const evidence = raw.evidence === undefined
+      ? []
+      : requireEvidenceReferenceList(raw.evidence, `${location}[${index}].evidence`);
+    result.push({
+      name: raw.name,
+      type: factType,
+      value: structuredClone(raw.value) as FactValue,
+      evidence,
+    });
+  }
+  return result;
+}
+
 function requireChildGoalBinding(value: unknown, location: string): ChildGoalBinding {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     restoreFail("invalid_goal_family_binding", `${location} must include a binding object.`);
@@ -895,12 +1188,13 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
   const parentWorkflowId = requireIdentity(raw.parentWorkflowId, "parent workflow ID");
   const parentNodeId = requireIdentity(raw.parentNodeId, "parent node ID");
   const parentAttemptId = requireIdentity(raw.parentAttemptId, "parent attempt ID");
-  if (raw.status !== "active") {
+  if (typeof raw.status !== "string" || !CHILD_BINDING_STATUSES.has(raw.status as ChildGoalBindingStatus)) {
     restoreFail(
       "invalid_goal_family_binding",
-      `${location} binding status must be 'active' for the creation slice.`,
+      `${location} binding status must be a known child-goal binding status.`,
     );
   }
+  const status = raw.status as ChildGoalBindingStatus;
   if (typeof raw.failurePolicy !== "string" || !CHILD_FAILURE_POLICIES.has(raw.failurePolicy as ChildGoalFailurePolicy)) {
     restoreFail(
       "invalid_goal_family_binding",
@@ -933,6 +1227,51 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
     );
   }
 
+  let returnRecord: ChildReturnRecord | undefined;
+  if (status === "active") {
+    if (raw.returnRecord !== undefined) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location} active binding must not include a return record.`,
+      );
+    }
+  } else {
+    if (raw.returnRecord === undefined) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location} terminal binding requires a return record.`,
+      );
+    }
+    returnRecord = requireChildReturnRecord(raw.returnRecord, `${location} returnRecord`);
+    if (childBindingStatusForOutcome(returnRecord.outcome) !== status) {
+      restoreFail(
+        "invalid_goal_family_binding",
+        `${location} binding status '${status}' does not match return outcome `
+        + `'${returnRecord.outcome}'.`,
+      );
+    }
+    const failurePolicy = raw.failurePolicy as ChildGoalFailurePolicy;
+    if (returnRecord.outcome !== "completed") {
+      const expectedEffect = durableParentEffectForFailurePolicy(failurePolicy);
+      if (returnRecord.parentEffect !== expectedEffect) {
+        restoreFail(
+          "child_return_parent_effect_policy_mismatch",
+          `${location}: return parent effect '${returnRecord.parentEffect}' does not match `
+          + `failure policy '${failurePolicy}' (expected '${expectedEffect}').`,
+        );
+      }
+    }
+    const contractCheck = validateChildReturnFacts(
+      factsValidated.outputFacts,
+      returnRecord.publishedFacts,
+      { requireRequired: returnRecord.outcome === "completed" },
+    );
+    if (!contractCheck.ok) {
+      const first = contractCheck.diagnostics[0]!;
+      restoreFail(first.code, `${location}: ${first.message}`);
+    }
+  }
+
   return {
     bindingId,
     childGoalId,
@@ -945,8 +1284,9 @@ function requireChildGoalBinding(value: unknown, location: string): ChildGoalBin
     budget,
     failurePolicy: raw.failurePolicy as ChildGoalFailurePolicy,
     scopePaths: structuredClone(raw.scopePaths as string[]),
-    status: "active",
+    status,
     createdAt,
+    ...(returnRecord === undefined ? {} : { returnRecord: structuredClone(returnRecord) }),
   };
 }
 
@@ -1175,9 +1515,120 @@ function applyChildCreatedEvent(
   }
 
   const next: GoalFamilyRuntime = structuredClone(withMember);
+  // Child-created events store the creation-time binding. Status must be active.
+  if (binding.status !== "active" || binding.returnRecord !== undefined) {
+    restoreFail(
+      "invalid_goal_family_binding",
+      `Child-created event binding '${binding.bindingId}' must be active without a return record.`,
+    );
+  }
   next.bindings[binding.bindingId] = structuredClone(binding);
   next.familyBudget.reservedTurns = nextReservedTurns;
   next.familyBudget.reservedTokens = nextReservedTokens;
+  return next;
+}
+
+/**
+ * Apply a family child-return-recorded event.
+ * Marks the binding terminal and stores the validated return record.
+ * Rejects a return against a missing, terminal, or identity-mismatched binding.
+ */
+function applyChildReturnRecordedEvent(
+  current: GoalFamilyRuntime,
+  event: Extract<GoalFamilyEvent, { type: "hypagraph.family.child-return-recorded" }>,
+): GoalFamilyRuntime {
+  const bindingId = requireIdentity(event.data.bindingId, "binding ID");
+  const childGoalId = requireIdentity(event.data.childGoalId, "child goal ID");
+  const parentGoalId = requireIdentity(event.data.parentGoalId, "parent goal ID");
+  const parentWorkflowId = requireIdentity(event.data.parentWorkflowId, "parent workflow ID");
+  const parentNodeId = requireIdentity(event.data.parentNodeId, "parent node ID");
+  const parentAttemptId = requireIdentity(event.data.parentAttemptId, "parent attempt ID");
+
+  const existing = current.bindings[bindingId];
+  if (!existing) {
+    restoreFail(
+      "goal_family_binding_missing",
+      `Goal family '${current.familyId}' has no binding '${bindingId}' for child return.`,
+    );
+  }
+  if (existing.status !== "active") {
+    restoreFail(
+      "stale_child_return",
+      `Binding '${bindingId}' is already '${existing.status}'. A terminal binding cannot accept another return.`,
+    );
+  }
+  if (
+    existing.childGoalId !== childGoalId
+    || existing.parentGoalId !== parentGoalId
+    || existing.parentWorkflowId !== parentWorkflowId
+    || existing.parentNodeId !== parentNodeId
+    || existing.parentAttemptId !== parentAttemptId
+  ) {
+    restoreFail(
+      "stale_child_return",
+      `Child return identity does not match active binding '${bindingId}'.`,
+    );
+  }
+
+  const returnRecord = requireChildReturnRecord(event.data.returnRecord, "Family child-return-recorded event");
+  if (event.data.outcome !== returnRecord.outcome) {
+    restoreFail(
+      "invalid_child_return_record",
+      `Child return event outcome '${event.data.outcome}' does not match return record outcome `
+      + `'${returnRecord.outcome}'.`,
+    );
+  }
+  if (event.data.parentEffect !== returnRecord.parentEffect) {
+    restoreFail(
+      "invalid_child_return_record",
+      `Child return event parent effect '${event.data.parentEffect}' does not match return record `
+      + `parent effect '${returnRecord.parentEffect}'.`,
+    );
+  }
+  if (returnRecord.returnedAt !== event.timestamp) {
+    restoreFail(
+      "invalid_child_return_record",
+      `Child return record returnedAt must equal the family event timestamp.`,
+    );
+  }
+
+  // Non-success parent effects must match the binding failure policy.
+  if (returnRecord.outcome !== "completed") {
+    const expectedEffect = durableParentEffectForFailurePolicy(existing.failurePolicy);
+    if (returnRecord.parentEffect !== expectedEffect) {
+      restoreFail(
+        "child_return_parent_effect_policy_mismatch",
+        `Child return parent effect '${returnRecord.parentEffect}' does not match failure policy `
+        + `'${existing.failurePolicy}' (expected '${expectedEffect}').`,
+      );
+    }
+  } else if (returnRecord.parentEffect !== "resumed") {
+    restoreFail(
+      "invalid_child_return_record",
+      `Completed child return requires parent effect 'resumed'.`,
+    );
+  }
+
+  // Output contracts must hold on apply/restore, not only on the command path.
+  const contractCheck = validateChildReturnFacts(
+    existing.outputFacts,
+    returnRecord.publishedFacts,
+    { requireRequired: returnRecord.outcome === "completed" },
+  );
+  if (!contractCheck.ok) {
+    const first = contractCheck.diagnostics[0]!;
+    restoreFail(first.code, first.message);
+  }
+
+  const nextStatus = childBindingStatusForOutcome(returnRecord.outcome);
+  const next: GoalFamilyRuntime = structuredClone(current);
+  next.schedulerOrdinal = event.sequence;
+  next.updatedAt = event.timestamp;
+  next.bindings[bindingId] = {
+    ...structuredClone(existing),
+    status: nextStatus,
+    returnRecord: structuredClone(returnRecord),
+  };
   return next;
 }
 
