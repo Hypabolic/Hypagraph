@@ -70,8 +70,18 @@ import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import {
+  createCurrentSessionExecutor,
   routeLiveTaskCompletion,
 } from "./pi/current-session-executor.js";
+import {
+  bindActiveIsolatedPiHost,
+  createChildProcessIsolatedPiTransport,
+  createIsolatedPiHost,
+  dispatchIsolatedPiAttempt,
+  ISOLATED_PI_PROFILE,
+  materializeIsolatedPiContext,
+  type IsolatedPiHost,
+} from "./pi/isolated-pi-executor.js";
 import { normalizePiGoalUsage, PI_ASSISTANT_USAGE_SOURCE } from "./pi/hypagoal-budget.js";
 import { CodeDefinitionError, definitionSchema, evidenceSchema, factInputSchema, normalizeDefinition } from "./pi/definition.js";
 import { GraphPaneController } from "./pi/graph-pane.js";
@@ -191,7 +201,7 @@ const presentInteractionSelect = async (
 
 /** The `/hypagraph` usage text. Help and the unknown-subcommand error share it. */
 const hypagraphUsage = (): string => [
-  "Usage: /hypagraph [help | ask | history | explain | loop | check | graph]",
+  "Usage: /hypagraph [help | ask | history | explain | loop | check | graph | executor]",
   "  ask [<nodeId>]                             Present an open question again.",
   `  history [<sequence> | revisions | <lane>]  Read the event timeline.`,
   `                                             A lane is ${TIMELINE_LANES.join(", ")}.`,
@@ -199,6 +209,7 @@ const hypagraphUsage = (): string => [
   "  loop                                       Show bounded iteration regions.",
   "  check active | check cancel [<nodeId>]     Inspect or stop a running check.",
   "  graph [open | close | toggle | focus]      Control the graph pane.",
+  "  executor [status | probe | cancel]         Isolated Pi host status, probe, or cancel.",
   "  (no argument)                              Show the workflow.",
 ].join("\n");
 
@@ -315,6 +326,42 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   /** In-flight presentation effects keyed by workflow, node, and attempt. */
   const activePresentations = new Map<string, Promise<"ready" | "failed" | "unavailable">>();
 
+  /**
+   * Isolated Pi host controller (m7-s8).
+   * Owns the process registry, default executor, dispatch seam, and restore teardown.
+   * Until M8 worktrees, checkout key and cwd both use process.cwd() so concurrent
+   * same-checkout mutation is blocked.
+   * Nested graph UI for profile selection is m7-s9.
+   */
+  const isolatedPiCheckoutCwd = (): string => process.cwd();
+  const isolatedPiHost: IsolatedPiHost = createIsolatedPiHost({
+    transport: createChildProcessIsolatedPiTransport(),
+    resolveCwd: () => isolatedPiCheckoutCwd(),
+    resolveCheckoutKey: () => isolatedPiCheckoutCwd(),
+    startedAt: () => new Date().toISOString(),
+    createCurrentSession: () => createCurrentSessionExecutor(async () => {
+      throw new Error(
+        "Current-session NodeExecutor requires a result source. "
+        + "Use routeLiveTaskCompletion for live session completion.",
+      );
+    }),
+  });
+  // Bind the product session host so dispatchIsolatedPiAttempt reaches this instance.
+  bindActiveIsolatedPiHost(isolatedPiHost);
+
+  /**
+   * Product controller surface for isolated Pi (same host restore uses).
+   * Controllers call dispatch when profile.kind is isolated-pi.
+   */
+  const isolatedPiController = {
+    host: isolatedPiHost,
+    dispatchAttempt: dispatchIsolatedPiAttempt,
+    hasActiveProcesses: () => isolatedPiHost.hasActiveProcesses(),
+    activeProcessCount: () => isolatedPiHost.activeProcessCount(),
+    teardownOnRestore: (input: { reason: string; kind: "restore" | "branch" | "user" | "other" }) =>
+      isolatedPiHost.teardownOnRestore(input),
+  };
+
   const presentationExecutionKey = (workflowId: string, nodeId: string, attemptId: string): string =>
     `${workflowId}\u0000${nodeId}\u0000${attemptId}`;
 
@@ -327,6 +374,12 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (activeEffectExecutions.hasActive()) throw new Error("An effect node is active. Cancel it or let it finish before another workflow change.");
     if (activePresentations.size > 0) {
       throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
+    }
+    if (isolatedPiController.hasActiveProcesses()) {
+      throw new Error(
+        `An isolated Pi attempt is active (${isolatedPiController.host.executor.id}). `
+        + "Use /hypagraph executor cancel to stop it, or let it finish before another workflow change.",
+      );
     }
   };
 
@@ -349,6 +402,29 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     activeExecutions.cancelAll("The Pi session branch changed.");
     activeCodeExecutions.cancelAll("The Pi session branch changed.");
     activeEffectExecutions.cancelAll("The Pi session branch changed.");
+    // Reclaim owned isolated Pi processes after host restart or branch change.
+    // Child session files are optional continuity only. Canonical context remains
+    // on the domain side. The product dispatch seam (dispatchIsolatedPiAttempt)
+    // uses this same host registry and controller.
+    bindActiveIsolatedPiHost(isolatedPiHost);
+    const isolatedTeardown = await isolatedPiController.teardownOnRestore(
+      branchChanged
+        ? {
+          kind: "branch",
+          reason: "The Pi session branch changed before the isolated Pi attempt completed.",
+        }
+        : {
+          kind: "restore",
+          reason: "The Pi session reloaded before the isolated Pi attempt completed.",
+        },
+    );
+    if (isolatedTeardown.terminatedCount > 0) {
+      ctx.ui.notify(
+        `Hypagraph terminated ${isolatedTeardown.terminatedCount} isolated Pi process(es) `
+        + `via ${isolatedPiController.host.executor.id} (${ISOLATED_PI_PROFILE.kind}) on session restore.`,
+        "warning",
+      );
+    }
     const branch = ctx.sessionManager.getBranch();
     const session = restoreLatestSession(branch);
     eventStore.synchronize(session);
@@ -1276,6 +1352,12 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     activeExecutions.cancelAll();
     activeCodeExecutions.cancelAll("session_shutdown");
     activeEffectExecutions.cancelAll("session_shutdown");
+    // Reclaim owned isolated Pi children so they do not orphan after session end.
+    await isolatedPiController.teardownOnRestore({
+      kind: "other",
+      reason: "The Pi session shut down before the isolated Pi attempt completed.",
+    });
+    bindActiveIsolatedPiHost(undefined);
     graphPane.dispose();
   });
 
@@ -2241,6 +2323,105 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       } else if (words[0]?.toLowerCase() === "check" && words[1]?.toLowerCase() === "active") {
         const active = state ? activeExecutions.list(state.workflowId) : [];
         ctx.ui.notify(active.length > 0 ? active.map((entry) => `${entry.nodeId} (${entry.attemptId})`).join("\n") : "There is no active check.", "info");
+      } else if (words[0]?.toLowerCase() === "executor") {
+        // Product surface for the isolated Pi host (m7-s8).
+        // status: report active process count and executor identity.
+        // probe: call dispatchIsolatedPiAttempt with an aborted signal so no
+        // child is spawned; proves the product dispatch seam is live.
+        // cancel: user-initiated host teardown of in-flight isolated processes.
+        const sub = (words[1] ?? "status").toLowerCase();
+        if (sub === "status") {
+          ctx.ui.notify(
+            [
+              `Isolated Pi host: ${isolatedPiController.host.executor.id}`,
+              `Profile kind: ${ISOLATED_PI_PROFILE.kind}`,
+              `Active processes: ${isolatedPiController.activeProcessCount()}`,
+              "Dispatch seam: dispatchIsolatedPiAttempt (profile kind isolated-pi)",
+              "Cancel: /hypagraph executor cancel",
+            ].join("\n"),
+            "info",
+          );
+        } else if (sub === "cancel") {
+          const before = isolatedPiController.activeProcessCount();
+          const teardown = await isolatedPiController.teardownOnRestore({
+            kind: "user",
+            reason: "The user cancelled isolated Pi attempts from /hypagraph executor cancel.",
+          });
+          ctx.ui.notify(
+            before === 0
+              ? "There is no active isolated Pi attempt."
+              : `Cancelled ${teardown.terminatedCount} isolated Pi process(es).`,
+            before === 0 ? "info" : "warning",
+          );
+        } else if (sub === "probe") {
+          if (!state?.goal) {
+            ctx.ui.notify(
+              "Isolated Pi dispatch probe requires an active goal workflow.",
+              "info",
+            );
+          } else {
+            const familyProjection = restoreOrMigrateOneMemberFamilySession(
+              ctx.sessionManager.getBranch(),
+            );
+            const family = familyProjection?.family.familySnapshot;
+            if (!family) {
+              ctx.ui.notify(
+                "Isolated Pi dispatch probe requires a goal family projection.",
+                "info",
+              );
+            } else {
+              const nodeId = state.definition.nodes[0]?.id;
+              if (!nodeId) {
+                ctx.ui.notify("Isolated Pi dispatch probe requires a workflow node.", "info");
+              } else {
+                const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId
+                  ?? `probe-${nodeId}`;
+                const materialized = materializeIsolatedPiContext({
+                  family,
+                  state,
+                  nodeId,
+                  attemptId,
+                });
+                if (!materialized.ok) {
+                  ctx.ui.notify(
+                    `Isolated Pi dispatch probe could not materialize context.\n${formatDiagnostics(materialized.diagnostics)}`,
+                    "warning",
+                  );
+                } else {
+                  // Aborted signal: execute returns cancelled before process start.
+                  // Settlement commands are not applied; this only proves the product call site.
+                  const settlement = await isolatedPiController.dispatchAttempt(
+                    materialized.value,
+                    AbortSignal.abort(),
+                    {
+                      at: new Date().toISOString(),
+                      correlationId: `isolated-pi-probe:${randomUUID()}`,
+                      commandIdForStep: (stepIndex) => `isolated-pi-probe:${stepIndex}`,
+                    },
+                  );
+                  if (!settlement.ok) {
+                    ctx.ui.notify(
+                      `Isolated Pi dispatch probe rejected.\n${formatDiagnostics(settlement.diagnostics)}`,
+                      "warning",
+                    );
+                  } else {
+                    ctx.ui.notify(
+                      `Isolated Pi dispatch probe: outcome=${settlement.result.outcome} `
+                      + `(commands not applied; active=${isolatedPiController.activeProcessCount()}).`,
+                      "info",
+                    );
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          ctx.ui.notify(
+            `/hypagraph executor has no '${words.slice(1).join(" ")}' subcommand.\n`
+            + "Use: /hypagraph executor [status | probe | cancel]",
+            "warning",
+          );
+        }
       } else if (words[0]?.toLowerCase() === "ask") {
         if (!state) {
           ctx.ui.notify("There is no active Hypagraph.", "info");

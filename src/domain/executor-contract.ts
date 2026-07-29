@@ -291,6 +291,28 @@ export interface NodeExecutor {
   execute(context: ExecutorContextEnvelope, signal: AbortSignal): Promise<ExecutorResult>;
 }
 
+/**
+ * Shared inputs for building an untrusted ExecutorResult plain-object payload.
+ * Current-session and isolated-pi adapters use this helper so envelopes stay
+ * aligned by construction.
+ */
+export interface BuildExecutorResultPayloadInput {
+  identity: ExecutorAttemptIdentity;
+  outcome: ExecutorOutcome;
+  facts?: FactInput[];
+  evidence?: EvidenceReference[];
+  summary?: string;
+  diagnostics?: ExecutorDiagnostic[];
+  usage?: ExecutorUsage;
+  artifacts?: ArtifactReference[];
+  workspace?: ExecutorWorkspaceResult;
+  /**
+   * Default summary when summary is empty.
+   * Each adapter supplies its own wording.
+   */
+  defaultSummary?: (outcome: ExecutorOutcome) => string;
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -414,6 +436,41 @@ const isNonNegativeSafeInteger = (value: unknown): value is number =>
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
+
+/**
+ * Build a plain-object untrusted result payload from attempt identity and fields.
+ * The payload is not trusted until validateExecutorResult / settleExecutorResult.
+ * Current-session and isolated-pi adapters share this builder.
+ * Does not mutate inputs.
+ */
+export function buildExecutorResultPayload(
+  input: BuildExecutorResultPayloadInput,
+): Record<string, unknown> {
+  const identity = input.identity;
+  const summary = isNonEmptyString(input.summary)
+    ? input.summary
+    : (input.defaultSummary?.(input.outcome) ?? "The executor completed.");
+
+  const payload: Record<string, unknown> = {
+    familyId: identity.familyId,
+    goalId: identity.goalId,
+    workflowId: identity.workflowId,
+    revision: identity.revision,
+    nodeId: identity.nodeId,
+    attemptId: identity.attemptId,
+    outcome: input.outcome,
+    facts: structuredClone(input.facts ?? []),
+    evidence: structuredClone(input.evidence ?? []),
+    artifacts: structuredClone(input.artifacts ?? []),
+    summary,
+    diagnostics: structuredClone(input.diagnostics ?? []),
+    usage: structuredClone(input.usage ?? {}),
+  };
+  if (input.workspace !== undefined) {
+    payload.workspace = structuredClone(input.workspace);
+  }
+  return payload;
+}
 
 /**
  * Build goal ancestry breadcrumbs from the family root to the executing goal.

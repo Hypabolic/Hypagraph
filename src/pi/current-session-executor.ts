@@ -11,6 +11,7 @@
  */
 
 import {
+  buildExecutorResultPayload,
   materializeExecutorContext,
   validateExecutorResult,
   type ExecutorAttemptIdentity,
@@ -173,31 +174,23 @@ const isNonEmptyString = (value: unknown): value is string =>
  * Build a plain-object untrusted result payload for current-session completion.
  * The payload is not trusted until settleExecutorResult validates it.
  * Product tool handlers and NodeExecutor sources share this builder.
+ * Uses the shared buildExecutorResultPayload helper.
  * Does not mutate inputs.
  */
 export function buildCurrentSessionResultPayload(
   input: BuildCurrentSessionResultPayloadInput,
 ): Record<string, unknown> {
-  const identity = input.identity;
-  const summary = isNonEmptyString(input.summary)
-    ? input.summary
-    : defaultSummaryForOutcome(input.outcome);
-
-  return {
-    familyId: identity.familyId,
-    goalId: identity.goalId,
-    workflowId: identity.workflowId,
-    revision: identity.revision,
-    nodeId: identity.nodeId,
-    attemptId: identity.attemptId,
+  return buildExecutorResultPayload({
+    identity: input.identity,
     outcome: input.outcome,
-    facts: structuredClone(input.facts ?? []),
-    evidence: structuredClone(input.evidence ?? []),
-    artifacts: structuredClone(input.artifacts ?? []),
-    summary,
-    diagnostics: structuredClone(input.diagnostics ?? []),
-    usage: structuredClone(input.usage ?? {}),
-  };
+    ...(input.facts !== undefined ? { facts: input.facts } : {}),
+    ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+    ...(input.summary !== undefined ? { summary: input.summary } : {}),
+    ...(input.diagnostics !== undefined ? { diagnostics: input.diagnostics } : {}),
+    ...(input.usage !== undefined ? { usage: input.usage } : {}),
+    ...(input.artifacts !== undefined ? { artifacts: input.artifacts } : {}),
+    defaultSummary: defaultSummaryForOutcome,
+  });
 }
 
 /**
