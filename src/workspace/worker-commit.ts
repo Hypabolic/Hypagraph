@@ -90,6 +90,8 @@ export type GitRunResult =
     kind: GitRunFailureKind;
     message: string;
     aborted: boolean;
+    /** Process exit code when kind is "exit". Distinguishes exit 1 from exit 128. */
+    exitCode?: number;
   };
 
 export type GitFailureMode =
@@ -134,10 +136,12 @@ function isAbsentFsError(error: unknown): boolean {
 /**
  * Decode git path-bearing output as strict UTF-8.
  * Invalid sequences produce a diagnostic (no lossy replacement).
+ * Callers outside the commit module may pass a module-local diagnostic code.
  */
 export function decodeGitUtf8(
   raw: Buffer,
   location = "changedPaths",
+  code = "workspace_commit_invalid_utf8",
 ): { ok: true; text: string } | { ok: false; diagnostic: Diagnostic } {
   try {
     return { ok: true, text: UTF8_FATAL.decode(raw) };
@@ -145,7 +149,7 @@ export function decodeGitUtf8(
     return {
       ok: false,
       diagnostic: reject(
-        "workspace_commit_invalid_utf8",
+        code,
         "Git path output contains invalid UTF-8 bytes.",
         location,
       ),
@@ -155,14 +159,16 @@ export function decodeGitUtf8(
 
 /**
  * Decode a non-path git text result (rev-parse, flags). Trims newlines only.
+ * Optional code overrides the UTF-8 failure diagnostic for cross-module callers.
  */
-function decodeGitTextLine(
+export function decodeGitTextLine(
   raw: Buffer,
   location: string,
   emptyCode: string,
   emptyMessage: string,
+  utf8Code = "workspace_commit_invalid_utf8",
 ): { ok: true; text: string } | { ok: false; diagnostic: Diagnostic } {
-  const decoded = decodeGitUtf8(raw, location);
+  const decoded = decodeGitUtf8(raw, location, utf8Code);
   if (!decoded.ok) return decoded;
   const text = decoded.text.replace(/\r\n/g, "\n").replace(/\n/g, "").trim();
   if (text.length === 0) {
@@ -172,6 +178,25 @@ function decodeGitTextLine(
     };
   }
   return { ok: true, text };
+}
+
+/** Optional spawn controls for git write operations (commits). */
+export interface RunGitOptions {
+  /** Extra environment variables merged over process.env. */
+  env?: NodeJS.ProcessEnv;
+  /** Optional stdin bytes (for example git patch-id). */
+  stdin?: Buffer;
+  /**
+   * Open stdin as a pipe and do not write or end it.
+   * Use for long-lived git commands in tests (for example `cat-file --batch`).
+   * Ignored when `stdin` is set (stdin bytes are written and the stream ends).
+   */
+  leaveStdinOpen?: boolean;
+  /**
+   * Called with the child process id after a successful spawn.
+   * Intended for tests that assert process lifetime across abort.
+   */
+  onSpawn?: (pid: number) => void;
 }
 
 /**
@@ -266,11 +291,13 @@ export function worktreeSnapshotsEqual(
 /**
  * Run git and return structured success or failure with a raw stdout buffer.
  * Does not decode or trim path payloads. Callers decode with strict UTF-8.
+ * Optional env overrides apply for commit-creating write operations.
  */
 export async function runGit(
   cwd: string,
   args: readonly string[],
   signal?: AbortSignal,
+  options?: RunGitOptions,
 ): Promise<GitRunResult> {
   if (signal?.aborted) {
     return {
@@ -283,13 +310,31 @@ export async function runGit(
 
   let child: ReturnType<typeof spawn>;
   try {
+    const env = options?.env === undefined
+      ? undefined
+      : { ...process.env, ...options.env };
+    const leaveStdinOpen = options?.leaveStdinOpen === true
+      && options?.stdin === undefined;
+    const useStdin = options?.stdin !== undefined || leaveStdinOpen;
     child = spawn("git", args, {
       cwd,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
       windowsHide: true,
       ...(signal === undefined ? {} : { signal }),
+      ...(env === undefined ? {} : { env }),
     });
+    if (typeof child.pid === "number" && options?.onSpawn !== undefined) {
+      options.onSpawn(child.pid);
+    }
+    if (useStdin && child.stdin) {
+      // Absorb EPIPE so a short-lived child does not raise an uncaught 'error'.
+      child.stdin.on("error", () => {});
+      if (options?.stdin !== undefined) {
+        child.stdin.end(options.stdin);
+      }
+      // leaveStdinOpen: keep the pipe open so the child waits for input.
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -329,10 +374,36 @@ export async function runGit(
   }
 
   try {
+    // Wait for close before returning. On abort, Node emits error then close;
+    // callers must not reconcile repository state until the process has stopped.
+    let nonAbortError: Error | undefined;
+    let sawAbort = false;
     const exitCode = await new Promise<number>((resolveExit, rejectPromise) => {
-      child.once("error", rejectPromise);
-      child.once("close", (code) => resolveExit(code ?? -1));
+      child.once("error", (error) => {
+        if (isAbortError(error) || signal?.aborted) {
+          sawAbort = true;
+          return;
+        }
+        nonAbortError = error instanceof Error ? error : new Error(String(error));
+      });
+      child.once("close", (code) => {
+        if (nonAbortError !== undefined && !sawAbort && !signal?.aborted) {
+          rejectPromise(nonAbortError);
+          return;
+        }
+        resolveExit(code ?? -1);
+      });
     });
+
+    if (sawAbort || signal?.aborted) {
+      return {
+        ok: false,
+        kind: "aborted",
+        message: "The worker commit inspection was cancelled.",
+        aborted: true,
+      };
+    }
+
     const stderrText = Buffer.concat(stderrChunks).toString("utf8").trim();
     if (outputExceeded) {
       return {
@@ -349,6 +420,7 @@ export async function runGit(
         kind: "exit",
         message: stderrText || `Git exited with code ${exitCode}.`,
         aborted: false,
+        exitCode,
       };
     }
     return { ok: true, raw };
