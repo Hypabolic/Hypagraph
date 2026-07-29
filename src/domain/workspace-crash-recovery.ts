@@ -207,6 +207,16 @@ const isStrictPlainObject = (value: unknown): value is Record<string, unknown> =
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
+/**
+ * Locale-insensitive identity order for strings.
+ * Uses UTF-16 code unit order (`<` / `>`), not localeCompare.
+ */
+const compareIdentityOrdinal = (left: string, right: string): number => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
 const reject = (code: string, message: string, location?: string): Diagnostic => ({
   code,
   message,
@@ -1117,12 +1127,13 @@ export function applyWorkspaceCrashRecovery(
   }
 
   // Stable host action order: kind, then attemptId, then integrationId.
+  // Use code-unit ordinal compare so order does not depend on host locale.
   plan.hostActions.sort((left, right) => {
-    const kindOrder = left.kind.localeCompare(right.kind);
+    const kindOrder = compareIdentityOrdinal(left.kind, right.kind);
     if (kindOrder !== 0) return kindOrder;
-    const attemptOrder = left.attemptId.localeCompare(right.attemptId);
+    const attemptOrder = compareIdentityOrdinal(left.attemptId, right.attemptId);
     if (attemptOrder !== 0) return attemptOrder;
-    return (left.integrationId ?? "").localeCompare(right.integrationId ?? "");
+    return compareIdentityOrdinal(left.integrationId ?? "", right.integrationId ?? "");
   });
 
   // Deduplicate teardown_child_attempt by attemptId (one per dead attempt).

@@ -20,7 +20,7 @@
  * remain separate.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -382,6 +382,42 @@ async function resolveAndValidateBaseWorkspace(
 }
 
 /**
+ * Require the base worktree to have no uncommitted tracked changes.
+ * Untracked files are ignored (matches integration pre-check policy).
+ */
+async function assertBaseWorktreeTrackedClean(
+  baseCwd: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true } | { ok: false; diagnostics: Diagnostic[] }> {
+  const porcelain = await runGit(
+    baseCwd,
+    ["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+    signal,
+  );
+  if (!porcelain.ok) {
+    return {
+      ok: false,
+      diagnostics: [mapGitDiag(
+        porcelain,
+        "baseRepoPath",
+        "Could not read base worktree status",
+      )],
+    };
+  }
+  if (porcelain.raw.length > 0) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "workspace_post_check_base_dirty",
+        "Base worktree has uncommitted tracked changes after post-integration checks.",
+        "baseRepoPath",
+      )],
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Read base HEAD and require it to match the integrated commit hash.
  */
 async function assertBaseHeadMatchesIntegrated(
@@ -461,10 +497,50 @@ export function resolveMaxOutputBytes(
 }
 
 /**
+ * Terminate a check process and its descendants.
+ * On POSIX, the child starts as a process group leader (detached).
+ * A negative pid signals the whole group. On Windows, taskkill /T ends the tree.
+ * Falls back to child.kill when group kill is unavailable.
+ */
+function killCheckProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (typeof pid !== "number") return;
+
+  if (process.platform === "win32") {
+    try {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.unref();
+      return;
+    } catch {
+      // Fall through to child.kill.
+    }
+  } else {
+    try {
+      // Negative pid: signal the process group owned by the detached child.
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through to child.kill.
+    }
+  }
+
+  try {
+    child.kill(signal);
+  } catch {
+    // Process may already have exited.
+  }
+}
+
+/**
  * Run one check command with cwd fixed to baseCwd.
  * Does not use a shell. Does not pass AbortSignal to spawn (host owns shutdown).
  * Always waits for the child close event. Keeps SIGKILL timer until close.
  * Captures stdout and stderr under one shared maxOutputBytes limit.
+ * Starts the child in an owned process group on POSIX so timeout and cancel
+ * terminate the complete process tree.
  */
 export async function runBaseWorkspaceCheckCommand(
   baseCwd: string,
@@ -497,16 +573,20 @@ export async function runBaseWorkspaceCheckCommand(
   const timeoutMs = check.timeoutMs ?? DEFAULT_POST_CHECK_TIMEOUT_MS;
   const args = check.args ?? [];
 
-  let child: ReturnType<typeof spawn>;
+  let child: ChildProcess;
   try {
     // Do not attach AbortSignal to spawn. Host owns SIGTERM/SIGKILL so an
     // AbortError cannot bypass process shutdown.
+    // On POSIX, detached makes the child a process group leader so timeout
+    // and cancel can terminate descendants. stdio pipes keep the parent
+    // linked until close. Do not unref the child.
     child = spawn(check.command, args, {
       cwd: baseCwd,
       env: inheritedEnvironment(),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -548,18 +628,10 @@ export async function runBaseWorkspaceCheckCommand(
   const stop = (reason: "timed_out" | "cancelled"): void => {
     if (termination) return;
     termination = reason;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // Process may already have exited.
-    }
+    killCheckProcessTree(child, "SIGTERM");
     // Keep the force-kill timer until close. Do not clear it on abort return.
     forceKillTimer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
+      killCheckProcessTree(child, "SIGKILL");
     }, killGraceMs);
     forceKillTimer.unref();
   };
@@ -1099,6 +1171,31 @@ export async function runPostIntegrationChecks(
     }
     return failChecks(
       [...headAfter.diagnostics, ...failed.diagnostics],
+      set,
+      integration,
+    );
+  }
+
+  // A successful check must not leave tracked files dirty without a commit.
+  // HEAD can still equal integratedCommitHash while the base worktree is dirty.
+  const cleanAfter = await assertBaseWorktreeTrackedClean(baseCwd, input.signal);
+  if (!cleanAfter.ok) {
+    const failed = completePostIntegrationChecksFailed(
+      set,
+      integrationId,
+      cleanAfter.diagnostics,
+      cleanAfter.diagnostics[0]?.message,
+      expectedIdentity,
+    );
+    if (failed.ok) {
+      return failChecks(
+        failed.integration.diagnostics ?? cleanAfter.diagnostics,
+        failed.set,
+        failed.integration,
+      );
+    }
+    return failChecks(
+      [...cleanAfter.diagnostics, ...failed.diagnostics],
       set,
       integration,
     );

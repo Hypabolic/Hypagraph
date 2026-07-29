@@ -803,6 +803,92 @@ describe("m8-s4 validate changed scope and evidence", () => {
       expect(diagnostics[0]?.code).toBe("workspace_scope_path_outside_write_scope");
     });
 
+    it("rejects POSIX backslash filename that is not under write scope", () => {
+      // On POSIX, `src\secret.ts` is a single root-level filename segment.
+      // Lease scope `src` must not match after treating `\` as a separator.
+      const diagnostics = validateChangedPathsWithinWriteScope(
+        ["src\\secret.ts"],
+        ["src"],
+      );
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.code).toBe("workspace_scope_path_outside_write_scope");
+
+      // Forward-slash nested path under src remains in scope.
+      expect(validateChangedPathsWithinWriteScope(["src/secret.ts"], ["src"])).toEqual([]);
+    });
+
+    it("rejects malformed factContracts entries without throwing", () => {
+      const nullEntry = parseIntegrationResultProtocol({
+        version: 1,
+        outcomes: [...EXECUTOR_OUTCOMES],
+        factContracts: [null],
+        requiredEvidence: [],
+        maxSummaryChars: DEFAULT_MAX_RESULT_SUMMARY_CHARS,
+        maxDiagnostics: DEFAULT_MAX_RESULT_DIAGNOSTICS,
+        maxArtifacts: DEFAULT_MAX_RESULT_ARTIFACTS,
+        maxFacts: DEFAULT_MAX_RESULT_FACTS,
+        maxEvidence: DEFAULT_MAX_RESULT_EVIDENCE,
+      });
+      expect(nullEntry.ok).toBe(false);
+      if (nullEntry.ok) return;
+      expect(nullEntry.diagnostics.some(
+        (d) => d.code === "workspace_scope_protocol_invalid"
+          && d.location === "protocol.factContracts[0]",
+      )).toBe(true);
+
+      const badFields = parseIntegrationResultProtocol({
+        version: 1,
+        outcomes: [...EXECUTOR_OUTCOMES],
+        factContracts: [{ name: "", type: "not-a-type", required: "yes" }],
+        requiredEvidence: [],
+        maxSummaryChars: DEFAULT_MAX_RESULT_SUMMARY_CHARS,
+        maxDiagnostics: DEFAULT_MAX_RESULT_DIAGNOSTICS,
+        maxArtifacts: DEFAULT_MAX_RESULT_ARTIFACTS,
+        maxFacts: DEFAULT_MAX_RESULT_FACTS,
+        maxEvidence: DEFAULT_MAX_RESULT_EVIDENCE,
+      });
+      expect(badFields.ok).toBe(false);
+      if (badFields.ok) return;
+      expect(badFields.diagnostics.some(
+        (d) => d.location === "protocol.factContracts[0].name",
+      )).toBe(true);
+      expect(badFields.diagnostics.some(
+        (d) => d.location === "protocol.factContracts[0].type",
+      )).toBe(true);
+      expect(badFields.diagnostics.some(
+        (d) => d.location === "protocol.factContracts[0].required",
+      )).toBe(true);
+
+      // Untrusted protocol with null factContracts must not throw at the boundary.
+      const lease = exclusiveLease("lease-a", ["src"]);
+      const commit = validCommit();
+      const result = validateWorkerResultForIntegration({
+        commit,
+        lease,
+        executorResult: submittedExecutorPayload(lease, commit, {
+          evidence: [],
+          artifacts: [],
+        }),
+        protocol: {
+          version: 1,
+          outcomes: [...EXECUTOR_OUTCOMES],
+          factContracts: [null] as never,
+          requiredEvidence: [],
+          maxSummaryChars: DEFAULT_MAX_RESULT_SUMMARY_CHARS,
+          maxDiagnostics: DEFAULT_MAX_RESULT_DIAGNOSTICS,
+          maxArtifacts: DEFAULT_MAX_RESULT_ARTIFACTS,
+          maxFacts: DEFAULT_MAX_RESULT_FACTS,
+          maxEvidence: DEFAULT_MAX_RESULT_EVIDENCE,
+        },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics.some(
+          (d) => d.code === "workspace_scope_protocol_invalid",
+        )).toBe(true);
+      }
+    });
+
     it("validateExecutorWorkspaceMatchesCommit accepts matching workspace", () => {
       const commit = validCommit({
         changedPaths: ["src/b.ts", "src/a.ts"],

@@ -1036,14 +1036,26 @@ export async function releaseAttemptWorktree(
     }
 
     const removed = await removeGitWorktree(baseRepoPath, worktreePath, input.signal);
-    if (!removed.ok && removed.aborted) {
+    if (!removed.ok) {
+      if (removed.aborted) {
+        return {
+          ok: false,
+          set,
+          diagnostics: [reject(
+            "workspace_worktree_aborted",
+            "The worktree operation was cancelled.",
+            "signal",
+          )],
+        };
+      }
+      // Do not mark the registry released while the path still exists.
       return {
         ok: false,
         set,
         diagnostics: [reject(
-          "workspace_worktree_aborted",
-          "The worktree operation was cancelled.",
-          "signal",
+          "workspace_worktree_remove_failed",
+          `Failed to remove worktree path: ${removed.message}`,
+          "worktree.path",
         )],
       };
     }

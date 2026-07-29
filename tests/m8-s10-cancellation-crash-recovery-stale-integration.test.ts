@@ -735,6 +735,72 @@ describe("m8-s10 cancellation crash recovery stale integration", () => {
   });
 
   describe("child-process teardown composition", () => {
+    it("orders hostActions by code-unit ordinal identity", () => {
+      // Insert reverse of expected order so sort must produce stable ordinal order.
+      const emptyLeases = createEmptyWorkspaceLeaseSet();
+      const leaseZ = acquireWorkspaceLease(
+        emptyLeases,
+        exclusiveLease("lease-z", "attempt-z", "src/z"),
+      );
+      expect(leaseZ.ok).toBe(true);
+      if (!leaseZ.ok) return;
+      const leaseA = acquireWorkspaceLease(
+        leaseZ.set,
+        exclusiveLease("lease-a", "attempt-a", "src/a"),
+      );
+      expect(leaseA.ok).toBe(true);
+      if (!leaseA.ok) return;
+
+      let worktreeSet = createEmptyWorkspaceWorktreeSet();
+      const wtZ = registerWorktree(
+        worktreeSet,
+        readyWorktree("wt-z", "lease-z", "attempt-z"),
+      );
+      expect(wtZ.ok).toBe(true);
+      if (!wtZ.ok) return;
+      worktreeSet = wtZ.set;
+      const wtA = registerWorktree(
+        worktreeSet,
+        readyWorktree("wt-a", "lease-a", "attempt-a"),
+      );
+      expect(wtA.ok).toBe(true);
+      if (!wtA.ok) return;
+      worktreeSet = wtA.set;
+
+      const recovered = applyWorkspaceCrashRecovery({
+        schemaVersion: WORKSPACE_CRASH_RECOVERY_SCHEMA_VERSION,
+        leaseSet: leaseA.set,
+        worktreeSet,
+        liveAttemptIds: [],
+      });
+      expect(recovered.ok).toBe(true);
+      if (!recovered.ok) return;
+
+      const keys = recovered.plan.hostActions.map(
+        (action) => `${action.kind}\0${action.attemptId}\0${action.integrationId ?? ""}`,
+      );
+      const expected = [...keys].sort((left, right) => {
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+      });
+      expect(keys).toEqual(expected);
+
+      // release_worktree_disk precedes teardown_child_attempt in code-unit order.
+      const kinds = recovered.plan.hostActions.map((action) => action.kind);
+      const firstRelease = kinds.indexOf("release_worktree_disk");
+      const firstTeardown = kinds.indexOf("teardown_child_attempt");
+      expect(firstRelease).toBeGreaterThanOrEqual(0);
+      expect(firstTeardown).toBeGreaterThanOrEqual(0);
+      expect(firstRelease).toBeLessThan(firstTeardown);
+
+      // attempt-a before attempt-z within the same kind.
+      const teardownIds = recovered.plan.hostActions
+        .filter((action) => action.kind === "teardown_child_attempt")
+        .map((action) => action.attemptId);
+      expect(teardownIds).toEqual(["attempt-a", "attempt-z"]);
+    });
+
     it("composes mock liveness and orphan inputs without mutating unrelated leases", () => {
       const leaseSet = acquireTwoLeases();
       const worktreeSet = registerTwoWorktrees();

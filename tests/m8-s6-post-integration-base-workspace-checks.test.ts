@@ -1038,6 +1038,81 @@ describe("m8-s6 post-integration base workspace checks", () => {
       expect(elapsed).toBeLessThan(5_000);
     });
 
+    it("terminates descendant processes when a check is cancelled", async () => {
+      // POSIX only: process-group kill. Windows uses taskkill /T separately.
+      if (process.platform === "win32") return;
+
+      const base = await repository();
+      const pidFile = join(base, "grandchild.pid");
+      // Use .cjs so Node loads CommonJS even when the repo package is ESM.
+      const script = join(base, "spawn-descendant.cjs");
+      await writeFile(
+        script,
+        [
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "const pidPath = process.argv[2];",
+          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {",
+          "  stdio: 'ignore',",
+          "  detached: false,",
+          "});",
+          "if (typeof child.pid !== 'number') process.exit(2);",
+          "writeFileSync(pidPath, String(child.pid), 'utf8');",
+          "process.on('SIGTERM', () => {});",
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const controller = new AbortController();
+      const runPromise = runBaseWorkspaceCheckCommand(
+        base,
+        {
+          id: "with-descendant",
+          command: process.execPath,
+          args: [script, pidFile],
+          timeoutMs: 30_000,
+        },
+        {
+          signal: controller.signal,
+          killGraceMs: 50,
+        },
+      );
+
+      // Wait until the grandchild pid is written.
+      let grandchildPid: number | undefined;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const text = await readFile(pidFile, "utf8");
+          const parsed = Number(text.trim());
+          if (Number.isSafeInteger(parsed) && parsed > 0) {
+            grandchildPid = parsed;
+            break;
+          }
+        } catch {
+          // not written yet
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(grandchildPid).toBeTypeOf("number");
+
+      controller.abort();
+      const result = await runPromise;
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.kind).toBe("aborted");
+
+      // Descendant must not survive process-group termination.
+      await new Promise((r) => setTimeout(r, 150));
+      let stillLive = true;
+      try {
+        process.kill(grandchildPid!, 0);
+      } catch {
+        stillLive = false;
+      }
+      expect(stillLive).toBe(false);
+    });
+
     it("does not mutate the input integration set", async () => {
       const base = await repository();
       const set = createEmptyWorkspaceIntegrationSet();
@@ -1100,6 +1175,46 @@ describe("m8-s6 post-integration base workspace checks", () => {
         result.diagnostics.some((d) => d.code === "workspace_post_check_stale_base_head"),
       ).toBe(true);
       expect(await headOf(base)).not.toBe(headBefore);
+      expect(requireChecksPassedForNodeCompletion(result.set, "int-lease-a").ok).toBe(false);
+    });
+
+    it("marks checks_failed when a successful check dirties tracked files without moving HEAD", async () => {
+      const base = await repository();
+      const headBefore = await headOf(base);
+      const reg = registerIntegration(
+        createEmptyWorkspaceIntegrationSet(),
+        integratedRecord({ integratedCommitHash: headBefore }),
+      );
+      expect(reg.ok).toBe(true);
+      if (!reg.ok) return;
+
+      const script = join(base, "dirty-tracked.sh");
+      await writeFile(
+        script,
+        [
+          "#!/bin/sh",
+          "echo dirty-without-commit > src/tracked.txt",
+          "exit 0",
+        ].join("\n"),
+        "utf8",
+      );
+      await run("chmod", ["+x", script]);
+
+      const result = await runPostIntegrationChecks({
+        baseRepoPath: base,
+        set: reg.set,
+        integrationId: "int-lease-a",
+        checks: [{ id: "dirty-tracked", command: "sh", args: [script] }],
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.eligibleForNodeCompletion).toBe(false);
+      expect(result.integration?.status).toBe("checks_failed");
+      expect(
+        result.diagnostics.some((d) => d.code === "workspace_post_check_base_dirty"),
+      ).toBe(true);
+      // HEAD still matches; dirty tracked files alone must fail the gate.
+      expect(await headOf(base)).toBe(headBefore);
       expect(requireChecksPassedForNodeCompletion(result.set, "int-lease-a").ok).toBe(false);
     });
 

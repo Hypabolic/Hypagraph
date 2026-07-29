@@ -26,6 +26,7 @@ import {
   type StructuredResultProtocolDescriptor,
   type ValidateExecutorResultOptions,
 } from "./executor-contract.js";
+import type { FactContract, FactType } from "./facts.js";
 import type { Diagnostic } from "./model.js";
 import {
   canonicalGitRelativePath,
@@ -38,11 +39,22 @@ import {
   type WorkerCommitResult,
 } from "./workspace-commit.js";
 import {
+  canonicalLeasePath,
   parseWorkspaceLease,
   pathWithinLeaseScope,
   type WorkspaceLease,
   type WorkspaceLeaseHolder,
 } from "./workspace-lease.js";
+
+const KNOWN_FACT_TYPES = new Set<FactType>([
+  "boolean",
+  "integer",
+  "number",
+  "string",
+  "duration",
+  "timestamp",
+  "string-list",
+]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -202,6 +214,39 @@ export function parseIntegrationResultProtocol(
       "Result protocol factContracts must be an array.",
       `${location}.factContracts`,
     ));
+  } else {
+    for (let index = 0; index < record.factContracts.length; index += 1) {
+      const item = record.factContracts[index];
+      if (!isStrictPlainObject(item)) {
+        diagnostics.push(reject(
+          "workspace_scope_protocol_invalid",
+          `Result protocol factContracts at index ${index} must be a plain object.`,
+          `${location}.factContracts[${index}]`,
+        ));
+        continue;
+      }
+      if (typeof item.name !== "string" || item.name.trim().length === 0) {
+        diagnostics.push(reject(
+          "workspace_scope_protocol_invalid",
+          `Result protocol factContracts at index ${index} requires a non-empty name.`,
+          `${location}.factContracts[${index}].name`,
+        ));
+      }
+      if (typeof item.type !== "string" || !KNOWN_FACT_TYPES.has(item.type as FactType)) {
+        diagnostics.push(reject(
+          "workspace_scope_protocol_invalid",
+          `Result protocol factContracts at index ${index} requires a known fact type.`,
+          `${location}.factContracts[${index}].type`,
+        ));
+      }
+      if (item.required !== undefined && typeof item.required !== "boolean") {
+        diagnostics.push(reject(
+          "workspace_scope_protocol_invalid",
+          `Result protocol factContracts at index ${index} required flag must be a boolean when present.`,
+          `${location}.factContracts[${index}].required`,
+        ));
+      }
+    }
   }
 
   if (!Array.isArray(record.requiredEvidence)) {
@@ -245,10 +290,22 @@ export function parseIntegrationResultProtocol(
   }
 
   // Clone only after shape checks so class instances never enter this path.
+  const factContracts: FactContract[] = (record.factContracts as Array<Record<string, unknown>>).map(
+    (item) => {
+      const contract: FactContract = {
+        name: item.name as string,
+        type: item.type as FactType,
+      };
+      if (item.required !== undefined) {
+        contract.required = item.required as boolean;
+      }
+      return contract;
+    },
+  );
   const protocol: StructuredResultProtocolDescriptor = {
     version: 1,
     outcomes: [...(record.outcomes as StructuredResultProtocolDescriptor["outcomes"])],
-    factContracts: structuredClone(record.factContracts) as StructuredResultProtocolDescriptor["factContracts"],
+    factContracts,
     requiredEvidence: (record.requiredEvidence as string[]).map((item) => item.trim()),
     maxSummaryChars: record.maxSummaryChars as number,
     maxDiagnostics: record.maxDiagnostics as number,
@@ -329,8 +386,36 @@ export function looksLikeWorkspaceRelativeEvidencePath(ref: string): boolean {
 }
 
 /**
+ * Report whether a git-relative changed path falls within exclusive write scope.
+ * Uses canonicalGitRelativePath so a POSIX backslash is a filename character,
+ * not a path separator. Scope entries use lease path rules (forward slash only).
+ * Does not mutate inputs.
+ */
+function gitChangedPathWithinWriteScope(
+  path: string,
+  writePaths: readonly string[],
+): boolean {
+  const gitPath = canonicalGitRelativePath(path);
+  if (gitPath === undefined) return false;
+  if (!Array.isArray(writePaths) || writePaths.length === 0) return false;
+
+  for (const scopePath of writePaths) {
+    const scope = canonicalLeasePath(scopePath);
+    if (scope === undefined) continue;
+    if (scope === "/**") return true;
+    const scopeBase = scope.endsWith("/**") ? scope.slice(0, -3) : scope;
+    // Only forward slash separates git path segments.
+    if (gitPath === scopeBase || gitPath.startsWith(`${scopeBase}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Validate that every changed path falls within the exclusive write scope.
  * Empty changedPaths is valid. Does not mutate inputs.
+ * Git path bytes are preserved: a backslash is not a separator.
  */
 export function validateChangedPathsWithinWriteScope(
   changedPaths: readonly string[],
@@ -340,7 +425,7 @@ export function validateChangedPathsWithinWriteScope(
   const diagnostics: Diagnostic[] = [];
   for (let index = 0; index < changedPaths.length; index += 1) {
     const path = changedPaths[index]!;
-    if (!pathWithinLeaseScope(path, writePaths)) {
+    if (!gitChangedPathWithinWriteScope(path, writePaths)) {
       diagnostics.push(reject(
         "workspace_scope_path_outside_write_scope",
         `Changed path '${path}' is outside the exclusive lease write scope.`,

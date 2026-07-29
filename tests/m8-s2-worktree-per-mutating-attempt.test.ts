@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -881,6 +881,52 @@ describe("m8-s2 worktree per mutating attempt", () => {
       expect(
         result.diagnostics.some((d) => d.code === "workspace_worktree_release_id_required"),
       ).toBe(true);
+    });
+
+    it("propagates non-abort worktree removal failure and keeps registry active", async () => {
+      // Permission trap is practical on POSIX. Skip Windows.
+      if (process.platform === "win32") return;
+
+      const root = await repository();
+      const parent = await mkdtemp(join(tmpdir(), "hypagraph-m8-s2-parent-"));
+      roots.push(parent);
+      const stuckPath = join(parent, "stuck-wt");
+      await mkdir(stuckPath, { recursive: true });
+      await writeFile(join(stuckPath, "keep"), "x", "utf8");
+      // Parent not writable: recursive remove of stuck-wt fails while path remains.
+      await chmod(parent, 0o555);
+
+      const reg = registerWorktree(
+        createEmptyWorkspaceWorktreeSet(),
+        readyWorktree("wt-stuck", "lease-stuck", stuckPath, {
+          parentRoot: parent,
+          branchName: "hypagraph/lease-lease-stuck",
+        }),
+      );
+      expect(reg.ok).toBe(true);
+      if (!reg.ok) return;
+
+      try {
+        const released = await releaseAttemptWorktree({
+          baseRepoPath: root,
+          worktreeParentRoot: parent,
+          set: reg.set,
+          worktreeId: "wt-stuck",
+        });
+        expect(released.ok).toBe(false);
+        if (released.ok) return;
+        expect(
+          released.diagnostics.some((d) => d.code === "workspace_worktree_remove_failed"),
+        ).toBe(true);
+        // Registry must not report released while the path still exists.
+        const active = listActiveWorktrees(released.set);
+        expect(active.ok).toBe(true);
+        if (!active.ok) return;
+        expect(active.worktrees.map((w) => w.worktreeId)).toContain("wt-stuck");
+        await access(stuckPath);
+      } finally {
+        await chmod(parent, 0o755);
+      }
     });
 
     it("stuck preparing status is recovered on prepare", async () => {
