@@ -252,6 +252,45 @@ function leaseCanonicalPathsOverlap(a: string, b: string): boolean {
   );
 }
 
+/**
+ * Report whether one path falls within a single lease scope entry.
+ * Directory globs (`src/**`) and non-glob prefixes (`src`) both cover nested
+ * files. `src` does not cover `src2`. Whole-workspace scope is `/**`.
+ * Invalid paths or scopes never contain a path.
+ */
+export function pathWithinSingleLeaseScope(path: string, scopePath: string): boolean {
+  const canonicalPath = canonicalLeasePath(path);
+  const canonicalScope = canonicalLeasePath(scopePath);
+  if (canonicalPath === undefined || canonicalScope === undefined) return false;
+  if (canonicalScope === "/**") return true;
+
+  const pathBase = canonicalPath.endsWith("/**")
+    ? canonicalPath.slice(0, -3)
+    : canonicalPath;
+  const scopeBase = canonicalScope.endsWith("/**")
+    ? canonicalScope.slice(0, -3)
+    : canonicalScope;
+
+  return pathBase === scopeBase || pathBase.startsWith(`${scopeBase}/`);
+}
+
+/**
+ * Report whether a path falls within any path in a lease scope list.
+ * Use this for write-scope checks on worker changed paths and for optional
+ * file-evidence path checks against read or write scopes.
+ * Does not mutate inputs.
+ */
+export function pathWithinLeaseScope(
+  path: string,
+  scopePaths: readonly string[],
+): boolean {
+  if (!Array.isArray(scopePaths) || scopePaths.length === 0) return false;
+  for (const scopePath of scopePaths) {
+    if (pathWithinSingleLeaseScope(path, scopePath)) return true;
+  }
+  return false;
+}
+
 function anyPathPairOverlaps(left: readonly string[], right: readonly string[]): boolean {
   for (const a of left) {
     for (const b of right) {
