@@ -1113,16 +1113,32 @@ describe("m8-s6 post-integration base workspace checks", () => {
       expect(stillLive).toBe(false);
     });
 
+    it("keeps the force-kill timer referenced so SIGKILL cannot be dropped", async () => {
+      // Guard: an unref'd force-kill timer does not keep the event loop alive.
+      // Awaiting forceKillDone alone is not enough outside a long-lived host.
+      const source = await readFile(
+        new URL("../src/workspace/run-post-integration-checks.ts", import.meta.url),
+        "utf8",
+      );
+      expect(source).not.toMatch(/forceKillTimer\.unref\s*\(/);
+      // Command timeout may still unref; only the force-kill timer is required.
+      expect(source).toMatch(/forceKillDone\s*=\s*new Promise/);
+    });
+
     it("force-kills SIGTERM-ignoring grandchild after parent exits on SIGTERM", async () => {
       // Parent exits on SIGTERM; grandchild ignores SIGTERM with independent stdio.
       // Force-kill must still run after the direct child closes.
+      // Also runs the kill schedule in an isolated Node process (no Vitest handles)
+      // so an unref'd timer cannot be masked by the test runner event loop.
       if (process.platform === "win32") return;
 
       const base = await repository();
       const pidFile = join(base, "orphan-grandchild.pid");
-      const script = join(base, "parent-exits-on-term.cjs");
+      const checkScript = join(base, "parent-exits-on-term.cjs");
+      const hostScript = join(base, "isolated-force-kill-host.cjs");
+
       await writeFile(
-        script,
+        checkScript,
         [
           "const { spawn } = require('node:child_process');",
           "const { writeFileSync } = require('node:fs');",
@@ -1141,13 +1157,51 @@ describe("m8-s6 post-integration base workspace checks", () => {
         "utf8",
       );
 
+      // Isolated host mirrors the production kill schedule: process group, SIGTERM,
+      // then a referenced force-kill timer awaited after the direct child closes.
+      // Intentionally no other timers or open handles. If the force-kill timer were
+      // unref'd, Node can exit before SIGKILL and the grandchild survives.
+      await writeFile(
+        hostScript,
+        [
+          "const { spawn } = require('node:child_process');",
+          "const checkScriptPath = process.argv[2];",
+          "const pidPath = process.argv[3];",
+          "const killGraceMs = Number(process.argv[4] || 120);",
+          "const child = spawn(process.execPath, [checkScriptPath, pidPath], {",
+          "  stdio: ['ignore', 'pipe', 'pipe'],",
+          "  detached: true,",
+          "  windowsHide: true,",
+          "});",
+          "const groupPid = child.pid;",
+          "if (typeof groupPid !== 'number') process.exit(2);",
+          "const closed = new Promise((resolve) => child.once('close', () => resolve()));",
+          "const killGroup = (signal) => {",
+          "  try { process.kill(-groupPid, signal); } catch {",
+          "    try { child.kill(signal); } catch { /* already dead */ }",
+          "  }",
+          "};",
+          // Abort shortly after start (same shape as host cancel).
+          "setTimeout(() => {",
+          "  killGroup('SIGTERM');",
+          "  // Must stay referenced: await alone does not keep the loop alive.",
+          "  const forceKillDone = new Promise((resolve) => {",
+          "    setTimeout(() => { killGroup('SIGKILL'); resolve(); }, killGraceMs);",
+          "  });",
+          "  closed.then(() => forceKillDone).then(() => process.exit(0));",
+          "}, 150);",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // Real API path (Vitest process): parent exits on SIGTERM; force-kill still runs.
       const controller = new AbortController();
       const runPromise = runBaseWorkspaceCheckCommand(
         base,
         {
           id: "parent-exits-grandchild-stays",
           command: process.execPath,
-          args: [script, pidFile],
+          args: [checkScript, pidFile],
           timeoutMs: 30_000,
         },
         {
@@ -1178,8 +1232,6 @@ describe("m8-s6 post-integration base workspace checks", () => {
       if (result.ok) return;
       expect(result.kind).toBe("aborted");
 
-      // After grace-period SIGKILL of the process group, grandchild must be dead.
-      await new Promise((r) => setTimeout(r, 50));
       let stillLive = true;
       try {
         process.kill(grandchildPid!, 0);
@@ -1187,6 +1239,28 @@ describe("m8-s6 post-integration base workspace checks", () => {
         stillLive = false;
       }
       expect(stillLive).toBe(false);
+
+      // Isolated process path: no Vitest handles. Grandchild must die after host exits.
+      const isolatedPidFile = join(base, "isolated-orphan.pid");
+      await run(process.execPath, [hostScript, checkScript, isolatedPidFile, "120"], {
+        timeout: 10_000,
+      });
+      let isolatedPid: number | undefined;
+      try {
+        const text = await readFile(isolatedPidFile, "utf8");
+        const parsed = Number(text.trim());
+        if (Number.isSafeInteger(parsed) && parsed > 0) isolatedPid = parsed;
+      } catch {
+        // host may have cleaned before we read; require the file to exist
+      }
+      expect(isolatedPid).toBeTypeOf("number");
+      let isolatedLive = true;
+      try {
+        process.kill(isolatedPid!, 0);
+      } catch {
+        isolatedLive = false;
+      }
+      expect(isolatedLive).toBe(false);
     });
 
     it("does not mutate the input integration set", async () => {

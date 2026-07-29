@@ -547,6 +547,9 @@ function killCheckProcessTree(
  * Always waits for the child close event.
  * On abort/timeout, keeps process-group SIGKILL until the grace period elapses
  * even when the direct child closes earlier (descendants may ignore SIGTERM).
+ * The force-kill timer stays referenced so the event loop cannot exit before
+ * SIGKILL runs. Awaiting the force-kill promise alone does not keep the loop
+ * alive when the timer is unref'd.
  * Captures stdout and stderr under one shared maxOutputBytes limit.
  * Starts the child in an owned process group on POSIX so timeout and cancel
  * terminate the complete process tree.
@@ -647,16 +650,19 @@ export async function runBaseWorkspaceCheckCommand(
     // Keep process-group SIGKILL until the grace period elapses.
     // Do not clear this timer when the direct child closes early: a descendant
     // can ignore SIGTERM and keep independent stdio open.
+    // Do not unref the force-kill timer. An unref'd timer does not keep the
+    // event loop alive; the process can exit before SIGKILL runs after the
+    // direct child closes and no other referenced handles remain.
     forceKillDone = new Promise<void>((resolveForceKill) => {
       forceKillTimer = setTimeout(() => {
         forceKillTimer = undefined;
         killCheckProcessTree(child, "SIGKILL", groupPid);
         resolveForceKill();
       }, killGraceMs);
-      forceKillTimer.unref();
     });
   };
 
+  // Command timeout may unref: stop() still arms a referenced force-kill timer.
   const timeout = setTimeout(() => stop("timed_out"), timeoutMs);
   timeout.unref();
 
