@@ -21,7 +21,7 @@
 
 import { spawn } from "node:child_process";
 import { access, mkdir, realpath, rm, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Diagnostic } from "../domain/model.js";
 import type { WorkspaceLease } from "../domain/workspace-lease.js";
@@ -183,14 +183,27 @@ async function pathExists(pathValue: string): Promise<boolean> {
 
 /**
  * Resolve to a canonical absolute path when the path exists.
- * Falls back to path.resolve when realpath fails (missing path).
- * On macOS this normalises /var versus /private/var for comparisons.
+ * When the leaf path is missing, realpath the nearest existing ancestor and
+ * rejoin the missing segments so macOS /var versus /private/var still unifies.
  */
 async function canonicalPath(pathValue: string): Promise<string> {
   const resolved = resolve(pathValue);
   try {
     return await realpath(resolved);
   } catch {
+    // Walk up until an existing ancestor can be realpathed.
+    const missing: string[] = [];
+    let current = resolved;
+    while (current !== dirname(current)) {
+      missing.unshift(basename(current));
+      const parent = dirname(current);
+      try {
+        const realParent = await realpath(parent);
+        return join(realParent, ...missing);
+      } catch {
+        current = parent;
+      }
+    }
     return resolved;
   }
 }
@@ -477,6 +490,39 @@ async function safeCleanupIfInsideParent(
   return true;
 }
 
+/**
+ * Report whether git worktree list still names this worktree path.
+ * Checks git metadata only. Path may already be missing on disk.
+ * When list fails without abort, fail closed (treat as still listed).
+ */
+async function worktreeListedInGit(
+  baseRepoPath: string,
+  worktreePath: string,
+  signal?: AbortSignal,
+): Promise<{ listed: boolean; aborted: boolean; message?: string }> {
+  const listed = await runGit(baseRepoPath, ["worktree", "list", "--porcelain"], signal);
+  if (!listed.ok) {
+    if (listed.aborted) {
+      return { listed: true, aborted: true, message: listed.message };
+    }
+    // Fail closed: unknown list state is not treated as clean removal.
+    return {
+      listed: true,
+      aborted: false,
+      message: listed.message,
+    };
+  }
+  const lines = listed.stdout.split("\n");
+  for (const line of lines) {
+    if (!line.startsWith("worktree ")) continue;
+    const entryPath = line.slice("worktree ".length).trim();
+    if (await pathsReferToSameLocation(entryPath, worktreePath)) {
+      return { listed: true, aborted: false };
+    }
+  }
+  return { listed: false, aborted: false };
+}
+
 async function removeGitWorktree(
   baseRepoPath: string,
   worktreePath: string,
@@ -487,7 +533,25 @@ async function removeGitWorktree(
     ["worktree", "remove", "--force", worktreePath],
     signal,
   );
-  if (remove.ok) return { ok: true };
+  if (remove.ok) {
+    // Require git metadata gone even when remove reports success.
+    const afterOk = await worktreeListedInGit(baseRepoPath, worktreePath, signal);
+    if (afterOk.aborted) {
+      return {
+        ok: false,
+        message: afterOk.message ?? "The worktree operation was cancelled.",
+        aborted: true,
+      };
+    }
+    if (afterOk.listed) {
+      return {
+        ok: false,
+        message: "Git still lists the worktree after worktree remove.",
+        aborted: false,
+      };
+    }
+    return { ok: true };
+  }
   if (remove.aborted) {
     return { ok: false, message: remove.message, aborted: true };
   }
@@ -497,6 +561,36 @@ async function removeGitWorktree(
   const stillExists = await pathExists(worktreePath);
   if (stillExists) {
     return { ok: false, message: remove.message, aborted: false };
+  }
+  // Directory gone is not enough: locked or stale git admin data can remain.
+  const afterFallback = await worktreeListedInGit(baseRepoPath, worktreePath, signal);
+  if (afterFallback.aborted) {
+    return {
+      ok: false,
+      message: afterFallback.message ?? remove.message,
+      aborted: true,
+    };
+  }
+  if (afterFallback.listed) {
+    // One more prune after the path is gone; locked entries still fail closed.
+    await runGit(baseRepoPath, ["worktree", "prune"], signal);
+    const stillListed = await worktreeListedInGit(baseRepoPath, worktreePath, signal);
+    if (stillListed.aborted) {
+      return {
+        ok: false,
+        message: stillListed.message ?? remove.message,
+        aborted: true,
+      };
+    }
+    if (stillListed.listed) {
+      return {
+        ok: false,
+        message:
+          "Worktree path was removed but git still lists the worktree. "
+          + "Registry release is refused while git metadata remains.",
+        aborted: false,
+      };
+    }
   }
   return { ok: true };
 }
@@ -509,20 +603,9 @@ async function worktreeStillPresent(
   if (!(await pathExists(worktreePath))) {
     return false;
   }
-  const listed = await runGit(baseRepoPath, ["worktree", "list", "--porcelain"], signal);
-  if (!listed.ok) {
-    // Fall back to filesystem presence when list fails.
-    return true;
-  }
-  const lines = listed.stdout.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("worktree ")) continue;
-    const entryPath = line.slice("worktree ".length).trim();
-    if (await pathsReferToSameLocation(entryPath, worktreePath)) {
-      return true;
-    }
-  }
-  return false;
+  const listed = await worktreeListedInGit(baseRepoPath, worktreePath, signal);
+  // For ready re-verify: list failure falls closed as present (do not recreate).
+  return listed.listed;
 }
 
 function resolveDefaultParent(baseRepoPath: string, worktreeParentRoot?: string): string {
@@ -1048,7 +1131,7 @@ export async function releaseAttemptWorktree(
           )],
         };
       }
-      // Do not mark the registry released while the path still exists.
+      // Do not mark the registry released while the path or git metadata remains.
       return {
         ok: false,
         set,

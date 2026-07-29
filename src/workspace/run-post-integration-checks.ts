@@ -500,10 +500,17 @@ export function resolveMaxOutputBytes(
  * Terminate a check process and its descendants.
  * On POSIX, the child starts as a process group leader (detached).
  * A negative pid signals the whole group. On Windows, taskkill /T ends the tree.
+ * groupPid must be the original process-group leader pid when the direct child
+ * has already exited (child.pid may still be set, but callers must capture it
+ * at kill time so SIGKILL still targets the group after leader exit).
  * Falls back to child.kill when group kill is unavailable.
  */
-function killCheckProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  const pid = child.pid;
+function killCheckProcessTree(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  groupPid?: number,
+): void {
+  const pid = groupPid ?? child.pid;
   if (typeof pid !== "number") return;
 
   if (process.platform === "win32") {
@@ -537,7 +544,9 @@ function killCheckProcessTree(child: ChildProcess, signal: NodeJS.Signals): void
 /**
  * Run one check command with cwd fixed to baseCwd.
  * Does not use a shell. Does not pass AbortSignal to spawn (host owns shutdown).
- * Always waits for the child close event. Keeps SIGKILL timer until close.
+ * Always waits for the child close event.
+ * On abort/timeout, keeps process-group SIGKILL until the grace period elapses
+ * even when the direct child closes earlier (descendants may ignore SIGTERM).
  * Captures stdout and stderr under one shared maxOutputBytes limit.
  * Starts the child in an owned process group on POSIX so timeout and cancel
  * terminate the complete process tree.
@@ -623,17 +632,29 @@ export async function runBaseWorkspaceCheckCommand(
 
   let termination: "timed_out" | "cancelled" | undefined;
   let forceKillTimer: NodeJS.Timeout | undefined;
+  let forceKillDone: Promise<void> | undefined;
+  let groupPid: number | undefined;
   let spawnError: Error | undefined;
 
   const stop = (reason: "timed_out" | "cancelled"): void => {
     if (termination) return;
     termination = reason;
-    killCheckProcessTree(child, "SIGTERM");
-    // Keep the force-kill timer until close. Do not clear it on abort return.
-    forceKillTimer = setTimeout(() => {
-      killCheckProcessTree(child, "SIGKILL");
-    }, killGraceMs);
-    forceKillTimer.unref();
+    // Capture the process-group leader pid before any exit clears group state.
+    if (typeof child.pid === "number") {
+      groupPid = child.pid;
+    }
+    killCheckProcessTree(child, "SIGTERM", groupPid);
+    // Keep process-group SIGKILL until the grace period elapses.
+    // Do not clear this timer when the direct child closes early: a descendant
+    // can ignore SIGTERM and keep independent stdio open.
+    forceKillDone = new Promise<void>((resolveForceKill) => {
+      forceKillTimer = setTimeout(() => {
+        forceKillTimer = undefined;
+        killCheckProcessTree(child, "SIGKILL", groupPid);
+        resolveForceKill();
+      }, killGraceMs);
+      forceKillTimer.unref();
+    });
   };
 
   const timeout = setTimeout(() => stop("timed_out"), timeoutMs);
@@ -675,9 +696,15 @@ export async function runBaseWorkspaceCheckCommand(
   });
 
   clearTimeout(timeout);
-  if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
   if (signal !== undefined) {
     signal.removeEventListener("abort", onAbort);
+  }
+  // Abort/timeout: wait for process-group SIGKILL grace, even if the direct
+  // child already closed. Normal exit: cancel any unused force-kill timer.
+  if (termination !== undefined && forceKillDone !== undefined) {
+    await forceKillDone;
+  } else if (forceKillTimer !== undefined) {
+    clearTimeout(forceKillTimer);
   }
 
   const stdout = Buffer.concat(stdoutChunks).toString("utf8");

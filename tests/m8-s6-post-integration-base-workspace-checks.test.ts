@@ -1113,6 +1113,82 @@ describe("m8-s6 post-integration base workspace checks", () => {
       expect(stillLive).toBe(false);
     });
 
+    it("force-kills SIGTERM-ignoring grandchild after parent exits on SIGTERM", async () => {
+      // Parent exits on SIGTERM; grandchild ignores SIGTERM with independent stdio.
+      // Force-kill must still run after the direct child closes.
+      if (process.platform === "win32") return;
+
+      const base = await repository();
+      const pidFile = join(base, "orphan-grandchild.pid");
+      const script = join(base, "parent-exits-on-term.cjs");
+      await writeFile(
+        script,
+        [
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "const pidPath = process.argv[2];",
+          // Grandchild ignores SIGTERM and does not share parent stdio.
+          "const child = spawn(",
+          "  process.execPath,",
+          "  ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\"],",
+          "  { stdio: 'ignore', detached: false },",
+          ");",
+          "if (typeof child.pid !== 'number') process.exit(2);",
+          "writeFileSync(pidPath, String(child.pid), 'utf8');",
+          // Parent does not ignore SIGTERM: it exits and closes before SIGKILL.
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const controller = new AbortController();
+      const runPromise = runBaseWorkspaceCheckCommand(
+        base,
+        {
+          id: "parent-exits-grandchild-stays",
+          command: process.execPath,
+          args: [script, pidFile],
+          timeoutMs: 30_000,
+        },
+        {
+          signal: controller.signal,
+          killGraceMs: 80,
+        },
+      );
+
+      let grandchildPid: number | undefined;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const text = await readFile(pidFile, "utf8");
+          const parsed = Number(text.trim());
+          if (Number.isSafeInteger(parsed) && parsed > 0) {
+            grandchildPid = parsed;
+            break;
+          }
+        } catch {
+          // not written yet
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(grandchildPid).toBeTypeOf("number");
+
+      controller.abort();
+      const result = await runPromise;
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.kind).toBe("aborted");
+
+      // After grace-period SIGKILL of the process group, grandchild must be dead.
+      await new Promise((r) => setTimeout(r, 50));
+      let stillLive = true;
+      try {
+        process.kill(grandchildPid!, 0);
+      } catch {
+        stillLive = false;
+      }
+      expect(stillLive).toBe(false);
+    });
+
     it("does not mutate the input integration set", async () => {
       const base = await repository();
       const set = createEmptyWorkspaceIntegrationSet();

@@ -929,6 +929,63 @@ describe("m8-s2 worktree per mutating attempt", () => {
       }
     });
 
+    it("refuses registry release when path is gone but git still lists the worktree", async () => {
+      // Locked worktree: single --force remove fails, prune keeps the entry.
+      // Directory can be deleted while git admin metadata remains.
+      const root = await repository();
+      const parent = await mkdtemp(join(tmpdir(), "hypagraph-m8-s2-parent-"));
+      roots.push(parent);
+
+      const prepared = await prepareMutatingAttemptWorktree({
+        baseRepoPath: root,
+        worktreeParentRoot: parent,
+        lease: exclusiveLease("lease-meta-stale"),
+        set: createEmptyWorkspaceWorktreeSet(),
+      });
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) return;
+
+      const worktreePath = prepared.worktree.path;
+      // One --force is not enough for a locked worktree in modern git.
+      await run("git", ["worktree", "lock", worktreePath], { cwd: root });
+      // Delete the checkout directory while leaving locked git metadata.
+      await rm(worktreePath, { recursive: true, force: true });
+
+      const listedBefore = await run("git", ["worktree", "list", "--porcelain"], { cwd: root });
+      expect(listedBefore.stdout).toContain(worktreePath);
+
+      const released = await releaseAttemptWorktree({
+        baseRepoPath: root,
+        worktreeParentRoot: parent,
+        set: prepared.set,
+        worktreeId: prepared.worktree.worktreeId,
+      });
+      expect(released.ok).toBe(false);
+      if (released.ok) return;
+      expect(
+        released.diagnostics.some((d) => d.code === "workspace_worktree_remove_failed"),
+      ).toBe(true);
+
+      // Registry stays active while git metadata remains.
+      const active = listActiveWorktrees(released.set);
+      expect(active.ok).toBe(true);
+      if (!active.ok) return;
+      expect(active.worktrees.map((w) => w.worktreeId)).toContain(
+        prepared.worktree.worktreeId,
+      );
+
+      const listedAfter = await run("git", ["worktree", "list", "--porcelain"], { cwd: root });
+      expect(listedAfter.stdout).toContain(worktreePath);
+
+      // Cleanup for afterEach: unlock and remove so temp roots can be deleted.
+      await run("git", ["worktree", "unlock", worktreePath], { cwd: root }).catch(() => undefined);
+      await run("git", ["worktree", "prune"], { cwd: root }).catch(() => undefined);
+      if (prepared.worktree.branchName) {
+        await run("git", ["branch", "-D", prepared.worktree.branchName], { cwd: root })
+          .catch(() => undefined);
+      }
+    });
+
     it("stuck preparing status is recovered on prepare", async () => {
       const root = await repository();
       const parent = await mkdtemp(join(tmpdir(), "hypagraph-m8-s2-parent-"));
