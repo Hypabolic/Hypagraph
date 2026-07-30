@@ -191,7 +191,7 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         withEvidence.expansion,
         expansion.branches[0]!.branchId,
         "succeeded",
-        { evidence: [{ ref: "ev-a-done", kind: "note" }] },
+        { attemptId: "attempt-a-1", evidence: [{ ref: "ev-a-done", kind: "note" }] },
       );
       expect(doneA.ok).toBe(true);
       if (!doneA.ok) return;
@@ -208,7 +208,7 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         startedB.expansion,
         expansion.branches[1]!.branchId,
         "failed",
-        { failureReason: "lint failed" },
+        { attemptId: "attempt-b-1", failureReason: "lint failed" },
       );
       expect(failedB.ok).toBe(true);
       if (!failedB.ok) return;
@@ -255,7 +255,9 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
       }
 
       // Fail branch 0, reject reuse of the same attempt id on retry, then accept a new id.
-      const failed = completeDerivedBranch(first.expansion, "review-files/item/0", "failed");
+      const failed = completeDerivedBranch(first.expansion, "review-files/item/0", "failed", {
+        attemptId: "shared-attempt",
+      });
       expect(failed.ok).toBe(true);
       if (!failed.ok) return;
 
@@ -303,7 +305,9 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         expect(startWhileRunning.diagnostics[0]!.message).toMatch(/pending or failed/);
       }
 
-      const succeeded = completeDerivedBranch(started.expansion, "review-files/item/0", "succeeded");
+      const succeeded = completeDerivedBranch(started.expansion, "review-files/item/0", "succeeded", {
+        attemptId: "a1",
+      });
       expect(succeeded.ok).toBe(true);
       if (!succeeded.ok) return;
       const restartOk = startDerivedBranchAttempt(succeeded.expansion, "review-files/item/0", "a3");
@@ -352,15 +356,75 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
       const started = startDerivedBranchAttempt(expansion, "review-files/item/0", "a1");
       expect(started.ok).toBe(true);
       if (!started.ok) return;
-      const succeeded = completeDerivedBranch(started.expansion, "review-files/item/0", "succeeded");
+      const succeeded = completeDerivedBranch(started.expansion, "review-files/item/0", "succeeded", {
+        attemptId: "a1",
+      });
       expect(succeeded.ok).toBe(true);
       if (!succeeded.ok) return;
 
-      const rewrite = completeDerivedBranch(succeeded.expansion, "review-files/item/0", "failed");
+      const rewrite = completeDerivedBranch(succeeded.expansion, "review-files/item/0", "failed", {
+        attemptId: "a1",
+      });
       expect(rewrite.ok).toBe(false);
       if (rewrite.ok) return;
       expect(rewrite.diagnostics.some((d) => d.code === "derived_fan_out_invalid_status")).toBe(true);
       expect(rewrite.diagnostics[0]!.message).toMatch(/already 'succeeded'/);
+    });
+
+    it("rejects a stale attempt id after a retry starts", () => {
+      const expansion = expandOk(region(), ["a"]);
+      const first = startDerivedBranchAttempt(expansion, "review-files/item/0", "a1");
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const failed = completeDerivedBranch(first.expansion, "review-files/item/0", "failed", {
+        attemptId: "a1",
+      });
+      expect(failed.ok).toBe(true);
+      if (!failed.ok) return;
+
+      const retry = startDerivedBranchAttempt(failed.expansion, "review-files/item/0", "a2");
+      expect(retry.ok).toBe(true);
+      if (!retry.ok) return;
+      expect(retry.expansion.branches[0]!.attemptId).toBe("a2");
+      expect(retry.expansion.branches[0]!.attemptNumber).toBe(2);
+
+      // Late completion from a1 must not complete running a2.
+      const staleSuccess = completeDerivedBranch(retry.expansion, "review-files/item/0", "succeeded", {
+        attemptId: "a1",
+      });
+      expect(staleSuccess.ok).toBe(false);
+      if (!staleSuccess.ok) {
+        expect(staleSuccess.diagnostics.some((d) => d.code === "derived_fan_out_stale_attempt")).toBe(true);
+      }
+      expect(retry.expansion.branches[0]!.status).toBe("running");
+      expect(retry.expansion.branches[0]!.attemptId).toBe("a2");
+
+      const staleFail = completeDerivedBranch(retry.expansion, "review-files/item/0", "failed", {
+        attemptId: "a1",
+      });
+      expect(staleFail.ok).toBe(false);
+      if (!staleFail.ok) {
+        expect(staleFail.diagnostics.some((d) => d.code === "derived_fan_out_stale_attempt")).toBe(true);
+      }
+
+      const missingAttemptId = completeDerivedBranch(
+        retry.expansion,
+        "review-files/item/0",
+        "succeeded",
+      );
+      expect(missingAttemptId.ok).toBe(false);
+      if (!missingAttemptId.ok) {
+        expect(missingAttemptId.diagnostics.some((d) => d.code === "derived_fan_out_invalid_attempt_id")).toBe(true);
+      }
+
+      const currentOk = completeDerivedBranch(retry.expansion, "review-files/item/0", "succeeded", {
+        attemptId: "a2",
+      });
+      expect(currentOk.ok).toBe(true);
+      if (!currentOk.ok) return;
+      expect(currentOk.expansion.branches[0]!.status).toBe("succeeded");
+      expect(currentOk.expansion.branches[0]!.attemptId).toBe("a2");
     });
 
     it("rejects unknown and empty branchId on lifecycle helpers with distinct codes", () => {
@@ -497,7 +561,9 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         const started = startDerivedBranchAttempt(current, branchId, `attempt-${index}`);
         expect(started.ok).toBe(true);
         if (!started.ok) throw new Error("start failed");
-        const done = completeDerivedBranch(started.expansion, branchId, outcome);
+        const done = completeDerivedBranch(started.expansion, branchId, outcome, {
+          attemptId: `attempt-${index}`,
+        });
         expect(done.ok).toBe(true);
         if (!done.ok) throw new Error("complete failed");
         current = done.expansion;
@@ -515,6 +581,7 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         started.expansion,
         "review-files/item/0",
         "succeeded",
+        { attemptId: "a1" },
       );
       expect(partial.ok).toBe(true);
       if (!partial.ok) return;
@@ -802,6 +869,152 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
       countMismatch.branches = [countMismatch.branches[0]!];
       expect(validateDerivedFanOutExpansion(countMismatch).some((d) => d.code === "derived_fan_out_branch_count_mismatch")).toBe(true);
     });
+
+    it("rejects impossible attempt counters during restore", () => {
+      const base = expandOk(region(), ["x"]);
+      const started = startDerivedBranchAttempt(base, "review-files/item/0", "a1");
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+
+      // attemptNumber 0 with a recorded attemptId is not a reachable lifecycle state.
+      const zeroWithId = structuredClone(started.expansion);
+      zeroWithId.branches[0]!.attemptNumber = 0;
+      const zeroWithIdDiags = validateDerivedFanOutExpansion(zeroWithId);
+      expect(zeroWithIdDiags.some((d) => d.code === "derived_fan_out_invalid_attempt_number")).toBe(true);
+      expect(parseDerivedFanOutExpansion(zeroWithId).ok).toBe(false);
+
+      // attemptNumber 0 with running status is unreachable.
+      const zeroRunning = structuredClone(started.expansion);
+      zeroRunning.branches[0]!.attemptNumber = 0;
+      const zeroRunningDiags = validateDerivedFanOutExpansion(zeroRunning);
+      expect(zeroRunningDiags.some((d) => d.code === "derived_fan_out_invalid_attempt_number")).toBe(true);
+
+      // attemptNumber 0 with succeeded status and attemptId is unreachable.
+      const zeroSucceeded = structuredClone(started.expansion);
+      zeroSucceeded.branches[0]!.status = "succeeded";
+      zeroSucceeded.branches[0]!.attemptNumber = 0;
+      const zeroSucceededDiags = validateDerivedFanOutExpansion(zeroSucceeded);
+      expect(zeroSucceededDiags.some((d) => d.code === "derived_fan_out_invalid_attempt_number")).toBe(true);
+      expect(parseDerivedFanOutExpansion(zeroSucceeded).ok).toBe(false);
+
+      // attemptNumber 0 with failed status is unreachable.
+      const zeroFailed = structuredClone(started.expansion);
+      zeroFailed.branches[0]!.status = "failed";
+      zeroFailed.branches[0]!.attemptNumber = 0;
+      zeroFailed.branches[0]!.failureReason = "x";
+      expect(
+        validateDerivedFanOutExpansion(zeroFailed).some((d) => d.code === "derived_fan_out_invalid_attempt_number"),
+      ).toBe(true);
+
+      // Cancel from pending remains valid: attemptNumber 0 without attemptId.
+      const cancelledPending = completeDerivedBranch(base, "review-files/item/0", "cancelled");
+      expect(cancelledPending.ok).toBe(true);
+      if (!cancelledPending.ok) return;
+      expect(validateDerivedFanOutExpansion(cancelledPending.expansion)).toEqual([]);
+      expect(parseDerivedFanOutExpansion(structuredClone(cancelledPending.expansion)).ok).toBe(true);
+    });
+
+    it("rejects incomplete usedAttemptIds history during restore", () => {
+      const base = expandOk(region(), ["x", "y"]);
+      const first = startDerivedBranchAttempt(base, "review-files/item/0", "a1");
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      const failed = completeDerivedBranch(first.expansion, "review-files/item/0", "failed", {
+        attemptId: "a1",
+      });
+      expect(failed.ok).toBe(true);
+      if (!failed.ok) return;
+      const retry = startDerivedBranchAttempt(failed.expansion, "review-files/item/0", "a2");
+      expect(retry.ok).toBe(true);
+      if (!retry.ok) return;
+      // attemptNumber is 2; full history is [a1, a2].
+      expect(retry.expansion.branches[0]!.attemptNumber).toBe(2);
+      expect(retry.expansion.usedAttemptIds).toEqual(["a1", "a2"]);
+
+      // Omitting prior a1 would allow a1 to be reused after restore.
+      const truncated = structuredClone(retry.expansion);
+      truncated.usedAttemptIds = ["a2"];
+      const truncatedDiags = validateDerivedFanOutExpansion(truncated);
+      expect(truncatedDiags.some((d) => d.code === "derived_fan_out_attempt_history_mismatch")).toBe(true);
+      expect(parseDerivedFanOutExpansion(truncated).ok).toBe(false);
+
+      // Extra history ids also fail the sum rule.
+      const extra = structuredClone(retry.expansion);
+      extra.usedAttemptIds = ["a1", "a2", "a3"];
+      expect(
+        validateDerivedFanOutExpansion(extra).some((d) => d.code === "derived_fan_out_attempt_history_mismatch"),
+      ).toBe(true);
+
+      // Full history restores and blocks reuse of a1.
+      const restored = parseDerivedFanOutExpansion(structuredClone(retry.expansion));
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) return;
+      const reuseA1 = startDerivedBranchAttempt(restored.value, "review-files/item/1", "a1");
+      expect(reuseA1.ok).toBe(false);
+      if (!reuseA1.ok) {
+        expect(reuseA1.diagnostics.some((d) => d.code === "derived_fan_out_duplicate_attempt_id")).toBe(true);
+      }
+    });
+
+    it("rejects throwing accessors on expansion fields without throwing", () => {
+      const base = expandOk(region(), ["a"]);
+      const hostile: Record<string, unknown> = {
+        regionId: base.regionId,
+        collectionFact: base.collectionFact,
+        collectionValues: base.collectionValues,
+        fanInPolicy: base.fanInPolicy,
+        maxBranches: base.maxBranches,
+        branches: base.branches,
+        usedAttemptIds: base.usedAttemptIds,
+      };
+      Object.defineProperty(hostile, "schemaVersion", {
+        enumerable: true,
+        get() {
+          throw new Error("hostile schemaVersion getter");
+        },
+      });
+
+      expect(() => validateDerivedFanOutExpansionSchema(hostile)).not.toThrow();
+      const schemaDiags = validateDerivedFanOutExpansionSchema(hostile);
+      expect(schemaDiags.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+
+      expect(() => validateDerivedFanOutExpansion(hostile)).not.toThrow();
+      const fullDiags = validateDerivedFanOutExpansion(hostile);
+      expect(fullDiags.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+
+      expect(() => parseDerivedFanOutExpansion(hostile)).not.toThrow();
+      expect(parseDerivedFanOutExpansion(hostile).ok).toBe(false);
+
+      for (const result of [
+        listDerivedBranches(hostile as unknown as DerivedFanOutExpansion),
+        evaluateDerivedFanIn(hostile as unknown as DerivedFanOutExpansion),
+        getDerivedBranch(hostile as unknown as DerivedFanOutExpansion, "review-files/item/0"),
+        startDerivedBranchAttempt(hostile as unknown as DerivedFanOutExpansion, "review-files/item/0", "a1"),
+        completeDerivedBranch(hostile as unknown as DerivedFanOutExpansion, "review-files/item/0", "cancelled"),
+      ]) {
+        expect(result.ok).toBe(false);
+        if (result.ok) continue;
+        expect(result.diagnostics.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+      }
+
+      // Branch-level accessor also yields a diagnostic.
+      const branchHostile = structuredClone(base) as unknown as Record<string, unknown>;
+      const branches = branchHostile.branches as Array<Record<string, unknown>>;
+      const branchCopy = { ...branches[0]! };
+      Object.defineProperty(branchCopy, "status", {
+        enumerable: true,
+        get() {
+          throw new Error("hostile status getter");
+        },
+      });
+      branchHostile.branches = [branchCopy];
+      expect(() => validateDerivedFanOutExpansionSchema(branchHostile)).not.toThrow();
+      expect(
+        validateDerivedFanOutExpansionSchema(branchHostile).some(
+          (d) => d.code === "derived_fan_out_invalid_accessor",
+        ),
+      ).toBe(true);
+    });
   });
 
   describe("purity", () => {
@@ -847,6 +1060,7 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         withEvidence.expansion,
         "review-files/item/0",
         "succeeded",
+        { attemptId: "a1" },
       );
       expect(completed.ok).toBe(true);
       expect(withEvidence.expansion).toEqual(evidenceSnapshot);

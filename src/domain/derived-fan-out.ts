@@ -29,6 +29,8 @@
  * Attempt id uniqueness:
  * - Every attempt id used in an expansion is recorded in usedAttemptIds.
  * - An attempt id must not be reused on any branch in the same expansion.
+ * - usedAttemptIds length must equal the sum of branch attemptNumber values.
+ * - Completing a running branch requires the current attempt id.
  *
  * Domain helpers are pure: no clock, random, files, network, or input mutation.
  * The expansion record is an in-memory value. Persistence and schema restore
@@ -254,6 +256,160 @@ function formatUntrustedDiagnosticValue(value: unknown): string {
     return String(value);
   }
   return "[object]";
+}
+
+type OwnDataPropertyRead =
+  | { ok: true; present: false }
+  | { ok: true; present: true; value: unknown }
+  | { ok: false; diagnostic: Diagnostic };
+
+/**
+ * Read an own data property without invoking getters or setters.
+ * Absent own property yields present: false.
+ * Accessor properties and failed reflective access yield a diagnostic.
+ */
+function readOwnDataProperty(
+  object: object,
+  key: string,
+  location: string,
+): OwnDataPropertyRead {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(object, key);
+  } catch {
+    return {
+      ok: false,
+      diagnostic: reject(
+        "derived_fan_out_invalid_accessor",
+        `Unable to inspect property '${key}'.`,
+        location,
+      ),
+    };
+  }
+  if (descriptor === undefined) {
+    return { ok: true, present: false };
+  }
+  // Accessor descriptors have get/set keys even when both functions are undefined.
+  // Data descriptors have a value key. Reject anything that is not a data property.
+  if ("get" in descriptor || "set" in descriptor || !("value" in descriptor)) {
+    return {
+      ok: false,
+      diagnostic: reject(
+        "derived_fan_out_invalid_accessor",
+        `Property '${key}' must be a data property. Accessor properties are not allowed.`,
+        location,
+      ),
+    };
+  }
+  return { ok: true, present: true, value: descriptor.value };
+}
+
+/** Known top-level expansion fields read for restore and schema guards. */
+const EXPANSION_SNAPSHOT_KEYS = [
+  "schemaVersion",
+  "regionId",
+  "collectionFact",
+  "collectionValues",
+  "fanInPolicy",
+  "maxBranches",
+  "branches",
+  "usedAttemptIds",
+] as const;
+
+/** Known branch fields read for restore and schema guards. */
+const BRANCH_SNAPSHOT_KEYS = [
+  "branchId",
+  "regionId",
+  "index",
+  "itemValue",
+  "status",
+  "attemptId",
+  "attemptNumber",
+  "evidence",
+  "failureReason",
+] as const;
+
+/**
+ * Read known own data properties into a plain record.
+ * Rejects accessor properties. Absent keys are omitted.
+ */
+function readKnownOwnDataFields(
+  object: object,
+  keys: readonly string[],
+  location: string,
+): { ok: true; record: Record<string, unknown> } | { ok: false; diagnostics: Diagnostic[] } {
+  const record: Record<string, unknown> = {};
+  const diagnostics: Diagnostic[] = [];
+  for (const key of keys) {
+    const read = readOwnDataProperty(object, key, `${location}.${key}`);
+    if (!read.ok) {
+      diagnostics.push(read.diagnostic);
+      continue;
+    }
+    if (read.present) {
+      record[key] = read.value;
+    }
+  }
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  return { ok: true, record };
+}
+
+/**
+ * Snapshot an untrusted expansion into a plain object of own data properties.
+ * Rejects accessors on the expansion and on each branch element.
+ * Does not invoke getters. Does not mutate input.
+ */
+function snapshotDerivedFanOutExpansion(
+  value: unknown,
+  location: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; diagnostics: Diagnostic[] } {
+  if (!isStrictPlainObject(value)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "derived_fan_out_expansion_not_plain_object",
+        "Derived fan-out expansion must be a plain object.",
+        location,
+      )],
+    };
+  }
+
+  const top = readKnownOwnDataFields(value, EXPANSION_SNAPSHOT_KEYS, location);
+  if (!top.ok) {
+    return { ok: false, diagnostics: top.diagnostics };
+  }
+
+  const snapshot: Record<string, unknown> = { ...top.record };
+  if (Array.isArray(snapshot.branches)) {
+    const branchSnapshots: unknown[] = [];
+    const diagnostics: Diagnostic[] = [];
+    for (let index = 0; index < snapshot.branches.length; index += 1) {
+      const branchLocation = `${location}.branches[${index}]`;
+      const branchValue = snapshot.branches[index];
+      if (!isStrictPlainObject(branchValue)) {
+        branchSnapshots.push(branchValue);
+        continue;
+      }
+      const branchRead = readKnownOwnDataFields(
+        branchValue,
+        BRANCH_SNAPSHOT_KEYS,
+        branchLocation,
+      );
+      if (!branchRead.ok) {
+        diagnostics.push(...branchRead.diagnostics);
+        continue;
+      }
+      branchSnapshots.push(branchRead.record);
+    }
+    if (diagnostics.length > 0) {
+      return { ok: false, diagnostics };
+    }
+    snapshot.branches = branchSnapshots;
+  }
+
+  return { ok: true, value: snapshot };
 }
 
 /**
@@ -517,6 +673,8 @@ export function parseDerivedFanOutRegionDefinition(
  * Checks arrays and the minimum branch shape that lifecycle helpers and copy
  * paths require, so untrusted records return diagnostics and do not throw.
  *
+ * Reads only own data properties. Accessor properties yield diagnostics.
+ *
  * Each branch entry must be a plain object with:
  * - status: a known branch status string;
  * - evidence: an array.
@@ -526,36 +684,44 @@ export function validateDerivedFanOutExpansionSchema(
   value: unknown,
   location = "expansion",
 ): Diagnostic[] {
-  if (!isStrictPlainObject(value)) {
-    return [reject(
-      "derived_fan_out_expansion_not_plain_object",
-      "Derived fan-out expansion must be a plain object.",
-      location,
-    )];
+  const snapshot = snapshotDerivedFanOutExpansion(value, location);
+  if (!snapshot.ok) {
+    return snapshot.diagnostics;
   }
-  if (value.schemaVersion !== DERIVED_FAN_OUT_SCHEMA_VERSION) {
+  return validateDerivedFanOutExpansionSchemaSnapshot(snapshot.value, location);
+}
+
+/**
+ * Schema checks against a plain snapshot of own data properties.
+ * Assumes accessors were already rejected during snapshot construction.
+ */
+function validateDerivedFanOutExpansionSchemaSnapshot(
+  record: Record<string, unknown>,
+  location: string,
+): Diagnostic[] {
+  if (record.schemaVersion !== DERIVED_FAN_OUT_SCHEMA_VERSION) {
     return [reject(
       "derived_fan_out_unsupported_schema",
-      `Unsupported derived fan-out expansion schema version '${formatUntrustedDiagnosticValue(value.schemaVersion)}'. Expected ${DERIVED_FAN_OUT_SCHEMA_VERSION}.`,
+      `Unsupported derived fan-out expansion schema version '${formatUntrustedDiagnosticValue(record.schemaVersion)}'. Expected ${DERIVED_FAN_OUT_SCHEMA_VERSION}.`,
       `${location}.schemaVersion`,
     )];
   }
   const diagnostics: Diagnostic[] = [];
-  if (!Array.isArray(value.collectionValues)) {
+  if (!Array.isArray(record.collectionValues)) {
     diagnostics.push(reject(
       "derived_fan_out_collection_not_array",
       "Expansion collectionValues must be a string array.",
       `${location}.collectionValues`,
     ));
   }
-  if (!Array.isArray(value.usedAttemptIds)) {
+  if (!Array.isArray(record.usedAttemptIds)) {
     diagnostics.push(reject(
       "derived_fan_out_invalid_used_attempt_ids",
       "Expansion usedAttemptIds must be a string array.",
       `${location}.usedAttemptIds`,
     ));
   }
-  if (!Array.isArray(value.branches)) {
+  if (!Array.isArray(record.branches)) {
     diagnostics.push(reject(
       "derived_fan_out_invalid_branches",
       "Expansion branches must be an array.",
@@ -564,9 +730,9 @@ export function validateDerivedFanOutExpansionSchema(
     return diagnostics;
   }
 
-  for (let index = 0; index < value.branches.length; index += 1) {
+  for (let index = 0; index < record.branches.length; index += 1) {
     const branchLocation = `${location}.branches[${index}]`;
-    const branch = value.branches[index];
+    const branch = record.branches[index];
     if (!isStrictPlainObject(branch)) {
       diagnostics.push(reject(
         "derived_fan_out_invalid_branches",
@@ -599,16 +765,24 @@ export function validateDerivedFanOutExpansionSchema(
 /**
  * Validate a full expansion record for restore and apply paths.
  * Applies the same identity, bound, and uniqueness checks as expand and start.
+ * Reads only own data properties. Accessor properties yield diagnostics.
  * Does not mutate input. Does not throw on invalid input.
  */
 export function validateDerivedFanOutExpansion(
   value: unknown,
   location = "expansion",
 ): Diagnostic[] {
-  const schemaDiagnostics = validateDerivedFanOutExpansionSchema(value, location);
+  const snapshot = snapshotDerivedFanOutExpansion(value, location);
+  if (!snapshot.ok) {
+    return snapshot.diagnostics;
+  }
+  const schemaDiagnostics = validateDerivedFanOutExpansionSchemaSnapshot(
+    snapshot.value,
+    location,
+  );
   if (schemaDiagnostics.length > 0) return schemaDiagnostics;
 
-  const record = value as Record<string, unknown>;
+  const record = snapshot.value;
   const diagnostics: Diagnostic[] = [];
 
   if (!isNonEmptyString(record.regionId)) {
@@ -676,9 +850,11 @@ export function validateDerivedFanOutExpansion(
 
   const usedAttemptIds = record.usedAttemptIds as unknown[];
   const seenUsedAttemptIds = new Set<string>();
+  let usedAttemptIdsValid = true;
   for (let index = 0; index < usedAttemptIds.length; index += 1) {
     const attemptId = usedAttemptIds[index];
     if (!isNonEmptyString(attemptId)) {
+      usedAttemptIdsValid = false;
       diagnostics.push(reject(
         "derived_fan_out_invalid_attempt_id",
         `usedAttemptIds entry at index ${index} must be a non-empty string.`,
@@ -688,6 +864,7 @@ export function validateDerivedFanOutExpansion(
     }
     const trimmed = attemptId.trim();
     if (seenUsedAttemptIds.has(trimmed)) {
+      usedAttemptIdsValid = false;
       diagnostics.push(reject(
         "derived_fan_out_duplicate_attempt_id",
         `Attempt id '${trimmed}' is not unique in usedAttemptIds.`,
@@ -699,6 +876,8 @@ export function validateDerivedFanOutExpansion(
 
   const seenBranchIds = new Set<string>();
   const seenCurrentAttemptIds = new Set<string>();
+  let attemptCountSum = 0;
+  let attemptNumbersComplete = true;
   const regionId = isNonEmptyString(record.regionId)
     ? (record.regionId as string).trim()
     : undefined;
@@ -707,6 +886,7 @@ export function validateDerivedFanOutExpansion(
     const branchLocation = `${location}.branches[${index}]`;
     const branch = branches[index];
     if (!isStrictPlainObject(branch)) {
+      attemptNumbersComplete = false;
       diagnostics.push(reject(
         "derived_fan_out_invalid_branches",
         "Each branch must be a plain object.",
@@ -801,11 +981,14 @@ export function validateDerivedFanOutExpansion(
     }
 
     if (!isNonNegativeSafeInteger(branch.attemptNumber)) {
+      attemptNumbersComplete = false;
       diagnostics.push(reject(
         "derived_fan_out_invalid_attempt_number",
         "Branch attemptNumber must be a non-negative safe integer.",
         `${branchLocation}.attemptNumber`,
       ));
+    } else {
+      attemptCountSum += branch.attemptNumber as number;
     }
 
     if (branch.attemptId !== undefined) {
@@ -833,6 +1016,35 @@ export function validateDerivedFanOutExpansion(
           ));
         }
       }
+    }
+
+    if (
+      isNonNegativeSafeInteger(branch.attemptNumber)
+      && (branch.attemptNumber as number) === 0
+      && branch.attemptId !== undefined
+    ) {
+      diagnostics.push(reject(
+        "derived_fan_out_invalid_attempt_number",
+        "Branch attemptNumber zero means no attempt started, so attemptId must be absent.",
+        `${branchLocation}.attemptNumber`,
+      ));
+    }
+
+    if (
+      isNonNegativeSafeInteger(branch.attemptNumber)
+      && (branch.attemptNumber as number) === 0
+      && typeof branch.status === "string"
+      && (
+        branch.status === "running"
+        || branch.status === "succeeded"
+        || branch.status === "failed"
+      )
+    ) {
+      diagnostics.push(reject(
+        "derived_fan_out_invalid_attempt_number",
+        `Branch status '${branch.status}' requires attemptNumber at least one.`,
+        `${branchLocation}.attemptNumber`,
+      ));
     }
 
     if (
@@ -867,6 +1079,21 @@ export function validateDerivedFanOutExpansion(
       ));
     }
     validateEvidenceList(branch.evidence, `${branchLocation}.evidence`, diagnostics);
+  }
+
+  // Every start increments one branch attemptNumber and appends one usedAttemptIds
+  // entry. History length must equal the sum of branch attempt counts so prior
+  // attempt ids cannot be dropped and later reused after restore.
+  if (
+    attemptNumbersComplete
+    && usedAttemptIdsValid
+    && usedAttemptIds.length !== attemptCountSum
+  ) {
+    diagnostics.push(reject(
+      "derived_fan_out_attempt_history_mismatch",
+      `usedAttemptIds length ${usedAttemptIds.length} must equal the sum of branch attemptNumber values (${attemptCountSum}).`,
+      `${location}.usedAttemptIds`,
+    ));
   }
 
   return diagnostics;
@@ -1156,6 +1383,9 @@ export function startDerivedBranchAttempt(
  * - succeeded and failed require status running (an active attempt).
  * - cancelled requires a non-terminal status (pending or running).
  * - An already terminal branch cannot be completed again.
+ * - Completing a running attempt requires options.attemptId equal to the
+ *   branch current attemptId. A stale attempt id is rejected.
+ * - Cancel from pending does not require an attempt id.
  *
  * Does not mutate the input expansion.
  */
@@ -1164,6 +1394,11 @@ export function completeDerivedBranch(
   branchId: string,
   status: "succeeded" | "failed" | "cancelled",
   options?: {
+    /**
+     * Current attempt id for the branch.
+     * Required when the branch is running (succeeded, failed, or cancel).
+     */
+    attemptId?: string;
     failureReason?: string;
     evidence?: readonly EvidenceReference[];
   },
@@ -1224,6 +1459,32 @@ export function completeDerivedBranch(
     }
   }
   // cancelled: allowed from pending or running (already confirmed non-terminal).
+
+  // Running attempts require the caller attempt id so a late result from a
+  // prior attempt cannot complete the current attempt.
+  if (branch.status === "running") {
+    if (!isNonEmptyString(options?.attemptId)) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "derived_fan_out_invalid_attempt_id",
+          "attemptId is required when completing a running branch attempt.",
+          "attemptId",
+        )],
+      };
+    }
+    const trimmedAttemptId = options.attemptId.trim();
+    if (trimmedAttemptId !== branch.attemptId) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "derived_fan_out_stale_attempt",
+          `Attempt id '${trimmedAttemptId}' does not match the current attempt '${branch.attemptId ?? ""}' on branch '${branch.branchId}'.`,
+          "attemptId",
+        )],
+      };
+    }
+  }
 
   branch.status = status;
   if (status === "failed") {
