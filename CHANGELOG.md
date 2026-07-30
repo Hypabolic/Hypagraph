@@ -4,6 +4,57 @@
 
 No unreleased changes.
 
+## v0.14.0 - 2026-07-30
+
+Ships roadmap milestones M7, M8, M8.1, and M9 in one package release.
+
+### Added
+
+#### M7 — goal families and isolated Pi
+
+- goal-family persistence above workflow aggregates;
+- one-member family projection for existing roots;
+- sequential family scheduler;
+- bounded child-goal creation, return, and parent failure policy;
+- executor context envelopes and structured result contracts;
+- current-session and isolated Pi RPC executors;
+- nested family graph and executor UI surfaces.
+
+#### M8 — worktrees and concurrency
+
+- workspace lease contracts;
+- git worktree prepare and release for mutating attempts;
+- structured worker commits and pre-integration validation;
+- integration lifecycle with explicit conflict state;
+- post-integration base checks with process-group termination and clean-tree verification;
+- concurrency limits, groups, and fairness;
+- concurrent selection for independent loops and child workflows;
+- crash recovery and stale integration rejection.
+
+#### M8.1 — derived fan-out
+
+- pure derived fan-out from a typed collection fact with a max bound;
+- per-branch attempt lifecycle, evidence, and fan-in policy;
+- restore validation, attempt isolation, and untrusted-input diagnostics.
+
+#### M9 — external executors
+
+- ACP executor adapter;
+- named direct CLI executor adapters;
+- shared child-process JSON-RPC helper;
+- shared structured result settlement contract across Pi, ACP, and CLI.
+
+### Unchanged
+
+- the domain reducer stays pure;
+- package schema version remains 8 for this cut;
+- recipe library and The Gauntlet remain design-only.
+
+### Release notes
+
+See `docs/v0.14-release-notes.md` and `docs/m7-m9-roadmap-run-report.md`.
+
+
 ## v0.10.0 - 2026-07-29
 
 M6.3 adds external effects and reconciliation.

@@ -2,39 +2,34 @@
 
 - Report date: 2026-07-30
 - Workflow: `.grok/workflows/m7-to-m9-roadmap.rhai`
-- Package version on all tips: `0.10.0` (no release cut)
-- Published release remains: `v0.10.0` (M6.3)
+- Package version: `0.14.0`
+- Published release: `v0.14.0` (M7–M9 combined cut)
 - Workflow schema version on main: **8**
 - Completed slice count: **22**
 - Failed slice count: **0**
-- Release cut recommended: **no**
+- Integration: all milestones merged to `main` and released
 
 ## 1. Summary
 
-The M7–M9 roadmap workflow implemented every planned vertical slice for M7, M8, M8.1, and M9. No slice failed in the orchestrator journal.
+The M7–M9 roadmap workflow implemented every planned vertical slice for M7, M8,
+M8.1, and M9. No slice failed in the orchestrator journal.
 
-The work is **not on one linear line of history**:
+Feature branches were restacked and merged to `main` in order M8 → M8.1 → M9
+(with M9 rebased onto M8.1). Package release `v0.14.0` ships the combined cut.
 
-| Branch | Tip | Content |
-| --- | --- | --- |
-| `main` | `a8e3916` | M7 complete; M7–M9 workflow script |
-| `agent/m7-roadmap` | `a8e3916` | Same as `main` |
-| `agent/m8-roadmap` | `c2f8ff1` | M7 + all M8 slices and hardening fixes |
-| `agent/m8.1-roadmap` | `6205b55` | M8 tip + M8.1 derived fan-out |
-| `agent/m9-roadmap` | `ad2a142` | M7/`main` + M9 ACP and CLI adapters (**without** M8/M8.1) |
-
-M7 is on `main`. M8, M8.1, and M9 exist only on feature branches. M9 does not include M8 or M8.1. A merge plan is required before any release marker (v0.11–v0.14).
+| Branch | Content after release |
+| --- | --- |
+| `main` | M7–M9 integrated; tip matches the v0.14 release |
+| `agent/m7-roadmap` … `agent/m9-roadmap` | Aligned to `main` at release time |
 
 ## 2. Milestone status
 
 | Milestone | Release marker (plan) | Slice delivery | Integrated to `main` | State |
 | --- | --- | --- | --- | --- |
-| M7 | v0.11 | 9 / 9 | yes | **complete** |
-| M8 | v0.12 | 10 / 10 | no (`agent/m8-roadmap`) | **complete** (feature branch only) |
-| M8.1 | v0.13 | 1 / 1 | no (`agent/m8.1-roadmap`) | **complete** (feature branch only) |
-| M9 | v0.14 | 2 / 2 | no (`agent/m9-roadmap`) | **complete** (feature branch only; missing M8 base) |
-
-`docs/execution-roadmap.md` still lists M7–M9 as Planned. Update that table only after merge and acceptance review.
+| M7 | v0.11 | 9 / 9 | yes | **complete; shipped in v0.14** |
+| M8 | v0.12 | 10 / 10 | yes | **complete; shipped in v0.14** |
+| M8.1 | v0.13 | 1 / 1 | yes | **complete; shipped in v0.14** |
+| M9 | v0.14 | 2 / 2 | yes | **complete; released as v0.14** |
 
 ## 3. Completed slice ids
 

@@ -1,10 +1,10 @@
 # Hypagraph execution plan and roadmap
 
 - Status: active
-- Updated: 2026-07-29
-- Current milestone: M7 goal families and isolated Pi execution
-- Current implementation baseline: main at v0.10
-- Current published release: `v0.10`
+- Updated: 2026-07-30
+- Current milestone: v1.0 exit hardening and product recipe surfaces
+- Current implementation baseline: main at v0.14
+- Current published release: `v0.14`
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Deterministic orchestration plan, which spans a new aggregate node, a synthesis node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
 - Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
@@ -222,10 +222,10 @@ All repository text must follow `AGENTS.md`.
 | M6.1 | v0.8 | Interaction and approval nodes | Complete; released as v0.8 |
 | M6.2 | v0.9 | Code nodes and the sandbox executor adapter | Complete; released as v0.9 (pure programs; non-pure handlers in M6.3) |
 | M6.3 | v0.10 | External effects and reconciliation | Complete; released as v0.10 |
-| M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Planned |
-| M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Planned |
-| M8.1 | v0.13 | Dynamic fan-out regions | Planned; use case confirmed in section 18 |
-| M9 | v0.14 | ACP and named direct agent adapters | Planned |
+| M7 | v0.11 | Goal families, recursive Hypagoals, executor abstraction, and isolated Pi execution | Complete; shipped in v0.14 |
+| M8 | v0.12 | Worktree integration and bounded concurrent scheduling | Complete; shipped in v0.14 |
+| M8.1 | v0.13 | Dynamic fan-out regions | Complete; shipped in v0.14 |
+| M9 | v0.14 | ACP and named direct agent adapters | Complete; released as v0.14 |
 | Exit | v1.0 | Hardened agent-independent execution kernel | Planned |
 
 Release markers are planning values. Acceptance criteria control milestone completion.
