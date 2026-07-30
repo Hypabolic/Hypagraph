@@ -61,6 +61,12 @@ import {
   type CreateAcpExecutorOptions,
 } from "./acp-executor.js";
 import {
+  CliProcessRegistry,
+  createCliExecutor,
+  executeAndSettleCli,
+  type CreateCliExecutorOptions,
+} from "./cli-executor.js";
+import {
   JsonlUtf8LineReader,
   terminateChildProcessTree,
 } from "./child-process-jsonrpc.js";
@@ -1223,6 +1229,13 @@ export interface CreateIsolatedPiHostOptions {
    * checks include ACP sessions.
    */
   acp?: CreateAcpExecutorOptions;
+  /**
+   * Optional CLI executor options for profile.kind === "cli".
+   * When set, the host owns one shared CliProcessRegistry (options.registry
+   * when provided, else a host-created registry) so teardown and active-work
+   * checks include named CLI processes.
+   */
+  cli?: CreateCliExecutorOptions;
 }
 
 /**
@@ -1230,17 +1243,21 @@ export interface CreateIsolatedPiHostOptions {
  * Extension restore, ensureNoActiveExecution, and product dispatch use this surface.
  * When ACP options are provided, the same host routes acp profiles and owns the
  * shared ACP session registry for teardown.
+ * When CLI options are provided, the same host routes cli profiles and owns the
+ * shared CLI process registry for teardown.
  */
 export interface IsolatedPiHost {
   readonly registry: IsolatedPiProcessRegistry;
   /** Shared ACP session registry when ACP options were configured. */
   readonly acpRegistry?: AcpSessionRegistry;
+  /** Shared CLI process registry when CLI options were configured. */
+  readonly cliRegistry?: CliProcessRegistry;
   readonly executor: NodeExecutor;
   resolveNodeExecutor(profile: ExecutorProfileRef): NodeExecutor;
   /**
    * Controller seam: run one attempt and settle through the shared path.
    * Nested UI selection of profiles is m7-s9. Product hosts call this when the
-   * selected profile kind is isolated-pi or acp (when configured).
+   * selected profile kind is isolated-pi, acp, or cli (when configured).
    */
   dispatchAttempt(
     context: ExecutorContextEnvelope,
@@ -1251,8 +1268,8 @@ export interface IsolatedPiHost {
   activeProcessCount(): number;
   /**
    * Terminate all owned processes and reconcile non-live PIDs.
-   * Also closes active ACP sessions when an ACP registry is bound.
-   * Call from session restore and branch change.
+   * Also closes active ACP sessions and CLI processes when those registries
+   * are bound. Call from session restore and branch change.
    * In-flight execute maps host teardown to cancelled/interrupted by kind.
    */
   teardownOnRestore(input: {
@@ -1262,6 +1279,7 @@ export interface IsolatedPiHost {
     terminatedCount: number;
     orphans: OwnedIsolatedPiProcessRecord[];
     acpClosedCount: number;
+    cliClosedCount: number;
   }>;
 }
 
@@ -1288,8 +1306,9 @@ export function getActiveIsolatedPiHost(): IsolatedPiHost | undefined {
  * Supported profile kinds:
  * - isolated-pi (always when the host is bound)
  * - acp (when the host was created with acp options / acpRegistry)
+ * - cli (when the host was created with cli options / cliRegistry)
  *
- * Controllers call this for isolated-pi and acp. Other kinds return diagnostics.
+ * Controllers call this for isolated-pi, acp, and cli. Other kinds return diagnostics.
  */
 export async function dispatchIsolatedPiAttempt(
   context: ExecutorContextEnvelope,
@@ -1325,19 +1344,34 @@ export async function dispatchIsolatedPiAttempt(
     }
     return host.dispatchAttempt(context, signal, meta);
   }
+  if (context.profile.kind === "cli") {
+    if (!host.cliRegistry) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "cli_host_unconfigured",
+          message:
+            "CLI dispatch requires createIsolatedPiHost options.cli. "
+            + "The product host must bind a named CLI transport and registry.",
+          location: "context.profile.kind",
+        }],
+      };
+    }
+    return host.dispatchAttempt(context, signal, meta);
+  }
   return {
     ok: false,
     diagnostics: [{
       code: "isolated_pi_profile_mismatch",
       message:
-        `dispatchIsolatedPiAttempt requires profile kind 'isolated-pi' or 'acp', got '${context.profile.kind}'.`,
+        `dispatchIsolatedPiAttempt requires profile kind 'isolated-pi', 'acp', or 'cli', got '${context.profile.kind}'.`,
       location: "context.profile.kind",
     }],
   };
 }
 
 /**
- * Product dispatch for host-routed executor profiles (isolated-pi and acp).
+ * Product dispatch for host-routed executor profiles (isolated-pi, acp, and cli).
  * Alias of dispatchIsolatedPiAttempt for call sites that select by profile kind.
  */
 export const dispatchExecutorAttempt = dispatchIsolatedPiAttempt;
@@ -1392,6 +1426,25 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
     acpExecutor = createAcpExecutor(acpOptions);
   }
 
+  // Host owns one shared CLI registry and one cached CLI executor.
+  let cliRegistry: CliProcessRegistry | undefined;
+  let cliOptions: CreateCliExecutorOptions | undefined;
+  let cliExecutor: NodeExecutor | undefined;
+  if (options.cli) {
+    cliRegistry = options.cli.registry ?? new CliProcessRegistry();
+    cliOptions = {
+      ...options.cli,
+      registry: cliRegistry,
+      ...(options.startedAt !== undefined && options.cli.startedAt === undefined
+        ? { startedAt: options.startedAt }
+        : {}),
+      ...(resolveCwd !== undefined && options.cli.resolveCwd === undefined
+        ? { resolveCwd }
+        : {}),
+    };
+    cliExecutor = createCliExecutor(cliOptions);
+  }
+
   const resolveNodeExecutor = (profile: ExecutorProfileRef): NodeExecutor => {
     if (profile.kind === "acp") {
       if (!acpExecutor || !acpOptions) {
@@ -1401,12 +1454,21 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
       }
       return acpExecutor;
     }
+    if (profile.kind === "cli") {
+      if (!cliExecutor || !cliOptions) {
+        throw new Error(
+          "CLI profile requires createIsolatedPiHost options.cli.",
+        );
+      }
+      return cliExecutor;
+    }
     return createNodeExecutorForProfile(profile, {
       isolatedPi: isolatedOptions,
       ...(options.createCurrentSession !== undefined
         ? { createCurrentSession: options.createCurrentSession }
         : {}),
       ...(acpOptions !== undefined ? { acp: acpOptions } : {}),
+      ...(cliOptions !== undefined ? { cli: cliOptions } : {}),
     });
   };
 
@@ -1417,6 +1479,7 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
   const host: IsolatedPiHost = {
     registry,
     ...(acpRegistry !== undefined ? { acpRegistry } : {}),
+    ...(cliRegistry !== undefined ? { cliRegistry } : {}),
     executor,
     resolveNodeExecutor,
     async dispatchAttempt(context, signal, meta) {
@@ -1426,7 +1489,9 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
           ? executor
           : context.profile.kind === "acp" && acpExecutor
             ? acpExecutor
-            : resolveNodeExecutor(context.profile);
+            : context.profile.kind === "cli" && cliExecutor
+              ? cliExecutor
+              : resolveNodeExecutor(context.profile);
       } catch (error) {
         // Map synchronous profile routing failures to diagnostics (never reject).
         return {
@@ -1463,13 +1528,20 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
       if (context.profile.kind === "acp") {
         return executeAndSettleAcp(selected, context, signal, meta);
       }
+      if (context.profile.kind === "cli") {
+        return executeAndSettleCli(selected, context, signal, meta);
+      }
       return executeAndSettleIsolatedPi(selected, context, signal, meta);
     },
     hasActiveProcesses() {
-      return registry.hasActive() || (acpRegistry?.hasActive() ?? false);
+      return registry.hasActive()
+        || (acpRegistry?.hasActive() ?? false)
+        || (cliRegistry?.hasActive() ?? false);
     },
     activeProcessCount() {
-      return registry.activeCount() + (acpRegistry?.activeCount() ?? 0);
+      return registry.activeCount()
+        + (acpRegistry?.activeCount() ?? 0)
+        + (cliRegistry?.activeCount() ?? 0);
     },
     async teardownOnRestore(input) {
       const terminatedCount = await registry.terminateAll(input);
@@ -1485,10 +1557,14 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
       const acpClosedCount = acpRegistry
         ? await acpRegistry.closeAll({ reason: input.reason, kind: input.kind })
         : 0;
+      const cliClosedCount = cliRegistry
+        ? await cliRegistry.closeAll({ reason: input.reason, kind: input.kind })
+        : 0;
       return {
         terminatedCount: terminatedCount + orphans.terminatedTokens.length,
         orphans: orphans.orphans,
         acpClosedCount,
+        cliClosedCount,
       };
     },
   };
@@ -1512,12 +1588,18 @@ export interface CreateNodeExecutorForProfileOptions {
    * When omitted, acp profiles fail at create time with a clear error.
    */
   acp?: CreateAcpExecutorOptions;
+  /**
+   * Required when profile.kind is cli.
+   * When omitted, cli profiles fail at create time with a clear error.
+   */
+  cli?: CreateCliExecutorOptions;
 }
 
 /**
  * Create a NodeExecutor for a profile kind.
  * Routes isolated-pi to createIsolatedPiExecutor.
  * Routes acp to createAcpExecutor.
+ * Routes cli to createCliExecutor.
  * Controllers use this to select the adapter without embedding transport details.
  */
 export function createNodeExecutorForProfile(
@@ -1547,6 +1629,14 @@ export function createNodeExecutorForProfile(
       );
     }
     return createAcpExecutor(options.acp);
+  }
+  if (profile.kind === "cli") {
+    if (!options.cli) {
+      throw new Error(
+        "CLI profile requires createNodeExecutorForProfile options.cli.",
+      );
+    }
+    return createCliExecutor(options.cli);
   }
   throw new Error(
     `No NodeExecutor adapter is registered for profile kind '${profile.kind}'.`,

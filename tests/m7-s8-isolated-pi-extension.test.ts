@@ -87,9 +87,10 @@ describe("m7-s8 isolated Pi extension surface", () => {
     expect(output).toContain("Isolated Pi host: isolated-pi");
     expect(output).toContain("Profile kind: isolated-pi");
     expect(output).toContain("ACP host bound: yes");
+    expect(output).toContain("CLI host bound: yes");
     expect(output).toContain("Active processes: 0");
     expect(output).toContain("/hypagraph executor cancel");
-    expect(output).toContain("probe [acp]");
+    expect(output).toContain("probe [acp|cli]");
   });
 
   it("executor cancel with no active attempt reports idle", async () => {
