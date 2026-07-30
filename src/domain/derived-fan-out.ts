@@ -329,6 +329,29 @@ const BRANCH_SNAPSHOT_KEYS = [
   "failureReason",
 ] as const;
 
+/** Known evidence entry fields. */
+const EVIDENCE_SNAPSHOT_KEYS = [
+  "ref",
+  "kind",
+  "summary",
+  "visibility",
+] as const;
+
+/** Known region definition fields. */
+const DEFINITION_SNAPSHOT_KEYS = [
+  "id",
+  "collectionFact",
+  "maxBranches",
+  "fanInPolicy",
+] as const;
+
+/** Known complete/append options fields. */
+const COMPLETE_OPTIONS_SNAPSHOT_KEYS = [
+  "attemptId",
+  "failureReason",
+  "evidence",
+] as const;
+
 /**
  * Read known own data properties into a plain record.
  * Rejects accessor properties. Absent keys are omitted.
@@ -357,9 +380,149 @@ function readKnownOwnDataFields(
 }
 
 /**
+ * Read an array element as an own data property without invoking index getters.
+ */
+function readArrayElement(
+  array: unknown[],
+  index: number,
+  location: string,
+): OwnDataPropertyRead {
+  return readOwnDataProperty(array as object, String(index), location);
+}
+
+/**
+ * Read array length as an own data property without invoking a length getter.
+ */
+function readArrayLength(
+  array: unknown[],
+  location: string,
+): { ok: true; length: number } | { ok: false; diagnostic: Diagnostic } {
+  const lengthRead = readOwnDataProperty(array as object, "length", `${location}.length`);
+  if (!lengthRead.ok) {
+    return { ok: false, diagnostic: lengthRead.diagnostic };
+  }
+  if (!lengthRead.present || !isNonNegativeSafeInteger(lengthRead.value)) {
+    return {
+      ok: false,
+      diagnostic: reject(
+        "derived_fan_out_invalid_accessor",
+        "Array length must be a non-negative safe integer data property.",
+        `${location}.length`,
+      ),
+    };
+  }
+  return { ok: true, length: lengthRead.value };
+}
+
+/**
+ * Snapshot array elements via own data-property index reads into a plain array.
+ * Requires an array. Rejects index accessors. Does not invoke element getters.
+ */
+function snapshotArrayElements(
+  array: unknown[],
+  location: string,
+): { ok: true; elements: unknown[] } | { ok: false; diagnostics: Diagnostic[] } {
+  const lengthResult = readArrayLength(array, location);
+  if (!lengthResult.ok) {
+    return { ok: false, diagnostics: [lengthResult.diagnostic] };
+  }
+  const elements: unknown[] = [];
+  const diagnostics: Diagnostic[] = [];
+  for (let index = 0; index < lengthResult.length; index += 1) {
+    const itemLocation = `${location}[${index}]`;
+    const elementRead = readArrayElement(array, index, itemLocation);
+    if (!elementRead.ok) {
+      diagnostics.push(elementRead.diagnostic);
+      continue;
+    }
+    // Absent sparse slots become undefined data values in the plain snapshot.
+    elements.push(elementRead.present ? elementRead.value : undefined);
+  }
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  return { ok: true, elements };
+}
+
+/**
+ * Snapshot one evidence entry into a plain record of own data properties.
+ */
+function snapshotEvidenceEntry(
+  value: unknown,
+  location: string,
+): { ok: true; value: unknown } | { ok: false; diagnostics: Diagnostic[] } {
+  if (!isStrictPlainObject(value)) {
+    return { ok: true, value };
+  }
+  const fields = readKnownOwnDataFields(value, EVIDENCE_SNAPSHOT_KEYS, location);
+  if (!fields.ok) {
+    return { ok: false, diagnostics: fields.diagnostics };
+  }
+  return { ok: true, value: fields.record };
+}
+
+/**
+ * Snapshot an evidence array element-by-element with nested field protection.
+ */
+function snapshotEvidenceArray(
+  value: unknown,
+  location: string,
+): { ok: true; value: unknown } | { ok: false; diagnostics: Diagnostic[] } {
+  if (!Array.isArray(value)) {
+    return { ok: true, value };
+  }
+  const elements = snapshotArrayElements(value, location);
+  if (!elements.ok) {
+    return { ok: false, diagnostics: elements.diagnostics };
+  }
+  const items: unknown[] = [];
+  const diagnostics: Diagnostic[] = [];
+  for (let index = 0; index < elements.elements.length; index += 1) {
+    const entry = snapshotEvidenceEntry(
+      elements.elements[index],
+      `${location}[${index}]`,
+    );
+    if (!entry.ok) {
+      diagnostics.push(...entry.diagnostics);
+      continue;
+    }
+    items.push(entry.value);
+  }
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  return { ok: true, value: items };
+}
+
+/**
+ * Snapshot one branch record, including nested evidence entries.
+ */
+function snapshotBranchRecord(
+  value: unknown,
+  location: string,
+): { ok: true; value: unknown } | { ok: false; diagnostics: Diagnostic[] } {
+  if (!isStrictPlainObject(value)) {
+    return { ok: true, value };
+  }
+  const fields = readKnownOwnDataFields(value, BRANCH_SNAPSHOT_KEYS, location);
+  if (!fields.ok) {
+    return { ok: false, diagnostics: fields.diagnostics };
+  }
+  const record = { ...fields.record };
+  if ("evidence" in record) {
+    const evidence = snapshotEvidenceArray(record.evidence, `${location}.evidence`);
+    if (!evidence.ok) {
+      return { ok: false, diagnostics: evidence.diagnostics };
+    }
+    record.evidence = evidence.value;
+  }
+  return { ok: true, value: record };
+}
+
+/**
  * Snapshot an untrusted expansion into a plain object of own data properties.
- * Rejects accessors on the expansion and on each branch element.
- * Does not invoke getters. Does not mutate input.
+ * Rejects accessors on the expansion, array indices, branch fields, and
+ * nested evidence fields. Does not invoke getters. Does not mutate input.
  */
 function snapshotDerivedFanOutExpansion(
   value: unknown,
@@ -382,26 +545,50 @@ function snapshotDerivedFanOutExpansion(
   }
 
   const snapshot: Record<string, unknown> = { ...top.record };
+
+  if (Array.isArray(snapshot.collectionValues)) {
+    const values = snapshotArrayElements(
+      snapshot.collectionValues,
+      `${location}.collectionValues`,
+    );
+    if (!values.ok) {
+      return { ok: false, diagnostics: values.diagnostics };
+    }
+    snapshot.collectionValues = values.elements;
+  }
+
+  if (Array.isArray(snapshot.usedAttemptIds)) {
+    const ids = snapshotArrayElements(
+      snapshot.usedAttemptIds,
+      `${location}.usedAttemptIds`,
+    );
+    if (!ids.ok) {
+      return { ok: false, diagnostics: ids.diagnostics };
+    }
+    snapshot.usedAttemptIds = ids.elements;
+  }
+
   if (Array.isArray(snapshot.branches)) {
+    const branchElements = snapshotArrayElements(
+      snapshot.branches,
+      `${location}.branches`,
+    );
+    if (!branchElements.ok) {
+      return { ok: false, diagnostics: branchElements.diagnostics };
+    }
     const branchSnapshots: unknown[] = [];
     const diagnostics: Diagnostic[] = [];
-    for (let index = 0; index < snapshot.branches.length; index += 1) {
+    for (let index = 0; index < branchElements.elements.length; index += 1) {
       const branchLocation = `${location}.branches[${index}]`;
-      const branchValue = snapshot.branches[index];
-      if (!isStrictPlainObject(branchValue)) {
-        branchSnapshots.push(branchValue);
-        continue;
-      }
-      const branchRead = readKnownOwnDataFields(
-        branchValue,
-        BRANCH_SNAPSHOT_KEYS,
+      const branch = snapshotBranchRecord(
+        branchElements.elements[index],
         branchLocation,
       );
-      if (!branchRead.ok) {
-        diagnostics.push(...branchRead.diagnostics);
+      if (!branch.ok) {
+        diagnostics.push(...branch.diagnostics);
         continue;
       }
-      branchSnapshots.push(branchRead.record);
+      branchSnapshots.push(branch.value);
     }
     if (diagnostics.length > 0) {
       return { ok: false, diagnostics };
@@ -410,6 +597,66 @@ function snapshotDerivedFanOutExpansion(
   }
 
   return { ok: true, value: snapshot };
+}
+
+/**
+ * Snapshot a region definition into own data properties only.
+ */
+function snapshotRegionDefinition(
+  value: unknown,
+  location: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; diagnostics: Diagnostic[] } {
+  if (!isStrictPlainObject(value)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "derived_fan_out_not_plain_object",
+        "Derived fan-out region definition must be a plain object.",
+        location,
+      )],
+    };
+  }
+  const fields = readKnownOwnDataFields(value, DEFINITION_SNAPSHOT_KEYS, location);
+  if (!fields.ok) {
+    return { ok: false, diagnostics: fields.diagnostics };
+  }
+  return { ok: true, value: fields.record };
+}
+
+/**
+ * Snapshot complete/append options into own data properties only.
+ * Absent options yield an empty record.
+ */
+function snapshotCompleteOptions(
+  options: unknown,
+  location = "options",
+): { ok: true; value: Record<string, unknown> } | { ok: false; diagnostics: Diagnostic[] } {
+  if (options === undefined || options === null) {
+    return { ok: true, value: {} };
+  }
+  if (!isStrictPlainObject(options)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "derived_fan_out_invalid_options",
+        "Complete options must be a plain object when present.",
+        location,
+      )],
+    };
+  }
+  const fields = readKnownOwnDataFields(options, COMPLETE_OPTIONS_SNAPSHOT_KEYS, location);
+  if (!fields.ok) {
+    return { ok: false, diagnostics: fields.diagnostics };
+  }
+  const record = { ...fields.record };
+  if ("evidence" in record) {
+    const evidence = snapshotEvidenceArray(record.evidence, `${location}.evidence`);
+    if (!evidence.ok) {
+      return { ok: false, diagnostics: evidence.diagnostics };
+    }
+    record.evidence = evidence.value;
+  }
+  return { ok: true, value: record };
 }
 
 /**
@@ -499,7 +746,13 @@ function validateEvidenceList(
   location: string,
   diagnostics: Diagnostic[],
 ): EvidenceReference[] | undefined {
-  if (!Array.isArray(value)) {
+  // Snapshot first so index and nested field accessors yield diagnostics.
+  const snapshot = snapshotEvidenceArray(value, location);
+  if (!snapshot.ok) {
+    diagnostics.push(...snapshot.diagnostics);
+    return undefined;
+  }
+  if (!Array.isArray(snapshot.value)) {
     diagnostics.push(reject(
       "derived_fan_out_invalid_evidence",
       "Branch evidence must be an array.",
@@ -509,8 +762,8 @@ function validateEvidenceList(
   }
   const items: EvidenceReference[] = [];
   let failed = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const entry = value[index];
+  for (let index = 0; index < snapshot.value.length; index += 1) {
+    const entry = snapshot.value[index];
     const entryLocation = `${location}[${index}]`;
     if (!isStrictPlainObject(entry)) {
       diagnostics.push(reject(
@@ -584,23 +837,20 @@ function validateEvidenceList(
 
 /**
  * Validate a derived fan-out region definition.
- * Accepts untrusted input. Rejects class instances. Does not mutate input.
- * Returns diagnostics. Does not throw on input validation errors.
+ * Accepts untrusted input. Rejects class instances and accessors.
+ * Does not mutate input. Returns diagnostics. Does not throw on invalid input.
  */
 export function validateDerivedFanOutRegionDefinition(
   value: unknown,
   location = "region",
 ): Diagnostic[] {
-  if (!isStrictPlainObject(value)) {
-    return [reject(
-      "derived_fan_out_not_plain_object",
-      "Derived fan-out region definition must be a plain object.",
-      location,
-    )];
+  const snapshot = snapshotRegionDefinition(value, location);
+  if (!snapshot.ok) {
+    return snapshot.diagnostics;
   }
 
   const diagnostics: Diagnostic[] = [];
-  const record = value;
+  const record = snapshot.value;
 
   if (!isNonEmptyString(record.id)) {
     diagnostics.push(reject(
@@ -642,17 +892,21 @@ export function validateDerivedFanOutRegionDefinition(
 
 /**
  * Parse and clone a valid derived fan-out region definition.
- * Does not mutate input.
+ * Reads only own data properties. Does not mutate input.
  */
 export function parseDerivedFanOutRegionDefinition(
   value: unknown,
   location = "region",
 ): DerivedFanOutParseDefinitionResult {
+  const snapshot = snapshotRegionDefinition(value, location);
+  if (!snapshot.ok) {
+    return { ok: false, diagnostics: snapshot.diagnostics };
+  }
   const diagnostics = validateDerivedFanOutRegionDefinition(value, location);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
   }
-  const record = value as Record<string, unknown>;
+  const record = snapshot.value;
   return {
     ok: true,
     value: {
@@ -1101,17 +1355,22 @@ export function validateDerivedFanOutExpansion(
 
 /**
  * Parse and clone a valid expansion for restore.
- * Applies full validation. Does not mutate input. Does not throw on invalid input.
+ * Applies full validation. Builds the result from an own-data-property snapshot.
+ * Does not mutate input. Does not throw on invalid input.
  */
 export function parseDerivedFanOutExpansion(
   value: unknown,
   location = "expansion",
 ): DerivedFanOutParseExpansionResult {
+  const snapshot = snapshotDerivedFanOutExpansion(value, location);
+  if (!snapshot.ok) {
+    return { ok: false, diagnostics: snapshot.diagnostics };
+  }
   const diagnostics = validateDerivedFanOutExpansion(value, location);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
   }
-  const record = value as Record<string, unknown>;
+  const record = snapshot.value;
   const branchesRaw = record.branches as Array<Record<string, unknown>>;
   const branches: DerivedBranchRuntime[] = branchesRaw.map((branch) => {
     const evidence = validateEvidenceList(branch.evidence, "evidence", []) ?? [];
@@ -1133,7 +1392,9 @@ export function parseDerivedFanOutExpansion(
     return copy;
   });
 
-  const usedAttemptIds = (record.usedAttemptIds as string[]).map((id) => id.trim());
+  const usedAttemptIds = (record.usedAttemptIds as string[]).map((id) =>
+    (id as string).trim()
+  );
 
   return {
     ok: true,
@@ -1158,6 +1419,7 @@ export function parseDerivedFanOutExpansion(
  * Validate collection values for expansion.
  * Collection must be a string array whose length does not exceed maxBranches.
  * Empty collections are allowed and produce zero branches.
+ * Reads array elements as own data properties. Rejects index accessors.
  */
 function validateCollectionValues(
   collectionValues: unknown,
@@ -1174,20 +1436,24 @@ function validateCollectionValues(
       )],
     };
   }
-  if (collectionValues.length > maxBranches) {
+  const elements = snapshotArrayElements(collectionValues, location);
+  if (!elements.ok) {
+    return { ok: false, diagnostics: elements.diagnostics };
+  }
+  if (elements.elements.length > maxBranches) {
     return {
       ok: false,
       diagnostics: [reject(
         "derived_fan_out_collection_exceeds_max",
-        `Collection length ${collectionValues.length} exceeds maxBranches ${maxBranches}. The runtime rejects the collection. It does not truncate.`,
+        `Collection length ${elements.elements.length} exceeds maxBranches ${maxBranches}. The runtime rejects the collection. It does not truncate.`,
         location,
       )],
     };
   }
   const values: string[] = [];
   const diagnostics: Diagnostic[] = [];
-  for (let index = 0; index < collectionValues.length; index += 1) {
-    const item = collectionValues[index];
+  for (let index = 0; index < elements.elements.length; index += 1) {
+    const item = elements.elements[index];
     if (typeof item !== "string") {
       diagnostics.push(reject(
         "derived_fan_out_collection_item_invalid",
@@ -1421,6 +1687,13 @@ export function completeDerivedBranch(
     };
   }
 
+  // Read options through own data properties before any field use.
+  const optionsSnapshot = snapshotCompleteOptions(options, "options");
+  if (!optionsSnapshot.ok) {
+    return { ok: false, diagnostics: optionsSnapshot.diagnostics };
+  }
+  const cleanOptions = optionsSnapshot.value;
+
   const next = copyExpansion(expansion);
   const index = findBranchIndex(next, branchId);
   if (index < 0) {
@@ -1463,7 +1736,7 @@ export function completeDerivedBranch(
   // Running attempts require the caller attempt id so a late result from a
   // prior attempt cannot complete the current attempt.
   if (branch.status === "running") {
-    if (!isNonEmptyString(options?.attemptId)) {
+    if (!isNonEmptyString(cleanOptions.attemptId)) {
       return {
         ok: false,
         diagnostics: [reject(
@@ -1473,7 +1746,7 @@ export function completeDerivedBranch(
         )],
       };
     }
-    const trimmedAttemptId = options.attemptId.trim();
+    const trimmedAttemptId = (cleanOptions.attemptId as string).trim();
     if (trimmedAttemptId !== branch.attemptId) {
       return {
         ok: false,
@@ -1488,8 +1761,8 @@ export function completeDerivedBranch(
 
   branch.status = status;
   if (status === "failed") {
-    if (options?.failureReason !== undefined) {
-      if (typeof options.failureReason !== "string") {
+    if (cleanOptions.failureReason !== undefined) {
+      if (typeof cleanOptions.failureReason !== "string") {
         return {
           ok: false,
           diagnostics: [reject(
@@ -1499,17 +1772,17 @@ export function completeDerivedBranch(
           )],
         };
       }
-      branch.failureReason = options.failureReason;
+      branch.failureReason = cleanOptions.failureReason;
     } else {
       branch.failureReason = branch.failureReason ?? "branch failed";
     }
   } else {
     delete branch.failureReason;
   }
-  if (options?.evidence !== undefined) {
+  if (cleanOptions.evidence !== undefined) {
     const evidenceDiagnostics: Diagnostic[] = [];
     const evidence = validateEvidenceList(
-      options.evidence,
+      cleanOptions.evidence,
       "evidence",
       evidenceDiagnostics,
     );

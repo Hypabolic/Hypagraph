@@ -1015,6 +1015,183 @@ describe("m8.1-s1 derived fan-out from typed collection fact", () => {
         ),
       ).toBe(true);
     });
+
+    it("rejects nested array and evidence accessors without throwing", () => {
+      const base = expandOk(region(), ["a"]);
+      const withEvidence = appendDerivedBranchEvidence(
+        base,
+        "review-files/item/0",
+        [{ ref: "ev-1", kind: "note" }],
+      );
+      expect(withEvidence.ok).toBe(true);
+      if (!withEvidence.ok) return;
+
+      const withAttempt = startDerivedBranchAttempt(
+        withEvidence.expansion,
+        "review-files/item/0",
+        "a1",
+      );
+      expect(withAttempt.ok).toBe(true);
+      if (!withAttempt.ok) return;
+
+      const assertAccessor = (value: unknown, pathLabel: string) => {
+        expect(() => validateDerivedFanOutExpansionSchema(value), pathLabel).not.toThrow();
+        expect(() => validateDerivedFanOutExpansion(value), pathLabel).not.toThrow();
+        expect(() => parseDerivedFanOutExpansion(value), pathLabel).not.toThrow();
+        const diags = validateDerivedFanOutExpansion(value);
+        expect(
+          diags.some((d) => d.code === "derived_fan_out_invalid_accessor"),
+          pathLabel,
+        ).toBe(true);
+        expect(parseDerivedFanOutExpansion(value).ok, pathLabel).toBe(false);
+      };
+
+      const withThrowingIndex = (message: string): unknown[] => {
+        const hostile: unknown[] = ["placeholder"];
+        Object.defineProperty(hostile, "0", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            throw new Error(message);
+          },
+        });
+        return hostile;
+      };
+
+      // branches[0] index accessor
+      {
+        const record = structuredClone(withAttempt.expansion) as unknown as Record<string, unknown>;
+        record.branches = withThrowingIndex("hostile branches[0]");
+        assertAccessor(record, "branches[0]");
+      }
+
+      // collectionValues[0] index accessor
+      {
+        const record = structuredClone(withAttempt.expansion) as unknown as Record<string, unknown>;
+        record.collectionValues = withThrowingIndex("hostile collectionValues[0]");
+        assertAccessor(record, "collectionValues[0]");
+      }
+
+      // usedAttemptIds[0] index accessor
+      {
+        const record = structuredClone(withAttempt.expansion) as unknown as Record<string, unknown>;
+        record.usedAttemptIds = withThrowingIndex("hostile usedAttemptIds[0]");
+        assertAccessor(record, "usedAttemptIds[0]");
+      }
+
+      // evidence[0].ref accessor
+      {
+        const record = structuredClone(withAttempt.expansion) as unknown as Record<string, unknown>;
+        const branches = record.branches as Array<Record<string, unknown>>;
+        const branch = { ...branches[0]! };
+        const evidenceItem: Record<string, unknown> = { kind: "note" };
+        Object.defineProperty(evidenceItem, "ref", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            throw new Error("hostile evidence.ref");
+          },
+        });
+        branch.evidence = [evidenceItem];
+        record.branches = [branch];
+        assertAccessor(record, "evidence[0].ref");
+      }
+
+      // evidence[0] index accessor
+      {
+        const record = structuredClone(withAttempt.expansion) as unknown as Record<string, unknown>;
+        const branches = record.branches as Array<Record<string, unknown>>;
+        const branch = { ...branches[0]! };
+        branch.evidence = withThrowingIndex("hostile evidence[0]");
+        record.branches = [branch];
+        assertAccessor(record, "evidence[0]");
+      }
+    });
+
+    it("rejects definition field accessors without throwing", () => {
+      const hostile: Record<string, unknown> = {
+        collectionFact: "changed.files",
+        maxBranches: 4,
+        fanInPolicy: "fail-all",
+      };
+      Object.defineProperty(hostile, "id", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          throw new Error("hostile definition id");
+        },
+      });
+
+      expect(() => validateDerivedFanOutRegionDefinition(hostile)).not.toThrow();
+      const diags = validateDerivedFanOutRegionDefinition(hostile);
+      expect(diags.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+
+      expect(() => parseDerivedFanOutRegionDefinition(hostile)).not.toThrow();
+      expect(parseDerivedFanOutRegionDefinition(hostile).ok).toBe(false);
+
+      expect(() => expandDerivedFanOutRegion(hostile, ["a"])).not.toThrow();
+      const expanded = expandDerivedFanOutRegion(hostile, ["a"]);
+      expect(expanded.ok).toBe(false);
+      if (!expanded.ok) {
+        expect(expanded.diagnostics.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+      }
+    });
+
+    it("rejects complete options.attemptId accessors without throwing", () => {
+      const base = expandOk(region(), ["a"]);
+      const started = startDerivedBranchAttempt(base, "review-files/item/0", "a1");
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+
+      const hostileOptions: Record<string, unknown> = {};
+      Object.defineProperty(hostileOptions, "attemptId", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          throw new Error("hostile options.attemptId");
+        },
+      });
+
+      expect(() =>
+        completeDerivedBranch(
+          started.expansion,
+          "review-files/item/0",
+          "succeeded",
+          hostileOptions as { attemptId: string },
+        )
+      ).not.toThrow();
+      const result = completeDerivedBranch(
+        started.expansion,
+        "review-files/item/0",
+        "succeeded",
+        hostileOptions as { attemptId: string },
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+      }
+      // Input expansion remains running with a1.
+      expect(started.expansion.branches[0]!.status).toBe("running");
+      expect(started.expansion.branches[0]!.attemptId).toBe("a1");
+    });
+
+    it("rejects hostile collectionValues index accessors on expand", () => {
+      const hostileValues: unknown[] = ["placeholder"];
+      Object.defineProperty(hostileValues, "0", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          throw new Error("hostile expand collectionValues[0]");
+        },
+      });
+
+      expect(() => expandDerivedFanOutRegion(region(), hostileValues as string[])).not.toThrow();
+      const result = expandDerivedFanOutRegion(region(), hostileValues as string[]);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics.some((d) => d.code === "derived_fan_out_invalid_accessor")).toBe(true);
+      }
+    });
   });
 
   describe("purity", () => {
