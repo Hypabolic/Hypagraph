@@ -86,14 +86,47 @@ describe("m7-s8 isolated Pi extension surface", () => {
     const output = await runHypagraph(value, "executor status");
     expect(output).toContain("Isolated Pi host: isolated-pi");
     expect(output).toContain("Profile kind: isolated-pi");
+    expect(output).toContain("ACP host bound: yes");
     expect(output).toContain("Active processes: 0");
     expect(output).toContain("/hypagraph executor cancel");
+    expect(output).toContain("probe [acp]");
   });
 
   it("executor cancel with no active attempt reports idle", async () => {
     const value = harness();
     const output = await runHypagraph(value, "executor cancel");
-    expect(output).toContain("There is no active isolated Pi attempt.");
+    expect(output).toContain("There is no active executor attempt.");
+  });
+
+  it("product host binds an ACP registry for cancel and teardown", async () => {
+    const value = harness();
+    const host = getActiveIsolatedPiHost();
+    expect(host).toBeDefined();
+    expect(host!.acpRegistry).toBeDefined();
+    expect(host!.acpRegistry!.hasActive()).toBe(false);
+    // Seed an ACP session and cancel through the product command.
+    const token = "token-acp-ext";
+    expect(host!.acpRegistry!.register({
+      sessionToken: token,
+      identity: {
+        familyId: "family-ext",
+        goalId: "goal-ext",
+        workflowId: "workflow-ext",
+        revision: 1,
+        nodeId: "work",
+        attemptId: "attempt-acp-ext",
+      },
+      live: true,
+      startedAt: "2026-07-30T10:00:00.000Z",
+      sessionId: "sess-acp-ext",
+    }).ok).toBe(true);
+    host!.acpRegistry!.setCloser(token, async () => {
+      // stub
+    });
+    expect(host!.hasActiveProcesses()).toBe(true);
+    const output = await runHypagraph(value, "executor cancel");
+    expect(output).toMatch(/ACP session/);
+    expect(host!.acpRegistry!.hasActive()).toBe(false);
   });
 
   it("executor cancel terminates a seeded active record", async () => {
@@ -190,7 +223,7 @@ describe("m7-s8 isolated Pi extension surface", () => {
 
     await expect(
       startTool!.execute("call-1", {}, undefined, undefined, ctx),
-    ).rejects.toThrow(/isolated Pi attempt is active/);
+    ).rejects.toThrow(/active executor is running/);
     await expect(
       startTool!.execute("call-1", {}, undefined, undefined, ctx),
     ).rejects.toThrow(/hypagraph executor cancel/);

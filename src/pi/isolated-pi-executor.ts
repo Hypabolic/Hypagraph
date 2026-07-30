@@ -27,7 +27,6 @@
 
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { StringDecoder } from "node:string_decoder";
 
 import {
   buildExecutorResultPayload,
@@ -56,10 +55,23 @@ import type {
   HypagraphState,
 } from "../domain/model.js";
 import {
+  AcpSessionRegistry,
+  createAcpExecutor,
+  executeAndSettleAcp,
+  type CreateAcpExecutorOptions,
+} from "./acp-executor.js";
+import {
+  JsonlUtf8LineReader,
+  terminateChildProcessTree,
+} from "./child-process-jsonrpc.js";
+import {
   CurrentSessionExecutorAbortError,
   CurrentSessionExecutorValidationError,
   executeAndSettleCurrentSession,
 } from "./current-session-executor.js";
+
+/** Re-export shared stdio helpers for existing call sites. */
+export { JsonlUtf8LineReader, terminateChildProcessTree };
 
 // ---------------------------------------------------------------------------
 // Profile and identity constants
@@ -1204,20 +1216,31 @@ export interface CreateIsolatedPiHostOptions {
    * Liveness probe for orphan reconciliation. Defaults to isPidLive(record.pid).
    */
   isLive?: ProcessLivenessProbe;
+  /**
+   * Optional ACP executor options for profile.kind === "acp".
+   * When set, the host owns one shared AcpSessionRegistry (options.registry
+   * when provided, else a host-created registry) so teardown and active-work
+   * checks include ACP sessions.
+   */
+  acp?: CreateAcpExecutorOptions;
 }
 
 /**
  * Host-side controller for isolated Pi ownership, dispatch, and teardown.
  * Extension restore, ensureNoActiveExecution, and product dispatch use this surface.
+ * When ACP options are provided, the same host routes acp profiles and owns the
+ * shared ACP session registry for teardown.
  */
 export interface IsolatedPiHost {
   readonly registry: IsolatedPiProcessRegistry;
+  /** Shared ACP session registry when ACP options were configured. */
+  readonly acpRegistry?: AcpSessionRegistry;
   readonly executor: NodeExecutor;
   resolveNodeExecutor(profile: ExecutorProfileRef): NodeExecutor;
   /**
    * Controller seam: run one attempt and settle through the shared path.
    * Nested UI selection of profiles is m7-s9. Product hosts call this when the
-   * selected profile kind is isolated-pi.
+   * selected profile kind is isolated-pi or acp (when configured).
    */
   dispatchAttempt(
     context: ExecutorContextEnvelope,
@@ -1228,6 +1251,7 @@ export interface IsolatedPiHost {
   activeProcessCount(): number;
   /**
    * Terminate all owned processes and reconcile non-live PIDs.
+   * Also closes active ACP sessions when an ACP registry is bound.
    * Call from session restore and branch change.
    * In-flight execute maps host teardown to cancelled/interrupted by kind.
    */
@@ -1237,6 +1261,7 @@ export interface IsolatedPiHost {
   }): Promise<{
     terminatedCount: number;
     orphans: OwnedIsolatedPiProcessRecord[];
+    acpClosedCount: number;
   }>;
 }
 
@@ -1257,9 +1282,14 @@ export function getActiveIsolatedPiHost(): IsolatedPiHost | undefined {
 }
 
 /**
- * Product controller seam: dispatch one isolated Pi attempt through the bound host.
- * Nested graph UI (m7-s9) selects the profile. Controllers call this when
- * profile.kind is isolated-pi.
+ * Product controller seam: dispatch one attempt through the bound host.
+ * Nested graph UI (m7-s9) selects the profile.
+ *
+ * Supported profile kinds:
+ * - isolated-pi (always when the host is bound)
+ * - acp (when the host was created with acp options / acpRegistry)
+ *
+ * Controllers call this for isolated-pi and acp. Other kinds return diagnostics.
  */
 export async function dispatchIsolatedPiAttempt(
   context: ExecutorContextEnvelope,
@@ -1277,19 +1307,40 @@ export async function dispatchIsolatedPiAttempt(
       }],
     };
   }
-  if (context.profile.kind !== "isolated-pi") {
-    return {
-      ok: false,
-      diagnostics: [{
-        code: "isolated_pi_profile_mismatch",
-        message:
-          `dispatchIsolatedPiAttempt requires profile kind 'isolated-pi', got '${context.profile.kind}'.`,
-        location: "context.profile.kind",
-      }],
-    };
+  if (context.profile.kind === "isolated-pi") {
+    return host.dispatchAttempt(context, signal, meta);
   }
-  return host.dispatchAttempt(context, signal, meta);
+  if (context.profile.kind === "acp") {
+    if (!host.acpRegistry) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "acp_host_unconfigured",
+          message:
+            "ACP dispatch requires createIsolatedPiHost options.acp. "
+            + "The product host must bind an ACP transport and registry.",
+          location: "context.profile.kind",
+        }],
+      };
+    }
+    return host.dispatchAttempt(context, signal, meta);
+  }
+  return {
+    ok: false,
+    diagnostics: [{
+      code: "isolated_pi_profile_mismatch",
+      message:
+        `dispatchIsolatedPiAttempt requires profile kind 'isolated-pi' or 'acp', got '${context.profile.kind}'.`,
+      location: "context.profile.kind",
+    }],
+  };
 }
+
+/**
+ * Product dispatch for host-routed executor profiles (isolated-pi and acp).
+ * Alias of dispatchIsolatedPiAttempt for call sites that select by profile kind.
+ */
+export const dispatchExecutorAttempt = dispatchIsolatedPiAttempt;
 
 /**
  * Create the host controller used by the extension product surface.
@@ -1321,13 +1372,43 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
       : {}),
   };
 
-  const resolveNodeExecutor = (profile: ExecutorProfileRef): NodeExecutor =>
-    createNodeExecutorForProfile(profile, {
+  // Host owns one shared ACP registry and one cached ACP executor.
+  // Caching avoids tokenSequence restart collisions across concurrent dispatches.
+  let acpRegistry: AcpSessionRegistry | undefined;
+  let acpOptions: CreateAcpExecutorOptions | undefined;
+  let acpExecutor: NodeExecutor | undefined;
+  if (options.acp) {
+    acpRegistry = options.acp.registry ?? new AcpSessionRegistry();
+    acpOptions = {
+      ...options.acp,
+      registry: acpRegistry,
+      ...(options.startedAt !== undefined && options.acp.startedAt === undefined
+        ? { startedAt: options.startedAt }
+        : {}),
+      ...(resolveCwd !== undefined && options.acp.resolveCwd === undefined
+        ? { resolveCwd }
+        : {}),
+    };
+    acpExecutor = createAcpExecutor(acpOptions);
+  }
+
+  const resolveNodeExecutor = (profile: ExecutorProfileRef): NodeExecutor => {
+    if (profile.kind === "acp") {
+      if (!acpExecutor || !acpOptions) {
+        throw new Error(
+          "ACP profile requires createIsolatedPiHost options.acp.",
+        );
+      }
+      return acpExecutor;
+    }
+    return createNodeExecutorForProfile(profile, {
       isolatedPi: isolatedOptions,
       ...(options.createCurrentSession !== undefined
         ? { createCurrentSession: options.createCurrentSession }
         : {}),
+      ...(acpOptions !== undefined ? { acp: acpOptions } : {}),
     });
+  };
 
   const executor = resolveNodeExecutor(ISOLATED_PI_PROFILE);
   const isLive = options.isLive
@@ -1335,6 +1416,7 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
 
   const host: IsolatedPiHost = {
     registry,
+    ...(acpRegistry !== undefined ? { acpRegistry } : {}),
     executor,
     resolveNodeExecutor,
     async dispatchAttempt(context, signal, meta) {
@@ -1342,7 +1424,9 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
       try {
         selected = context.profile.kind === "isolated-pi"
           ? executor
-          : resolveNodeExecutor(context.profile);
+          : context.profile.kind === "acp" && acpExecutor
+            ? acpExecutor
+            : resolveNodeExecutor(context.profile);
       } catch (error) {
         // Map synchronous profile routing failures to diagnostics (never reject).
         return {
@@ -1376,13 +1460,16 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
           };
         }
       }
+      if (context.profile.kind === "acp") {
+        return executeAndSettleAcp(selected, context, signal, meta);
+      }
       return executeAndSettleIsolatedPi(selected, context, signal, meta);
     },
     hasActiveProcesses() {
-      return registry.hasActive();
+      return registry.hasActive() || (acpRegistry?.hasActive() ?? false);
     },
     activeProcessCount() {
-      return registry.activeCount();
+      return registry.activeCount() + (acpRegistry?.activeCount() ?? 0);
     },
     async teardownOnRestore(input) {
       const terminatedCount = await registry.terminateAll(input);
@@ -1395,9 +1482,13 @@ export function createIsolatedPiHost(options: CreateIsolatedPiHostOptions): Isol
           if (record.pid !== undefined) await killPidBestEffort(record.pid);
         },
       );
+      const acpClosedCount = acpRegistry
+        ? await acpRegistry.closeAll({ reason: input.reason, kind: input.kind })
+        : 0;
       return {
         terminatedCount: terminatedCount + orphans.terminatedTokens.length,
         orphans: orphans.orphans,
+        acpClosedCount,
       };
     },
   };
@@ -1416,11 +1507,17 @@ export interface CreateNodeExecutorForProfileOptions {
    * When omitted, current-session profiles fail at create time with a clear error.
    */
   createCurrentSession?: () => NodeExecutor;
+  /**
+   * Required when profile.kind is acp.
+   * When omitted, acp profiles fail at create time with a clear error.
+   */
+  acp?: CreateAcpExecutorOptions;
 }
 
 /**
  * Create a NodeExecutor for a profile kind.
  * Routes isolated-pi to createIsolatedPiExecutor.
+ * Routes acp to createAcpExecutor.
  * Controllers use this to select the adapter without embedding transport details.
  */
 export function createNodeExecutorForProfile(
@@ -1442,6 +1539,14 @@ export function createNodeExecutorForProfile(
       );
     }
     return options.createCurrentSession();
+  }
+  if (profile.kind === "acp") {
+    if (!options.acp) {
+      throw new Error(
+        "ACP profile requires createNodeExecutorForProfile options.acp.",
+      );
+    }
+    return createAcpExecutor(options.acp);
   }
   throw new Error(
     `No NodeExecutor adapter is registered for profile kind '${profile.kind}'.`,
@@ -1621,52 +1726,6 @@ export function extractStructuredResultFromAssistantText(
       "The isolated Pi assistant text did not contain a structured JSON result object. "
       + "Raw assistant text is not a valid canonical result.",
   };
-}
-
-/**
- * Streaming UTF-8 JSONL line reader for Pi RPC stdout.
- *
- * Decodes raw buffer chunks through StringDecoder so multi-byte characters that
- * span chunk boundaries stay intact. Splits only on LF (`\n`) and strips a
- * trailing CR. Incomplete lines remain buffered until a later chunk arrives.
- */
-export class JsonlUtf8LineReader {
-  private readonly decoder = new StringDecoder("utf8");
-  private buffer = "";
-
-  /**
-   * Decode one raw chunk and return complete lines (without the LF delimiter).
-   */
-  push(chunk: Buffer): string[] {
-    this.buffer += this.decoder.write(chunk);
-    return this.drainCompleteLines();
-  }
-
-  /**
-   * Flush decoder end state and return any remaining complete lines.
-   * A trailing incomplete line without LF is left in the buffer and not returned.
-   */
-  end(): string[] {
-    this.buffer += this.decoder.end();
-    return this.drainCompleteLines();
-  }
-
-  /** Text still buffered after the last push/end (incomplete final line). */
-  pending(): string {
-    return this.buffer;
-  }
-
-  private drainCompleteLines(): string[] {
-    const lines: string[] = [];
-    while (true) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline < 0) break;
-      const rawLine = this.buffer.slice(0, newline).replace(/\r$/, "");
-      this.buffer = this.buffer.slice(newline + 1);
-      lines.push(rawLine);
-    }
-    return lines;
-  }
 }
 
 /**
@@ -2077,85 +2136,9 @@ export class IsolatedPiSessionLostError extends Error {
   }
 }
 
-/**
- * Terminate a child process tree with bounded wait.
- * Idempotent for already-exited children (exit code or signal code set).
- * forceTimer and a final deadline always resolve so callers cannot hang.
- */
-export async function terminateChildProcessTree(
-  child: ChildProcess,
-  options: { graceMs?: number; forceMs?: number; reason?: string } = {},
-): Promise<void> {
-  if (childHasExited(child)) return;
-
-  const graceMs = options.graceMs ?? 2_000;
-  const forceMs = options.forceMs ?? 1_000;
-
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const done = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(forceTimer);
-      clearTimeout(deadlineTimer);
-      child.removeListener("exit", onExit);
-      resolve();
-    };
-
-    const onExit = (): void => {
-      done();
-    };
-
-    const forceTimer = setTimeout(() => {
-      if (childHasExited(child)) {
-        done();
-        return;
-      }
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, graceMs);
-
-    // Final bound: resolve even if the process never emits exit after SIGKILL.
-    const deadlineTimer = setTimeout(() => {
-      done();
-    }, graceMs + forceMs);
-
-    child.once("exit", onExit);
-
-    if (childHasExited(child)) {
-      done();
-      return;
-    }
-
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      done();
-      return;
-    }
-
-    // Race: process may have exited between checks.
-    if (childHasExited(child)) {
-      done();
-    }
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
-
-function childHasExited(child: ChildProcess): boolean {
-  // exitCode is set for normal exit. signalCode is set when killed by signal.
-  // child.killed only records whether this process called kill(); external kill
-  // leaves killed false with signalCode set.
-  return child.exitCode !== null
-    || child.signalCode !== null
-    || child.killed;
-}
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

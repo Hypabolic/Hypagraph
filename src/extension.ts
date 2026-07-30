@@ -79,6 +79,11 @@ import {
   routeLiveTaskCompletion,
 } from "./pi/current-session-executor.js";
 import {
+  createChildProcessAcpTransport,
+  DEFAULT_ACP_PROMPT_TIMEOUT_MS,
+  materializeAcpContext,
+} from "./pi/acp-executor.js";
+import {
   bindActiveIsolatedPiHost,
   createChildProcessIsolatedPiTransport,
   createIsolatedPiHost,
@@ -345,24 +350,42 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const activePresentations = new Map<string, Promise<"ready" | "failed" | "unavailable">>();
 
   /**
-   * Isolated Pi host controller (m7-s8).
+   * Isolated Pi and ACP host controller (m7-s8 / m9-s1).
    * Owns the process registry, default executor, dispatch seam, and restore teardown.
    * Until M8 worktrees, checkout key and cwd both use process.cwd() so concurrent
    * same-checkout mutation is blocked.
    * Nested graph UI for profile selection is m7-s9.
+   *
+   * ACP options bind a shared AcpSessionRegistry so /hypagraph executor cancel and
+   * session restore can close in-flight ACP sessions. Product ACP dispatch requires
+   * profile.kind === "acp" and a configured agent binary (ACP_AGENT_BIN).
+   * Default promptTimeoutMs is finite (DEFAULT_ACP_PROMPT_TIMEOUT_MS) so hung turns
+   * do not run without a wall-clock bound.
    */
   const isolatedPiCheckoutCwd = (): string => process.cwd();
+  const hostStartedAt = (): string => new Date().toISOString();
   const isolatedPiHost: IsolatedPiHost = createIsolatedPiHost({
     transport: createChildProcessIsolatedPiTransport(),
     resolveCwd: () => isolatedPiCheckoutCwd(),
     resolveCheckoutKey: () => isolatedPiCheckoutCwd(),
-    startedAt: () => new Date().toISOString(),
+    startedAt: hostStartedAt,
     createCurrentSession: () => createCurrentSessionExecutor(async () => {
       throw new Error(
         "Current-session NodeExecutor requires a result source. "
         + "Use routeLiveTaskCompletion for live session completion.",
       );
     }),
+    // M9-s1: ACP client adapter seam. Registry is host-owned for cancel/teardown.
+    acp: {
+      transport: createChildProcessAcpTransport({
+        // Missing ACP_AGENT_BIN fails openSession with a clear diagnostic when used.
+        requireBinary: true,
+        promptTimeoutMs: DEFAULT_ACP_PROMPT_TIMEOUT_MS,
+      }),
+      resolveCwd: () => isolatedPiCheckoutCwd(),
+      startedAt: hostStartedAt,
+      promptTimeoutMs: DEFAULT_ACP_PROMPT_TIMEOUT_MS,
+    },
   });
   // Bind the product session host so dispatchIsolatedPiAttempt reaches this instance.
   bindActiveIsolatedPiHost(isolatedPiHost);
@@ -429,8 +452,18 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
     }
     if (isolatedPiController.hasActiveProcesses()) {
+      const piCount = isolatedPiController.host.registry.activeCount();
+      const acpCount = isolatedPiController.host.acpRegistry?.activeCount() ?? 0;
+      const parts: string[] = [];
+      if (piCount > 0) {
+        parts.push(`${piCount} isolated Pi attempt(s)`);
+      }
+      if (acpCount > 0) {
+        parts.push(`${acpCount} ACP session(s)`);
+      }
+      const label = parts.length > 0 ? parts.join(" and ") : "executor attempt(s)";
       throw new Error(
-        `An isolated Pi attempt is active (${isolatedPiController.host.executor.id}). `
+        `An active executor is running (${label}). `
         + "Use /hypagraph executor cancel to stop it, or let it finish before another workflow change.",
       );
     }
@@ -464,17 +497,26 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       branchChanged
         ? {
           kind: "branch",
-          reason: "The Pi session branch changed before the isolated Pi attempt completed.",
+          reason: "The Pi session branch changed before the executor attempt completed.",
         }
         : {
           kind: "restore",
-          reason: "The Pi session reloaded before the isolated Pi attempt completed.",
+          reason: "The Pi session reloaded before the executor attempt completed.",
         },
     );
-    if (isolatedTeardown.terminatedCount > 0) {
+    const piClosed = isolatedTeardown.terminatedCount;
+    const acpClosed = isolatedTeardown.acpClosedCount ?? 0;
+    if (piClosed > 0 || acpClosed > 0) {
+      const parts: string[] = [];
+      if (piClosed > 0) {
+        parts.push(`${piClosed} isolated Pi process(es)`);
+      }
+      if (acpClosed > 0) {
+        parts.push(`${acpClosed} ACP session(s)`);
+      }
+      const when = branchChanged ? "branch change" : "session restore";
       ctx.ui.notify(
-        `Hypagraph terminated ${isolatedTeardown.terminatedCount} isolated Pi process(es) `
-        + `via ${isolatedPiController.host.executor.id} (${ISOLATED_PI_PROFILE.kind}) on session restore.`,
+        `Hypagraph terminated ${parts.join(" and ")} on ${when}.`,
         "warning",
       );
     }
@@ -2387,21 +2429,25 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         const active = state ? activeExecutions.list(state.workflowId) : [];
         ctx.ui.notify(active.length > 0 ? active.map((entry) => `${entry.nodeId} (${entry.attemptId})`).join("\n") : "There is no active check.", "info");
       } else if (words[0]?.toLowerCase() === "executor") {
-        // Product surface for the isolated Pi host (m7-s8).
+        // Product surface for the isolated Pi / ACP host (m7-s8 / m9-s1).
         // status: report active process count and executor identity.
-        // probe: call dispatchIsolatedPiAttempt with an aborted signal so no
-        // child is spawned; proves the product dispatch seam is live.
-        // cancel: user-initiated host teardown of in-flight isolated processes.
+        // probe [acp]: call dispatchIsolatedPiAttempt with an aborted signal so no
+        // child is spawned; proves the product dispatch seam is live for
+        // isolated-pi or acp.
+        // cancel: user-initiated host teardown of in-flight executor sessions.
         const sub = (words[1] ?? "status").toLowerCase();
         if (sub === "status") {
           const familyView = resolveFamilyView(ctx);
           const host = executorHostSnapshot();
+          const acpBound = isolatedPiController.host.acpRegistry !== undefined;
           const lines = [
             `Isolated Pi host: ${host.executorId ?? isolatedPiController.host.executor.id}`,
             `Profile kind: ${host.profileKind ?? ISOLATED_PI_PROFILE.kind}`,
+            `ACP host bound: ${acpBound ? "yes" : "no"}`,
             `Active processes: ${host.activeProcessCount ?? 0}`,
-            "Dispatch seam: dispatchIsolatedPiAttempt (profile kind isolated-pi)",
+            "Dispatch seam: dispatchIsolatedPiAttempt (profile kinds isolated-pi, acp)",
             "Cancel: /hypagraph executor cancel",
+            "Probe: /hypagraph executor probe [acp]",
           ];
           if (familyView?.scheduler.pending) {
             lines.push(formatFamilyDispatchSurfaceLine("pending", familyView.scheduler.pending));
@@ -2418,18 +2464,42 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           const before = isolatedPiController.activeProcessCount();
           const teardown = await isolatedPiController.teardownOnRestore({
             kind: "user",
-            reason: "The user cancelled isolated Pi attempts from /hypagraph executor cancel.",
+            reason: "The user cancelled executor attempts from /hypagraph executor cancel.",
           });
-          ctx.ui.notify(
-            before === 0
-              ? "There is no active isolated Pi attempt."
-              : `Cancelled ${teardown.terminatedCount} isolated Pi process(es).`,
-            before === 0 ? "info" : "warning",
-          );
+          const acpClosed = teardown.acpClosedCount ?? 0;
+          const piClosed = teardown.terminatedCount;
+          const totalClosed = piClosed + acpClosed;
+          let message: string;
+          // Prefer closed counts over the pre-teardown snapshot. An attempt can
+          // settle between activeProcessCount and teardownOnRestore.
+          if (totalClosed === 0) {
+            message = before === 0
+              ? "There is no active executor attempt."
+              : "No executor attempt needed cancellation.";
+          } else {
+            const parts: string[] = [];
+            if (piClosed > 0) {
+              parts.push(`${piClosed} isolated Pi process(es)`);
+            }
+            if (acpClosed > 0) {
+              parts.push(`${acpClosed} ACP session(s)`);
+            }
+            message = parts.length > 0
+              ? `Cancelled ${parts.join(" and ")}.`
+              : `Cancelled ${totalClosed} executor attempt(s).`;
+          }
+          ctx.ui.notify(message, totalClosed === 0 ? "info" : "warning");
         } else if (sub === "probe") {
+          const wantAcp = (words[2] ?? "").toLowerCase() === "acp";
+          const probeLabel = wantAcp ? "ACP" : "Isolated Pi";
           if (!state?.goal) {
             ctx.ui.notify(
-              "Isolated Pi dispatch probe requires an active goal workflow.",
+              `${probeLabel} dispatch probe requires an active goal workflow.`,
+              "info",
+            );
+          } else if (wantAcp && isolatedPiController.host.acpRegistry === undefined) {
+            ctx.ui.notify(
+              "ACP dispatch probe requires a host with createIsolatedPiHost options.acp.",
               "info",
             );
           } else {
@@ -2439,47 +2509,61 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
             const family = familyProjection?.family.familySnapshot;
             if (!family) {
               ctx.ui.notify(
-                "Isolated Pi dispatch probe requires a goal family projection.",
+                `${probeLabel} dispatch probe requires a goal family projection.`,
                 "info",
               );
             } else {
               const nodeId = state.definition.nodes[0]?.id;
               if (!nodeId) {
-                ctx.ui.notify("Isolated Pi dispatch probe requires a workflow node.", "info");
+                ctx.ui.notify(`${probeLabel} dispatch probe requires a workflow node.`, "info");
               } else {
                 const attemptId = state.runtime.nodes[nodeId]?.currentAttemptId
                   ?? `probe-${nodeId}`;
-                const materialized = materializeIsolatedPiContext({
-                  family,
-                  state,
-                  nodeId,
-                  attemptId,
-                });
+                const materialized = wantAcp
+                  ? materializeAcpContext({
+                    family,
+                    state,
+                    nodeId,
+                    attemptId,
+                  })
+                  : materializeIsolatedPiContext({
+                    family,
+                    state,
+                    nodeId,
+                    attemptId,
+                  });
                 if (!materialized.ok) {
                   ctx.ui.notify(
-                    `Isolated Pi dispatch probe could not materialize context.\n${formatDiagnostics(materialized.diagnostics)}`,
+                    `${probeLabel} dispatch probe could not materialize context.\n${formatDiagnostics(materialized.diagnostics)}`,
                     "warning",
                   );
                 } else {
                   // Aborted signal: execute returns cancelled before process start.
                   // Settlement commands are not applied; this only proves the product call site.
+                  // For ACP, this path reaches host.dispatchAttempt → executeAndSettleAcp.
                   const settlement = await isolatedPiController.dispatchAttempt(
                     materialized.value,
                     AbortSignal.abort(),
                     {
                       at: new Date().toISOString(),
-                      correlationId: `isolated-pi-probe:${randomUUID()}`,
-                      commandIdForStep: (stepIndex) => `isolated-pi-probe:${stepIndex}`,
+                      correlationId: wantAcp
+                        ? `acp-probe:${randomUUID()}`
+                        : `isolated-pi-probe:${randomUUID()}`,
+                      commandIdForStep: (stepIndex) => (
+                        wantAcp
+                          ? `acp-probe:${stepIndex}`
+                          : `isolated-pi-probe:${stepIndex}`
+                      ),
                     },
                   );
                   if (!settlement.ok) {
                     ctx.ui.notify(
-                      `Isolated Pi dispatch probe rejected.\n${formatDiagnostics(settlement.diagnostics)}`,
+                      `${probeLabel} dispatch probe rejected.\n${formatDiagnostics(settlement.diagnostics)}`,
                       "warning",
                     );
                   } else {
                     ctx.ui.notify(
-                      `Isolated Pi dispatch probe: outcome=${settlement.result.outcome} `
+                      `${probeLabel} dispatch probe: outcome=${settlement.result.outcome} `
                       + `(commands not applied; active=${isolatedPiController.activeProcessCount()}).`,
                       "info",
                     );
