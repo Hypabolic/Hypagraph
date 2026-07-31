@@ -83,7 +83,42 @@ describe("static graph validation", () => {
       successWhen: successCondition,
       maxIterations: 8,
     }];
-    expect(validateDefinition(definition).some((item) => item.code === "loop_scc_mismatch")).toBe(true);
+    const diagnostics = validateDefinition(definition);
+    const mismatch = diagnostics.find((item) => item.code === "loop_scc_mismatch");
+    expect(mismatch).toBeDefined();
+    expect(mismatch?.suggestion).toMatch(/Close the cycle with requires edges/i);
+  });
+
+  it("rejects a feedback edge that is not also a requires dependency", () => {
+    const definition: HypagraphDefinition = {
+      title: "Broken feedback metadata",
+      goal: "Show feedback without requires",
+      nodes: [
+        { id: "implement", title: "Implement", requires: [], acceptance: [] },
+        {
+          id: "quorum-review",
+          title: "Quorum review",
+          requires: ["implement"],
+          acceptance: [],
+          produces: [{ name: "tests.passed", type: "boolean", required: true }],
+        },
+      ],
+      loops: [{
+        id: "implement-review-loop",
+        nodes: ["implement", "quorum-review"],
+        entry: "implement",
+        evaluateAfter: "quorum-review",
+        feedbackEdges: [{ from: "quorum-review", to: "implement" }],
+        successWhen: successCondition,
+        maxIterations: 4,
+      }],
+      policy: { mode: "guided", requireEvidence: true },
+    };
+    const diagnostics = validateDefinition(definition);
+    const feedback = diagnostics.find((item) => item.code === "invalid_feedback_edge");
+    expect(feedback).toBeDefined();
+    expect(feedback?.suggestion).toMatch(/Add 'quorum-review' to node 'implement'\.requires/);
+    expect(diagnostics.some((item) => item.code === "loop_scc_mismatch")).toBe(true);
   });
 
   it("rejects an external input that bypasses the entry", () => {

@@ -17,7 +17,17 @@ describe("Pi extension registration", () => {
 
     expect(tools).toEqual([
       "hypagoal_start",
-      "hypagraph_define",
+      "hypagoal_create_child",
+      "hypagraph_validate",
+      "hypagraph_draft_begin",
+      "hypagraph_draft_status",
+      "hypagraph_draft_validate",
+      "hypagraph_draft_discard",
+      "hypagraph_add_task",
+      "hypagraph_add_check",
+      "hypagraph_require",
+      "hypagraph_loop",
+      "hypagraph_recipe_implement_verify_loop",
       "hypagraph_read",
       "hypagraph_run_check",
       "hypagraph_cancel_check",

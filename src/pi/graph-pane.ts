@@ -176,6 +176,32 @@ export class PiGraphPaneComponent implements Component, Focusable {
     this.invalidate();
   }
 
+  /**
+   * Focus the primary graph on a family member by goal id.
+   * Product command: /hypagraph graph member <goalId>.
+   * No-op when the family is absent, replay is active, or the goal is unknown.
+   */
+  focusFamilyMemberByGoalId(goalId: string): { ok: true; goalId: string } | { ok: false; reason: string } {
+    const trimmed = goalId.trim();
+    if (!trimmed) {
+      return { ok: false, reason: "A family member goal id is required." };
+    }
+    if (!this.family) {
+      return { ok: false, reason: "There is no family projection on the graph pane." };
+    }
+    if (this.replay) {
+      return { ok: false, reason: "Family member focus is not available during event replay." };
+    }
+    if (!this.family.members.some((member) => member.goalId === trimmed)) {
+      return {
+        ok: false,
+        reason: `Family member '${trimmed}' is not in the current family projection.`,
+      };
+    }
+    this.focusFamilyMember(trimmed);
+    return { ok: true, goalId: trimmed };
+  }
+
   /** Test helper: current family focus goal. */
   get familyFocusGoalIdForTest(): string | undefined {
     return this.familyFocusGoalId;
@@ -740,8 +766,68 @@ export class GraphPaneController {
     return this.component?.primaryWorkflowIdForTest ?? this.view?.workflowId;
   }
 
+  /** Primary graph title held by the controller or open component. */
+  get primaryTitleForTest(): string | undefined {
+    return this.component?.primaryTitleForTest ?? this.view?.title;
+  }
+
+  /** Current family focus goal id from the open component or stored family projection. */
+  get familyFocusGoalIdForTest(): string | undefined {
+    return this.component?.familyFocusGoalIdForTest ?? this.family?.focusedGoalId;
+  }
+
   get componentForTest(): PiGraphPaneComponent | undefined {
     return this.component;
+  }
+
+  /**
+   * Focus the graph on a family member by goal id.
+   * Updates the stored family projection and the open component when present.
+   * Product command: /hypagraph graph member <goalId>.
+   */
+  focusFamilyMemberByGoalId(goalId: string): { ok: true; goalId: string } | { ok: false; reason: string } {
+    const trimmed = goalId.trim();
+    if (!trimmed) {
+      return { ok: false, reason: "A family member goal id is required." };
+    }
+    if (!this.family) {
+      return { ok: false, reason: "There is no family projection on the graph pane." };
+    }
+    if (this.replaySequence !== undefined) {
+      return { ok: false, reason: "Family member focus is not available during event replay." };
+    }
+    const member = this.family.members.find((item) => item.goalId === trimmed);
+    if (!member) {
+      return {
+        ok: false,
+        reason: `Family member '${trimmed}' is not in the current family projection.`,
+      };
+    }
+
+    // Prefer the open component path so local expand/focus state stays consistent.
+    if (this.component) {
+      return this.component.focusFamilyMemberByGoalId(trimmed);
+    }
+
+    // Headless or closed pane: update the controller family projection and primary view.
+    const members = this.family.members.map((item) => ({
+      ...item,
+      focused: item.goalId === member.goalId,
+      expanded: item.depth === 0 || item.expanded || item.goalId === member.goalId,
+    }));
+    this.family = {
+      ...this.family,
+      focusedGoalId: member.goalId,
+      members,
+      ancestry: ancestryFromMembers(members, member.goalId),
+      ...(member.graph === undefined ? {} : { focusedGraph: member.graph }),
+    };
+    if (member.graph) {
+      this.view = member.graph;
+      this.layout = layoutGraph(member.graph, { density: this.density });
+      this.layoutKey = `${this.density}:${graphLayoutKey(member.graph)}`;
+    }
+    return { ok: true, goalId: trimmed };
   }
 
   update(state: HypagraphState | undefined): void {

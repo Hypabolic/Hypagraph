@@ -179,6 +179,20 @@ export function renderFamilyStatus(view: FamilyGraphViewModel, width = 100): str
     lines.push("Bindings: none");
   }
 
+  const childWaits = view.bindings.filter((binding) => binding.status === "active");
+  if (childWaits.length > 0) {
+    lines.push("Child wait:");
+    for (const binding of childWaits) {
+      lines.push(...wrap(
+        "- ",
+        `parent node '${binding.parentNodeId}' waits for child '${binding.childGoalId}' `
+          + `(binding '${binding.bindingId}', policy ${binding.failurePolicy})`,
+        width,
+      ));
+    }
+  }
+
+  lines.push(`Focused member: ${view.focusedGoalId}`);
   lines.push(`Scheduler ordinal: ${view.scheduler.schedulerOrdinal}`);
   if (view.scheduler.pending) {
     lines.push(...wrap("Family dispatch: ", pendingLine(view.scheduler.pending), width));

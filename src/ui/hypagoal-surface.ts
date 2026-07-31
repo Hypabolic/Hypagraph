@@ -183,10 +183,11 @@ const dispatchSurface = (state: HypagraphState): HypagoalDispatchSurface => {
 const controls = (state: HypagraphState): string[] => {
   const goal = state.goal;
   if (!goal) return ["/hypagoal <objective>"];
-  const values = ["/hypagoal status", "/hypagoal graph"];
+  // Goal control and inspection live on /hypagraph. Creation stays on /hypagoal.
+  const values = ["/hypagraph status", "/hypagraph graph"];
   if (hasWaitingInteraction(state)) values.push("/hypagraph ask");
-  if (goal.status === "active" || goal.status === "blocked") values.push("/hypagoal pause", "/hypagoal cancel");
-  else if (goal.status === "paused") values.push("/hypagoal resume", "/hypagoal cancel");
+  if (goal.status === "active" || goal.status === "blocked") values.push("/hypagraph pause", "/hypagraph cancel");
+  else if (goal.status === "paused") values.push("/hypagraph resume", "/hypagraph cancel");
   return values;
 };
 
@@ -367,7 +368,7 @@ const fit = (line: string, width: number): string =>
 
 export function renderHypagoalStatus(state: HypagraphState, width = 100): string {
   const surface = projectHypagoalSurface(state);
-  if (!surface) return "There is no active Hypagoal. Use /hypagoal <objective> to create one.";
+  if (!surface) return "There is no active Hypagoal. Use /hypagoal <objective> or the trigger word to create one.";
   const narrow = width < 80;
   const lines: string[] = [];
   if (narrow) {

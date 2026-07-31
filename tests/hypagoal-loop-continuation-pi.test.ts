@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
+import { withCurrentSessionTaskProfile } from "./helpers/current-session-task.js";
 
 interface ToolDefinition {
   name: string;
@@ -47,7 +48,7 @@ const rootInput = () => ({
     title: "Measured refinement with independent audit",
     goal: objective,
     nodes: [
-      { id: "refine", title: "Refine the candidate", requires: ["evaluate"], acceptance: [] },
+      withCurrentSessionTaskProfile({ id: "refine", title: "Refine the candidate", requires: ["evaluate"], acceptance: [] }),
       {
         id: "evaluate",
         title: "Evaluate the candidate",
@@ -81,14 +82,14 @@ const rootInput = () => ({
           },
         },
       },
-      { id: "audit", title: "Audit the documentation", requires: ["audit-result"], acceptance: [] },
-      {
+      withCurrentSessionTaskProfile({ id: "audit", title: "Audit the documentation", requires: ["audit-result"], acceptance: [] }),
+      withCurrentSessionTaskProfile({
         id: "audit-result",
         title: "Record the audit result",
         requires: ["audit"],
         acceptance: [],
         produces: [{ name: "audit.complete", type: "boolean", required: true }],
-      },
+      }),
     ],
     loops: [
       {

@@ -751,6 +751,17 @@ export interface EffectExecutor {
   execute(request: EffectExecutionRequest, signal: AbortSignal): Promise<CodeResult>;
 }
 
+/**
+ * Optional model executor profile on a task node.
+ * Omit for the product default (isolated-pi). Set kind current-session only
+ * as an explicit opt-in so the orchestrator session performs that attempt.
+ */
+export interface NodeExecutorProfileDefinition {
+  profileId: string;
+  kind: "current-session" | "isolated-pi" | "acp" | "cli" | "deterministic";
+  instanceId?: string;
+}
+
 export interface NodeDefinition {
   id: string;
   title: string;
@@ -767,6 +778,11 @@ export interface NodeDefinition {
   /** Explicit context bindings for a semantic task. Prefer feedbackFrom. */
   context?: TaskContextDefinition;
   scope?: { paths: string[] };
+  /**
+   * Optional model executor profile for task nodes.
+   * Default product routing is isolated-pi when this field is absent.
+   */
+  executorProfile?: NodeExecutorProfileDefinition;
 }
 
 export interface FeedbackEdge { from: string; to: string }

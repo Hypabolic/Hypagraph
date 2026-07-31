@@ -5,6 +5,7 @@ import { selectGoalContinuation, isRunnableGoalContinuation } from "../src/domai
 import { handleCommand } from "../src/domain/reducer.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
 import { createPendingGoalContinuation, validatePendingGoalContinuation } from "../src/pi/hypagoal-continuation.js";
+import { withCurrentSessionTaskProfile } from "./helpers/current-session-task.js";
 
 interface ToolDefinition {
   name: string;
@@ -29,13 +30,13 @@ const rootInput = (creationRequest?: unknown, budget?: { maximumTurns?: number; 
     title: "Routed feature with independent work",
     goal: "The model cannot replace the objective.",
     nodes: [
-      {
+      withCurrentSessionTaskProfile({
         id: "implement",
         title: "Implement the feature",
         requires: [],
         acceptance: [],
         produces: [{ name: "route.use-primary", type: "boolean", required: true }],
-      },
+      }),
       {
         id: "route",
         title: "Select the route",
@@ -53,9 +54,9 @@ const rootInput = (creationRequest?: unknown, budget?: { maximumTurns?: number; 
           onFalse: ["finish-alternate"],
         },
       },
-      { id: "finish-primary", title: "Finish the primary route", requires: ["route"], acceptance: [] },
-      { id: "finish-alternate", title: "Finish the alternate route", requires: ["route"], acceptance: [] },
-      { id: "document", title: "Document independently", requires: [], acceptance: [] },
+      withCurrentSessionTaskProfile({ id: "finish-primary", title: "Finish the primary route", requires: ["route"], acceptance: [] }),
+      withCurrentSessionTaskProfile({ id: "finish-alternate", title: "Finish the alternate route", requires: ["route"], acceptance: [] }),
+      withCurrentSessionTaskProfile({ id: "document", title: "Document independently", requires: [], acceptance: [] }),
     ],
     loops: [],
     policy: { mode: "guided", requireEvidence: false },
@@ -218,7 +219,10 @@ describe("Hypagoal Pi continuation", () => {
     expect(lastSnapshot.runtime.nodes["finish-alternate"].status).toBe("skipped");
     expect(lastSnapshot.goal.continuationOrdinal).toBe(4);
     expect(lastSnapshot.goal.schedulerOrdinal).toBe(4);
-    expect(lastSnapshot.goal.budget.consumedTurns).toBe(3);
+    // The final model turn completes the workflow. Terminal goal projection
+    // clears pendingContinuation before agent_end can record that turn, so
+    // only implement + document are charged (2). Gate is deterministic (0).
+    expect(lastSnapshot.goal.budget.consumedTurns).toBe(2);
     const directGateBatch = batches.find((entry) => entry.data.events.some((event: { type: string; data?: any }) =>
       event.type === "hypagraph.action.selected" && event.data?.dispatch?.lane === "deterministic"));
     expect(directGateBatch?.data.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining([
@@ -254,9 +258,9 @@ describe("Hypagoal Pi continuation", () => {
                 onTrue: ["work"], onFalse: ["second-alternate"],
               },
             },
-            { id: "first-alternate", title: "First alternate", requires: ["first-gate"], acceptance: [] },
-            { id: "work", title: "Model work", requires: ["second-gate"], acceptance: [] },
-            { id: "second-alternate", title: "Second alternate", requires: ["second-gate"], acceptance: [] },
+            withCurrentSessionTaskProfile({ id: "first-alternate", title: "First alternate", requires: ["first-gate"], acceptance: [] }),
+            withCurrentSessionTaskProfile({ id: "work", title: "Model work", requires: ["second-gate"], acceptance: [] }),
+            withCurrentSessionTaskProfile({ id: "second-alternate", title: "Second alternate", requires: ["second-gate"], acceptance: [] }),
           ],
           loops: [],
           policy: { mode: "guided", requireEvidence: false },
@@ -305,9 +309,9 @@ describe("Hypagoal Pi continuation", () => {
           onFalse: [`alternate-${index}`],
         },
       });
-      nodes.push({ id: `alternate-${index}`, title: `Alternate ${index}`, requires: [gateId], acceptance: [] });
+      nodes.push(withCurrentSessionTaskProfile({ id: `alternate-${index}`, title: `Alternate ${index}`, requires: [gateId], acceptance: [] }));
     }
-    nodes.push({ id: "work", title: "Final model work", requires: [`gate-${gateCount - 1}`], acceptance: [] });
+    nodes.push(withCurrentSessionTaskProfile({ id: "work", title: "Final model work", requires: [`gate-${gateCount - 1}`], acceptance: [] }));
 
     await value.tools.get("hypagoal_start")!.execute(
       "create-gate-chain",

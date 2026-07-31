@@ -1,0 +1,29 @@
+Hypagraph third-party notices
+=============================
+
+This product includes software developed by third parties.
+
+---------------------------------------------------------------------------
+grok-mermaid
+Copyright 2026 Alexey Zaytsev
+
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/xl0/grok-mermaid
+
+This product is a TypeScript port of the terminal Mermaid renderer from
+grok-build:
+
+  https://github.com/xai-org/grok-build
+  crates/codegen/xai-grok-markdown/src/mermaid.rs
+  Copyright 2023-2026 SpaceXAI
+  Licensed under the Apache License, Version 2.0
+
+The layout algorithms, glyph tables, parser behaviour, and test corpus are
+derived from that file. Both the original and this port are distributed under
+the Apache License, Version 2.0.
+
+A copy of the Apache License, Version 2.0 is available in
+node_modules/grok-mermaid/LICENSE when the package is installed, and at:
+
+  http://www.apache.org/licenses/LICENSE-2.0
+---------------------------------------------------------------------------

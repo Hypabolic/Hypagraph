@@ -325,9 +325,29 @@ const nodeSchema = Type.Object({
     }),
   }, { description: "Explicit context bindings for a task. Prefer feedbackFrom for determinism." })),
   scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
+  executorProfile: Type.Optional(Type.Object({
+    profileId: Type.String({ minLength: 1 }),
+    kind: StringEnum([
+      "current-session",
+      "isolated-pi",
+      "acp",
+      "cli",
+      "deterministic",
+    ] as const),
+    instanceId: Type.Optional(Type.String({ minLength: 1 })),
+  }, {
+    description:
+      "Optional model executor profile for a task node. Omit for default isolated-pi. "
+      + "Set kind current-session only as explicit opt-in for same-session implement work.",
+  })),
 });
 
-const feedbackEdgeSchema = Type.Object({ from: Type.String(), to: Type.String() });
+const feedbackEdgeSchema = Type.Object({
+  from: Type.String({ description: "Source node id. Must equal loop.evaluateAfter for the cycle-closing feedback edge." }),
+  to: Type.String({ description: "Target node id. Must equal loop.entry. Node to.requires must include from." }),
+}, {
+  description: "Cycle-closing edge. Must also exist as a requires dependency on the target node.",
+});
 const loopProgressSchema = Type.Object({ fact: Type.String(), direction: StringEnum(["minimize", "maximize"] as const), minDelta: Type.Optional(Type.Number({ minimum: 0 })) });
 const loopEvaluationSchema = Type.Object({
   validWhen: conditionSchema,
@@ -335,16 +355,24 @@ const loopEvaluationSchema = Type.Object({
 });
 const loopSchema = Type.Object({
   id: Type.String(),
-  nodes: Type.Array(Type.String()),
-  entry: Type.String(),
-  evaluateAfter: Type.String(),
-  feedbackEdges: Type.Array(feedbackEdgeSchema, { minItems: 1 }),
+  nodes: Type.Array(Type.String(), {
+    minItems: 1,
+    description: "Exact cyclic strongly connected component. Must match one SCC formed by node.requires edges, including the feedback dependency.",
+  }),
+  entry: Type.String({ description: "Loop entry node. Must be in nodes. entry.requires must include evaluateAfter for the feedback edge." }),
+  evaluateAfter: Type.String({ description: "Evaluation boundary node. Must be in nodes. Feedback runs from evaluateAfter to entry." }),
+  feedbackEdges: Type.Array(feedbackEdgeSchema, {
+    minItems: 1,
+    description: "Declared feedback edges. Each edge must also appear as target.requires including source. Use [{ from: evaluateAfter, to: entry }].",
+  }),
   successWhen: conditionSchema,
   maxIterations: Type.Integer({ minimum: 1 }),
   progress: Type.Optional(loopProgressSchema),
   patience: Type.Optional(Type.Integer({ minimum: 1 })),
   evaluation: Type.Optional(loopEvaluationSchema),
   failurePolicy: Type.Optional(StringEnum(["fail-workflow", "block-dependants", "record-and-continue"] as const)),
+}, {
+  description: "Bounded iteration region over one SCC. Prefer a two-node implement/verify loop when possible.",
 });
 
 const evaluationBudgetSchema = Type.Object({
@@ -498,6 +526,17 @@ export function normalizeDefinition(input: HypagraphDefineInput): HypagraphDefin
       }),
       ...(node.context === undefined ? {} : { context: { feedbackFrom: [...node.context.feedbackFrom] } }),
       ...(node.scope === undefined ? {} : { scope: { paths: [...node.scope.paths] } }),
+      ...(node.executorProfile === undefined
+        ? {}
+        : {
+          executorProfile: {
+            profileId: node.executorProfile.profileId,
+            kind: node.executorProfile.kind,
+            ...(node.executorProfile.instanceId === undefined
+              ? {}
+              : { instanceId: node.executorProfile.instanceId }),
+          },
+        }),
     })),
     loops: (input.loops ?? []).map((loop) => ({
       id: loop.id,

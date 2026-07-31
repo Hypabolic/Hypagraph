@@ -27,11 +27,13 @@ describe("M4 Slice 2 Pi loop path", () => {
       ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
     };
     const signal = new AbortController().signal;
-    const define = tools.get("hypagraph_define")!;
+    const define = tools.get("hypagoal_start")!;
     const transition = tools.get("hypagraph_transition")!;
     const call = (id: string, params: Record<string, unknown>) => transition.execute(id, params, signal, undefined, ctx);
 
     await define.execute("define", {
+      objective: "Run two task iterations",
+      definition: {
       title: "Pi feedback loop",
       goal: "Run two task iterations",
       nodes: [
@@ -60,6 +62,7 @@ describe("M4 Slice 2 Pi loop path", () => {
         maxIterations: 3,
       }],
       policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
 
     await call("start-implement-1", { action: "start", nodeId: "implement" });

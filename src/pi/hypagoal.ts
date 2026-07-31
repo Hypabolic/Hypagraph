@@ -36,7 +36,16 @@ const advisorySchema = Type.Object({
 
 export const hypagoalStartSchema = Type.Object({
   objective: Type.String({ minLength: 1 }),
-  definition: definitionSchema,
+  /**
+   * Preferred create path after Wave 7: commit a project draft by id.
+   * Supply draftId or definition. Prefer draftId for model authoring.
+   */
+  draftId: Type.Optional(Type.String({ minLength: 1 })),
+  /**
+   * Free-form definition remains for tests, import, and advanced cases.
+   * Prefer draftId for normal authoring.
+   */
+  definition: Type.Optional(definitionSchema),
   advisories: Type.Optional(Type.Array(advisorySchema)),
   budget: Type.Optional(goalBudgetSchema),
   creationRequest: Type.Optional(creationRequestSchema),
@@ -48,28 +57,47 @@ export type HypagoalCreationRequest = Static<typeof creationRequestSchema>;
 
 export interface NormalizedHypagoalStartInput {
   objective: string;
-  definition: ReturnType<typeof normalizeDefinition>;
+  /** Present when the caller supplied a free-form definition. */
+  definition?: ReturnType<typeof normalizeDefinition>;
+  /** Present when the caller commits a project draft. */
+  draftId?: string;
   advisories: HypagoalAuthoringAdvisory[];
   budget?: GoalBudgetDefinition;
   creationRequest?: HypagoalCreationRequest;
   replacementConfirmation?: RootReplacementConfirmation;
 }
 
-export function normalizeHypagoalStartInput(input: HypagoalStartInput): NormalizedHypagoalStartInput {
+/**
+ * Normalize hypagoal_start params.
+ * Requires draftId or definition. Does not load drafts from disk.
+ * Accepts unknown tool params so TypeBox Static optional fields do not fight exactOptionalPropertyTypes.
+ */
+export function normalizeHypagoalStartInput(input: HypagoalStartInput | Record<string, unknown>): NormalizedHypagoalStartInput {
+  const record = input as HypagoalStartInput;
+  const draftId = typeof record.draftId === "string" && record.draftId.trim().length > 0
+    ? record.draftId.trim()
+    : undefined;
+  const hasDefinition = record.definition !== undefined && record.definition !== null;
+  if (!draftId && !hasDefinition) {
+    throw new Error(
+      "hypagoal_start requires draftId or definition. Prefer draftId after authoring with construction tools.",
+    );
+  }
   return {
-    objective: input.objective,
-    definition: normalizeDefinition(input.definition),
-    advisories: (input.advisories ?? []).map((advisory) => ({
+    objective: String(record.objective ?? ""),
+    ...(draftId === undefined ? {} : { draftId }),
+    ...(hasDefinition ? { definition: normalizeDefinition(record.definition as HypagoalStartInput["definition"] & object) } : {}),
+    advisories: (record.advisories ?? []).map((advisory) => ({
       code: advisory.code.trim(),
       message: advisory.message.trim(),
     })).filter((advisory) => advisory.code.length > 0 && advisory.message.length > 0),
-    ...(input.budget === undefined ? {} : { budget: structuredClone(input.budget) }),
-    ...(input.creationRequest === undefined
+    ...(record.budget === undefined ? {} : { budget: structuredClone(record.budget) }),
+    ...(record.creationRequest === undefined
       ? {}
-      : { creationRequest: structuredClone(input.creationRequest) }),
-    ...(input.replacementConfirmation === undefined
+      : { creationRequest: structuredClone(record.creationRequest) }),
+    ...(record.replacementConfirmation === undefined
       ? {}
-      : { replacementConfirmation: structuredClone(input.replacementConfirmation) }),
+      : { replacementConfirmation: structuredClone(record.replacementConfirmation) }),
   };
 }
 
@@ -155,15 +183,27 @@ export function buildHypagoalAuthoringPrompt(
     `Preserve this objective exactly in HypagraphDefinition.goal: ${JSON.stringify(objective)}`,
     "Inspect the relevant repository files, documentation, package scripts, and current implementation before you author the graph.",
     "Compile the smallest useful canonical Hypagraph workflow for this objective.",
+    "Prefer construction tools and recipes. Do not hand-author feedbackEdges.",
+    [
+      "AUTHORING ORDER:",
+      "1. Call hypagraph_draft_begin with this objective and the exact creationRequest when present.",
+      "2. Prefer hypagraph_recipe_implement_verify_loop when the work is implement then verify in a loop.",
+      "3. Otherwise use hypagraph_add_task, hypagraph_add_check, hypagraph_require, and hypagraph_loop.",
+      "4. hypagraph_loop owns feedback edges. It adds entry.requires including evaluateAfter.",
+      "5. Call hypagraph_draft_validate.",
+      "6. Call hypagoal_start with draftId (preferred) and the exact creationRequest.",
+      "7. Free-form definition is only for advanced import or tests.",
+    ].join("\n"),
     "Use typed tasks, checks, and gates only when the repository evidence justifies them.",
-    "Use a generic bounded iteration region only when repetition is justified. Repair is one possible loop pattern and is not the default loop meaning.",
+    "Use a bounded iteration region only when repetition is justified.",
     "Keep independent top-level components independent when the work requires them.",
     "Add a progress metric only when a deterministic and defensible metric exists.",
     "Set a Hypagoal token or turn budget only when the user objective explicitly supplies one. Do not invent a budget.",
     "Do not invent tests, acceptance criteria, commands, metrics, trust claims, or evaluation contracts.",
     "Return uncertain or useful authoring notes through the advisories field. Do not put advisories into canonical definition fields.",
     `Use this exact creation request identity without changing any field:\n${JSON.stringify(creationRequest, null, 2)}`,
-    "Call hypagoal_start one time with the preserved objective, complete validated definition, and exact creationRequest.",
+    "Call hypagoal_start one time with the preserved objective, draftId from the open draft, and exact creationRequest.",
+    "If hypagoal_start returns diagnostics, repair the draft with tools, validate, and call hypagoal_start again with the same creationRequest and draftId.",
     confirmation,
     "Do not perform semantic implementation work after creation. The creation tool ends this authoring turn and does not start autonomous continuation.",
   ].join("\n\n");

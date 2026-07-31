@@ -35,11 +35,13 @@ describe("M4 Slice 4 Pi hard limit", () => {
       ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
     };
     const signal = new AbortController().signal;
-    const define = tools.get("hypagraph_define")!;
+    const define = tools.get("hypagoal_start")!;
     const transition = tools.get("hypagraph_transition")!;
     const runCheck = tools.get("hypagraph_run_check")!;
 
     await define.execute("define", {
+      objective: "Stop after one failed command check",
+      definition: {
       title: "Pi hard loop limit",
       goal: "Stop after one failed command check",
       nodes: [
@@ -76,6 +78,7 @@ describe("M4 Slice 4 Pi hard limit", () => {
         maxIterations: 1,
       }],
       policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
 
     await transition.execute("repair-start", { action: "start", nodeId: "repair" }, signal, undefined, ctx);

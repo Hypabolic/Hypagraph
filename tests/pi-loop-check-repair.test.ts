@@ -37,12 +37,14 @@ describe("M4 Slice 3 Pi check repair loop", () => {
       ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
     };
     const signal = new AbortController().signal;
-    const define = tools.get("hypagraph_define")!;
+    const define = tools.get("hypagoal_start")!;
     const transition = tools.get("hypagraph_transition")!;
     const runCheck = tools.get("hypagraph_run_check")!;
     const call = (id: string, params: Record<string, unknown>) => transition.execute(id, params, signal, undefined, ctx);
 
     await define.execute("define", {
+      objective: "Fail once and pass after the repair marker exists",
+      definition: {
       title: "Pi command-check repair loop",
       goal: "Fail once and pass after the repair marker exists",
       nodes: [
@@ -79,6 +81,7 @@ describe("M4 Slice 3 Pi check repair loop", () => {
         maxIterations: 3,
       }],
       policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
 
     await call("start-implement-1", { action: "start", nodeId: "implement" });

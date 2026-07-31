@@ -8,7 +8,8 @@ Do not add compatibility aliases for an old product name.
 
 Use these Pi tool names:
 
-- `hypagraph_define`
+- `hypagoal_start`
+- `hypagraph_validate`
 - `hypagraph_read`
 - `hypagraph_transition`
 - `hypagraph_revise`

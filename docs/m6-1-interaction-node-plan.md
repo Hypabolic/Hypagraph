@@ -203,6 +203,8 @@ Exit: a graph with one interaction node and one independent loop continues the l
 
 Slice 1 makes an interaction node wait correctly, but no surface shows the question. A person cannot answer a question which they cannot read. This slice makes an interaction node usable from end to end.
 
+Placement requirement (follow-up plan): the rich ask surface must dock at the **bottom** of the terminal, in the composer zone, not as a centered modal popup. See `docs/interaction-bottom-dock-plan.md`. The first implementation used `ctx.ui.custom` with default center anchor; that placement is incorrect for product UX.
+
 Scope:
 
 1. Add `hypagraph_ask`. This model tool presents one declared interaction node and accepts one typed answer.

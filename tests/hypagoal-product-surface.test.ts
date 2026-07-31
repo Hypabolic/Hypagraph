@@ -50,10 +50,10 @@ describe("Hypagoal product surface", () => {
       automaticRevision: { consumed: 0, maximum: 1, remaining: 1, pending: false },
     });
     expect(surface?.controls).toEqual([
-      "/hypagoal status",
-      "/hypagoal graph",
-      "/hypagoal pause",
-      "/hypagoal cancel",
+      "/hypagraph status",
+      "/hypagraph graph",
+      "/hypagraph pause",
+      "/hypagraph cancel",
     ]);
   });
 
@@ -63,7 +63,7 @@ describe("Hypagoal product surface", () => {
     const wide = renderHypagoalStatus(state, 110);
     expect(narrow).toContain("Hypagoal active · workflow running");
     expect(narrow).toContain("Budget: model turns 0/8");
-    expect(narrow).toContain("/hypagoal status");
+    expect(narrow).toContain("/hypagraph status");
     expect(narrow.split("\n").every((line) => line.length <= 52)).toBe(true);
     expect(wide).toContain("Hypagoal status");
     expect(wide).toContain(`Objective: ${definition().goal}`);

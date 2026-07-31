@@ -106,7 +106,62 @@ describe("canonical goal lifecycle", () => {
     expect(summary.goal).toBe(objective);
     expect(summary.goalControl).toEqual(state.goal);
     expect(renderWorkflow(state)).toContain("Goal control: ship-feature - completed");
-    expect(renderWidget(state)[0]).toContain("Goal completed");
+    // Phase/goal badges may include ANSI colour codes between words.
+    expect(renderWidget(state)[0]).toMatch(/Goal .*completed/);
+  });
+
+  it("clears a durable pending continuation when the goal completes", () => {
+    const initial = created();
+    const events = [...initial.events];
+    let state = apply(initial.state, events, run(initial.state, {
+      ...command("start-goal", "start-pending-clear"),
+      goalId: "clear-pending-on-complete",
+    }));
+    state = apply(state, events, run(state, {
+      type: "request-goal-continuation",
+      goalId: state.goal!.goalId,
+      workflowId: state.workflowId,
+      expectedRevision: state.revision,
+      expectedSequence: state.sequence,
+      expectedSnapshotHash: state.snapshotHash,
+      expectedContinuationOrdinal: state.goal!.continuationOrdinal,
+      sessionGeneration: 0,
+      branchGeneration: 0,
+      action: { kind: "start-ready-task", nodeId: "work" },
+      commandId: "goal-request-pending",
+      at,
+    }));
+    expect(state.goal?.pendingContinuation?.action).toMatchObject({
+      kind: "start-ready-task",
+      nodeId: "work",
+    });
+
+    state = apply(state, events, run(state, {
+      ...command("start-node", "node-start-pending"),
+      nodeId: "work",
+      attemptId: "work-pending-1",
+    }));
+    state = apply(state, events, run(state, {
+      ...command("submit-result", "submit-pending"),
+      nodeId: "work",
+      attemptId: "work-pending-1",
+      evidence: [],
+    }));
+    state = apply(state, events, run(state, {
+      ...command("begin-verification", "verify-pending"),
+      nodeId: "work",
+      attemptId: "work-pending-1",
+    }));
+    state = apply(state, events, run(state, {
+      ...command("complete-verification", "complete-pending"),
+      nodeId: "work",
+      attemptId: "work-pending-1",
+      passed: true,
+    }));
+
+    expect(state.goal?.status).toBe("completed");
+    expect(state.goal?.pendingContinuation).toBeUndefined();
+    expect(renderWorkflow(state)).not.toContain("start task 'work'");
   });
 
   it("projects blockage from workflow state and requires explicit recovery", () => {

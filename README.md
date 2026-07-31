@@ -62,6 +62,8 @@ Open Pi in a repository and enter an ordinary prose objective:
 /hypagoal Add an inspect command that reports the current workflow without starting execution.
 ```
 
+You can also type the configured trigger word (default `hypagoal`) as a whole token in an ordinary message. In interactive TUI, that token highlights in the composer before you submit. Highlight and submit arming use the same matcher. Arming does not create a goal by itself. The model may call `hypagoal_start` when the request needs a graph.
+
 Hypagraph then:
 
 1. preserves the objective exactly;
@@ -71,17 +73,21 @@ Hypagraph then:
 5. creates the workflow, initial readiness, and workflow-local goal lifecycle in one durable event batch;
 6. reports the workflow ID, goal ID, revision, goal-control state, ready work, and authoring advisories.
 
-The atomic creation operation does not start a task, run a check, or invoke an executor. After the authoring turn ends, the graph-aware controller selects one canonical action and dispatches it in one lane.
+The atomic creation operation does not start a task, run a check, or invoke an executor.
+
+In interactive TUI, Hypagraph then presents a bottom post-create dock with a Mermaid diagram of the new graph and three actions: **Run**, **Question**, and **Cancel**. Autonomous work starts only when the user chooses Run. Question keeps the goal active so the user can ask about the graph; Esc dismisses like Question. Cancel cancels the goal. After Question (or after reload while no node has started), `/hypagraph resume` re-opens the post-create dock. It does not auto-start work. The user must choose Run on the dock again. Headless hosts do not show the dock and may auto-continue after create.
+
+When the user chooses Run (or headless auto-continue applies), the graph-aware controller selects one canonical action and dispatches it in one lane.
 
 Hypagraph uses one generic action-dispatch model. Every selected action records a selected event, a dispatched event, and one terminal event. A model-lane action stores one state-bound continuation request and sends one Pi follow-up. A deterministic-lane action needs no reasoning, so the controller runs it directly: a ready gate is one reducer command, and a ready check runs through the existing durable check lifecycle. The controller selects again after the deterministic action resolves.
 
-The current v0.6 product surface allows one root workflow and one root goal in the active Pi session. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain itself remains able to represent separate workflow aggregates for the later goal-family architecture.
+The current product surface (package version 0.14) allows one root workflow and one root goal in the active Pi session for the ordinary create path. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain also represents goal families, isolated model executors, worktrees, and concurrent scheduling for deeper product paths.
 
 The controller selects from all runnable root components in stable definition order. An event-backed scheduler ordinal rotates selection when multiple components remain runnable. The scheduler ordinal advances for every selected action in every lane, so round-robin fairness does not depend on model usage. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
 
 A Hypagoal can also declare a maximum substantive-turn count, a maximum token count, or both. Pi assistant usage is normalized from input, output, cache-read, and cache-write tokens. Each delivered model-lane continuation is charged once through a durable turn event before another model-lane action can be dispatched. Budget exhaustion stops autonomous continuation as `budget_limited`; it does not mark the workflow successful.
 
-Consumed turns count model turns only. A deterministic action consumes no turn. `/hypagoal status` reports the scheduled action count next to the charged model-turn count and states this rule, so a user who compares node count with turn count does not think that work is missing. A turn-budget stop ends automatic continuation in every lane.
+Consumed turns count model turns only. A deterministic action consumes no turn. `/hypagraph status` reports the scheduled action count next to the charged model-turn count and states this rule, so a user who compares node count with turn count does not think that work is missing. A turn-budget stop ends automatic continuation in every lane.
 
 Deterministic work still has a bound. Loop iteration limits, patience, evaluation budgets, and check retry limits remain unchanged, and the controller stops after 64 consecutive deterministic dispatches in one pass.
 
@@ -89,7 +95,7 @@ When the selected action belongs to a bounded iteration region, the continuation
 
 Evaluation validity, numeric progress, and typed success remain separate. An invalid evaluation cannot update the best metric or satisfy success. The same root selector continues to rotate across disconnected branches and independent loop components. A loop does not own the next turn because it produced the latest event.
 
-A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Restore also closes a deterministic dispatch which a stopped host left pending, so a lost dispatch cannot block a later selection. Review canonical state and use `/hypagoal resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
+A session reload or branch change clears any queued continuation and persists a paused goal without dispatching work. Restore also closes a deterministic dispatch which a stopped host left pending, so a lost dispatch cannot block a later selection. Review canonical state and use `/hypagraph resume` to continue. Resume re-checks the current budget and runnable graph before it queues another state-bound follow-up.
 
 ## Start a workflow
 
@@ -119,15 +125,17 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 
 ## Pi commands
 
+`/hypagraph` is the preferred control and inspection surface. `/hypagoal <objective>` remains the explicit create command. Compatibility control subcommands on `/hypagoal` still work; prefer `/hypagraph` for status, pause, resume, cancel, and graph.
+
 | Command | Action |
 | --- | --- |
 | `/hypagoal <objective>` | Inspect repository context and atomically create one root graph-backed goal. |
-| `/hypagoal status` | Show the exact objective, workflow phase, goal state, active or next work, budgets, loops, evaluations, blockage, revision state, and stop reason. |
-| `/hypagoal pause [reason]` | Pause the root goal through the canonical lifecycle. |
-| `/hypagoal resume` | Resume a paused or recoverable blocked goal after budget and runnable-path validation. |
-| `/hypagoal cancel [reason]` | Cancel the root goal without implying success. |
-| `/hypagoal graph` | Open or focus the graph pane with root-goal details. |
 | `/hypagraph` | Show the active workflow. |
+| `/hypagraph status` | Show the exact objective, workflow phase, goal state, active or next work, budgets, loops, evaluations, blockage, revision state, and stop reason. |
+| `/hypagraph pause [reason]` | Pause the root goal through the canonical lifecycle. |
+| `/hypagraph resume` | Resume a paused or recoverable blocked goal after budget and runnable-path validation. |
+| `/hypagraph cancel [reason]` | Cancel the root goal without implying success. |
+| `/hypagraph ask [<node-id>]` | Present an open interaction question again. |
 | `/hypagraph loop` | Show canonical loop, progress, evaluation, and outcome state. |
 | `/hypagraph graph` | Open or focus the live graph pane. |
 | `/hypagraph graph toggle` | Open or close the graph pane. |
@@ -141,6 +149,9 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | `/hypagraph history revisions` | Show revision segments and discarded results. |
 | `/hypagraph explain` | Explain the goal decision and every node. |
 | `/hypagraph explain <node-id>` | Explain why one node is or is not runnable. |
+| `/hypagraph trigger` | Show the Hypagoal arming trigger word. |
+| `/hypagraph trigger set <word>` | Set the arming trigger word. The word highlights in the interactive composer while you type. |
+| `/hypagraph trigger off` | Disable message arming and live composer highlight. |
 
 Graph pane controls:
 
@@ -304,66 +315,62 @@ store verification and loop decision
 
 Hypagraph does not start an external check when it cannot first store the check-start event.
 
-Restore rebuilds canonical state only. It does not queue a continuation, dispatch model work, invoke an executor, or rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations. When an active Hypagoal is restored after a reload or branch change, Hypagraph persists an explicit pause and requires `/hypagoal resume` before another continuation.
+Restore rebuilds canonical state only. It does not queue a continuation, dispatch model work, invoke an executor, or rerun completed commands, reports, assertions, or integrity checks. It closes interrupted attempts or resumes verification from stored observations. When an active Hypagoal is restored after a reload or branch change, Hypagraph persists an explicit pause and requires `/hypagraph resume` before another continuation.
 
 Check artifacts are stored under `.hypagraph/check-artifacts`. Large output stays outside the Pi event stream and is referenced by artifact identity.
 
 ## Current status
 
-Implemented:
+Package version is **0.14.0**. The start-to-run product surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any release cut.
+
+### Start-to-run product surface (code complete)
+
+- arm with the configured trigger word and live composer highlight (same matcher as submit arming);
+- draft constructors and recipes under `.hypagraph/` project store (task, check, require, loop, implement-verify recipe);
+- free-form definition remains supported for interaction, gate, code, and effect nodes (constructors do not yet build those kinds);
+- atomic root `/hypagoal` creation and `hypagoal_start` (prefer `draftId` when constructors cover the graph);
+- post-create Mermaid bottom dock with **Run**, **Question**, and **Cancel** (Esc = Question);
+- no auto-run after create in interactive TUI; headless may auto-continue;
+- resume after Question or reload re-opens the dock when no node has started (does not auto-start);
+- default model tasks run in isolated workers (`isolated-pi`); `current-session` is an explicit node opt-in only;
+- no production environment override for legacy current-session routing;
+- abortable root workers on cancel, restore, branch change, shutdown, and a 15-minute hard timeout;
+- `/hypagraph status` reports post-create gate, definition-artifact write state, and root worker elapsed time;
+- interaction presentation uses the bottom dock (not a center modal);
+- shared mutating-tool policy blocks `write`, `edit`, and `bash` during authoring and while waiting for Run;
+- project-store write failures notify the user; create still succeeds with runtime event authority.
+- `hypagoal_create_child` creates a bounded child Hypagoal from an active parent task after Run;
+- multi-member create-child parent must use `executorProfile.kind: "current-session"` (Option A); workers never create children;
+- child plan-owner tasks default to `isolated-pi`; current-session is refused on non-root members until member delivery ships;
+- family-aware controller selection dispatches work across members (sequential multi-member path);
+- child terminal return applies binding policies on the product path; child success does not complete the parent task;
+- `/hypagraph status` reports family members, bindings, child-wait, budget, focus, worker member goal id, and child definition-artifact write state;
+- `/hypagraph graph member <goalId>` focuses the graph pane on a family member.
+
+### Kernel and control plane (implemented)
 
 - automatic graph authoring skill;
-- atomic root `/hypagoal` creation and `hypagoal_start` model surface;
 - workflow-local goal lifecycle and workflow-derived terminal state;
 - graph-aware root continuation with deterministic component selection;
 - state-bound continuation requests and stale-delivery rejection;
-- durable substantive-turn and token accounting;
-- deterministic turn-limit and token-limit stops;
-- reload and branch-change pause with explicit `/hypagoal resume`;
-- task, check, and gate nodes;
-- live terminal graph pane;
-- typed facts and deterministic routes;
-- durable event-based state and replay;
-- command, report, metric, file, and Git checks;
-- cancellation, retry, restore, and stale-result protection;
-- generic bounded iteration regions;
-- numeric progress, best-result tracking, and patience;
-- independent loop components and explicit failure policies;
-- evaluation validity and invalid-observation limits;
-- protected feedback and event-backed evaluation budgets;
-- evaluator purpose, trust, integrity, version, and fingerprint surfaces;
-- loop-aware Hypagoal continuation from canonical iteration and evaluation state;
-- protected evaluator redaction in model-visible prompts and check output;
-- realistic multi-iteration continuation with independent-component fairness;
-- deterministic blocker classification and one non-weakening automatic workflow revision;
-- complete `/hypagoal` status, pause, resume, cancel, and graph controls;
-- compact lifecycle messages and explicit typed stop reasons;
-- narrow and wide root-goal terminal rendering;
-- integrated v0.6 product-path dogfood across loops, evaluation, gates, reload recovery, revision, and canonical completion;
-- a generic action-dispatch model with a deterministic, a model, and an executor lane;
-- a scheduler ordinal which advances for every selected action, independent of model usage;
-- direct deterministic dispatch of a ready gate and a ready check, without a model turn;
-- an explicit maximum for consecutive deterministic dispatches in one controller pass;
-- turn accounting which counts model turns only, and a product surface which says so;
-- interrupted-dispatch recovery on reload, so a lost dispatch cannot block a later selection;
-- a typed event timeline with lane classification, paging, and a lane filter;
-- replay of canonical state to any stored sequence, with a comparison against live state;
-- canonical explanations for why a node or a goal is not runnable;
-- `/hypagraph history`, `/hypagraph explain`, and the matching `hypagraph_read` views;
-- a replay mode of the graph pane;
-- revision segments, discarded-result reporting, and a projection seam for later family and executor namespaces;
-- integrated v0.7 dogfood for deterministic dispatch and inspectable history;
-- the interaction node kind, the `awaiting_response` status, and a typed answer which publishes declared facts.
+- durable substantive-turn and token accounting with deterministic budget stops;
+- reload and branch-change pause with explicit `/hypagraph resume`;
+- task, check, gate, code, effect, and interaction node kinds;
+- live terminal graph pane, typed facts, durable event store, and replay;
+- command, report, metric, file, and Git checks with cancellation and restore protection;
+- bounded iteration regions, evaluation contracts, and protected feedback;
+- generic action-dispatch model (deterministic, model, and executor lanes);
+- goal-family projection, bounded child create/return domain helpers, isolated Pi / ACP / CLI executor adapters, worktree integration, and bounded concurrency seams;
+- `/hypagraph` status, pause, resume, cancel, history, explain, loop, check, graph, trigger, and executor controls.
 
-Next:
+### Next (not a v0.14 claim)
 
-- the remaining interaction and approval node work: presentation effects, typed routing, deadlines, and reload;
-- code nodes which run a definition-time program in a sandbox;
-- external effects with explicit requested, observed, and indeterminate states and restart reconciliation;
-- goal families and bounded child Hypagoals;
-- isolated executors, worktree integration, and bounded concurrency;
-- dynamic fan-out regions, only when a branch count is derived at run time;
-- ACP and named direct agent adapters.
+- broader construction tools for interaction, gate, code, and effect nodes;
+- remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
+- full revision-on-workers and richer worker progress events;
+- concurrent multi-pending family dispatch on the product path (sequential multi-member dispatch is shipped);
+- optional grandchild depth and family-budget visibility hardening;
+- live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute is shipped).
 
 ## Develop locally
 
@@ -385,6 +392,14 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 - [Execution roadmap](docs/execution-roadmap.md)
 - [Deterministic orchestration plan](docs/deterministic-orchestration-plan.md)
 - [Trigger and command surface plan](docs/trigger-and-command-surface-plan.md)
+- [Authoring tools and project store plan](docs/authoring-tools-and-project-store-plan.md)
+- [Isolated model-session execution plan](docs/isolated-model-session-execution-plan.md)
+- [Trigger editor highlight plan](docs/trigger-editor-highlight-plan.md)
+- [Interaction bottom-dock presentation plan](docs/interaction-bottom-dock-plan.md)
+- [Post-create graph dock plan](docs/post-create-graph-dock-plan.md)
+- [Product surface orchestration plan](docs/product-surface-orchestration-plan.md)
+- [Goal-family product surface plan](docs/goal-family-product-surface-plan.md)
+- [Goal-family product remediation plan](docs/goal-family-product-remediation-plan.md)
 - [Automatic graph authoring model](docs/automatic-graph-authoring.md)
 - [Trusted evaluation contracts](docs/trusted-evaluation-contract-plan.md)
 - [Hypagoal vertical slices](docs/hypagoal-vertical-slice-plan.md)

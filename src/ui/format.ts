@@ -9,6 +9,11 @@ import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
 import { waitingQuestionLines, waitingWidgetLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
+import {
+  formatGoalStatusBadge,
+  formatPhaseBadge,
+  formatStatusPhaseChip,
+} from "./widget-chrome.js";
 
 const activeNodeId = (state: HypagraphState): string | null => state.definition.nodes.find((node) => {
   const status = state.runtime.nodes[node.id]?.status;
@@ -89,10 +94,20 @@ export function renderWorkflow(state: HypagraphState): string {
   return lines.join("\n");
 }
 
+export interface RenderWidgetOptions {
+  /**
+   * Animation frame index for braille spinners and live phase paint.
+   * Host increments this while the goal is running, blocked, or paused.
+   */
+  frameIndex?: number;
+}
+
 export function renderWidget(
   state: HypagraphState,
   family?: FamilyGraphViewModel,
+  options: RenderWidgetOptions = {},
 ): string[] {
+  const frameIndex = options.frameIndex ?? 0;
   const ready = readyNodeIds(state);
   const hypagoal = projectHypagoalSurface(state);
   const shownLoop = loopSurfaceSummaries(state).find((loop) => loop.status === "running")
@@ -102,12 +117,23 @@ export function renderWidget(
     : ` best ${shownLoop.progress.bestMetric} at ${shownLoop.progress.bestIteration}${shownLoop.progress.patience === undefined ? "" : ` patience ${shownLoop.progress.remainingPatience}/${shownLoop.progress.patience}`}`;
   const policy = shownLoop ? ` ${shownLoop.failurePolicy}` : "";
   const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
+  const phaseBadge = formatPhaseBadge(state.phase, frameIndex);
+  const goalFragment = state.goal
+    ? ` | Goal ${formatGoalStatusBadge(state.goal.status, frameIndex)}${hypagoal?.stopCode ? ` (${hypagoal.stopCode})` : ""}`
+    : "";
   return [
-    `Hypagraph: ${state.definition.title} [${state.phase}]${state.goal ? ` | Goal ${state.goal.status}${hypagoal?.stopCode ? ` (${hypagoal.stopCode})` : ""}` : ""}`,
+    `Hypagraph: ${state.definition.title} ${phaseBadge}${goalFragment}`,
     `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${state.goal ? ` | Budget turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "∞"}, tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "∞"} | Revision ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}` : ""}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
     ...(family === undefined ? [] : familyWidgetLines(family)),
     ...waitingWidgetLines(state),
   ];
+}
+
+/**
+ * Compact footer status line phase segment with gold spinner when running.
+ */
+export function renderStatusPhaseLabel(phase: string, frameIndex = 0): string {
+  return formatStatusPhaseChip(phase, frameIndex);
 }
 
 export { loopFailurePolicy };

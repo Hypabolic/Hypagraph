@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
+    "grok-mermaid": "^0.2.0",
     "quickjs-emscripten-core": "0.32.0",
     "typescript": "5.8.3"
   }

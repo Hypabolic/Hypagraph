@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
+import { withCurrentSessionTaskProfile } from "./helpers/current-session-task.js";
 
 interface ToolDefinition { name: string; execute: (id: string, params: any, signal: AbortSignal | undefined, onUpdate: undefined, ctx: any) => Promise<any> }
 interface CommandDefinition { handler: (args: string, ctx: any) => Promise<void> }
@@ -11,8 +12,8 @@ const definition = () => ({
   title: "Repository migration delivery",
   goal: objective,
   nodes: [
-    { id: "inventory", title: "Inventory current migration state", requires: [], acceptance: [], scope: { paths: ["src/**"] } },
-    { id: "implement", title: "Implement the migration", requires: ["inventory"], acceptance: ["Keep the verification path"], scope: { paths: ["src/**"] } },
+    withCurrentSessionTaskProfile({ id: "inventory", title: "Inventory current migration state", requires: [], acceptance: [], scope: { paths: ["src/**"] } }),
+    withCurrentSessionTaskProfile({ id: "implement", title: "Implement the migration", requires: ["inventory"], acceptance: ["Keep the verification path"], scope: { paths: ["src/**"] } }),
   ],
   loops: [],
   policy: { mode: "guided", requireEvidence: false },
@@ -88,7 +89,7 @@ describe("Hypagoal bounded revision Pi smoke", () => {
     const revised = definition();
     revised.nodes = [
       revised.nodes[0]!,
-      { id: "normalize-schema", title: "Normalize the schema", requires: ["inventory"], acceptance: ["Add the bounded missing repository step"], scope: { paths: ["src/**"] } },
+      withCurrentSessionTaskProfile({ id: "normalize-schema", title: "Normalize the schema", requires: ["inventory"], acceptance: ["Add the bounded missing repository step"], scope: { paths: ["src/**"] } }),
       { ...revised.nodes[1]!, requires: ["inventory", "normalize-schema"] },
     ];
     await value.tools.get("hypagoal_submit_revision")!.execute("revise", revised, undefined, undefined, value.ctx);
@@ -205,7 +206,7 @@ describe("Hypagoal bounded revision Pi smoke", () => {
     const revised = definition();
     revised.nodes = [
       revised.nodes[0]!,
-      { id: "normalize-schema", title: "Normalize the schema", requires: ["inventory"], acceptance: ["Add the bounded missing repository step"], scope: { paths: ["src/**"] } },
+      withCurrentSessionTaskProfile({ id: "normalize-schema", title: "Normalize the schema", requires: ["inventory"], acceptance: ["Add the bounded missing repository step"], scope: { paths: ["src/**"] } }),
       { ...revised.nodes[1]!, requires: ["inventory", "normalize-schema"] },
     ];
     const result = await value.tools.get("hypagoal_submit_revision")!.execute("revise-without-delivery", revised, undefined, undefined, value.ctx);

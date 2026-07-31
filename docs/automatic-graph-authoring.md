@@ -2,6 +2,7 @@
 
 - Status: active product direction
 - Applies to: all Hypagraph and Hypagoal entry points
+- Related construction plan: `docs/authoring-tools-and-project-store-plan.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Decision
@@ -52,6 +53,8 @@ The authoring path must:
 6. return advisories separately from canonical definition fields;
 7. submit the complete definition through `hypagoal_start` once.
 
+The planned model interface for step 3 and step 7 is constructor tools, recipes, draft validate, and commit-by-draft-id. Free-form definition JSON remains the canonical store format. It is not the preferred long-term LLM authoring surface. See `docs/authoring-tools-and-project-store-plan.md`.
+
 The command binds the authoring turn to an explicit operation identity and the current session and branch generations. The tool rejects a missing or stale authoring identity.
 
 The creation service validates the complete projected workflow and workflow-local goal lifecycle, then persists definition, initial readiness, and goal start in one event batch. It exposes no candidate state before persistence succeeds.
@@ -77,6 +80,19 @@ Use:
 Do not convert every sentence or checklist item into a node mechanically.
 
 Do not add a progress metric merely because the workflow contains a loop.
+
+### 3.1 Loop structure
+
+When authoring includes a loop, the graph must satisfy these rules:
+
+1. Build the cycle with `requires` edges first.
+2. Set `entry` and `evaluateAfter` inside that cycle.
+3. Declare `feedbackEdges: [{ from: evaluateAfter, to: entry }]`.
+4. Put `evaluateAfter` in `entry.requires`. Feedback is a real dependency.
+5. Set `loops[].nodes` to exactly the cyclic node set.
+6. Prefer a two-node loop when a larger cycle is not required.
+
+A feedback edge without a matching `requires` edge fails validation (`invalid_feedback_edge`). A loop node set that is not one cyclic component fails validation (`loop_scc_mismatch`).
 
 ## 4. Intent preservation
 

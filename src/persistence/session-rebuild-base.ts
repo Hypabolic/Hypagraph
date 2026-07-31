@@ -279,6 +279,13 @@ const appendStoredBatch = (
   batch: PersistedEventBatch,
 ): PersistedHypagraph => {
   const sameWorkflow = latest?.snapshot.workflowId === batch.workflowId;
+  // Live session rebuild tracks one primary workflow (the family desk root).
+  // Child member streams also append event batches during product dispatch.
+  // Those mid-stream non-primary batches belong to the family record, not the
+  // live root rebuild. Skip them so restore does not throw sequence conflicts.
+  if (latest && !sameWorkflow && batch.expectedSequence !== 0) {
+    return latest;
+  }
   const actualSequence = sameWorkflow ? latest.snapshot.sequence : 0;
   if (actualSequence !== batch.expectedSequence) {
     throw new WorkflowSequenceConflictError(batch.workflowId, batch.expectedSequence, actualSequence);

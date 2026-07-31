@@ -2,6 +2,7 @@
 
 - Status: planned
 - Milestone: M3 completion foundation and M5 debugger expansion
+- Related post-create Mermaid dock: `docs/post-create-graph-dock-plan.md` (grok-mermaid bottom dock after create)
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose

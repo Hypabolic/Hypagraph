@@ -13,7 +13,9 @@ describe("M4 Slice 5 Pi progress surface", () => {
     hypagraphExtension(pi);
     const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [] }, ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() } };
     const signal = new AbortController().signal;
-    await tools.get("hypagraph_define")!.execute("define", {
+    await tools.get("hypagoal_start")!.execute("define", {
+      objective: "Show progress",
+      definition: {
       title: "Pi progress loop", goal: "Show progress", nodes: [
         { id: "repair", title: "Repair", requires: ["evaluate"], acceptance: [] },
         { id: "evaluate", title: "Evaluate", requires: ["repair"], acceptance: [], produces: [
@@ -21,6 +23,7 @@ describe("M4 Slice 5 Pi progress surface", () => {
           { name: "quality.score", type: "number", required: true },
         ] },
       ], loops: [{ id: "quality-loop", nodes: ["repair", "evaluate"], entry: "repair", evaluateAfter: "evaluate", feedbackEdges: [{ from: "evaluate", to: "repair" }], successWhen: { kind: "compare", left: { kind: "fact", name: "quality.passed" }, operator: "eq", right: { kind: "literal", value: true } }, maxIterations: 4, progress: { fact: "quality.score", direction: "maximize", minDelta: 1 }, patience: 2 }], policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
     const transition = tools.get("hypagraph_transition")!;
     const call = (id: string, params: Record<string, unknown>) => transition.execute(id, params, signal, undefined, ctx);

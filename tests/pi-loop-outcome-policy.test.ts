@@ -13,11 +13,13 @@ describe("M4 Slice 6 Pi outcome surface", () => {
     hypagraphExtension(pi);
     const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [] }, ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() } };
     const signal = new AbortController().signal;
-    const define = tools.get("hypagraph_define")!;
+    const define = tools.get("hypagoal_start")!;
     const transition = tools.get("hypagraph_transition")!;
     const call = (id: string, params: Record<string, unknown>) => transition.execute(id, params, signal, undefined, ctx);
 
     await define.execute("define", {
+      objective: "Record one local result",
+      definition: {
       title: "Independent Pi regions",
       goal: "Record one local result",
       nodes: [
@@ -36,6 +38,7 @@ describe("M4 Slice 6 Pi outcome surface", () => {
         failurePolicy: "record-and-continue",
       }],
       policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
 
     await call("work-start", { action: "start", nodeId: "work" });

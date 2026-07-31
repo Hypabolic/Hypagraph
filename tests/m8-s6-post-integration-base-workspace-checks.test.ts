@@ -1161,10 +1161,13 @@ describe("m8-s6 post-integration base workspace checks", () => {
       // then a referenced force-kill timer awaited after the direct child closes.
       // Intentionally no other timers or open handles. If the force-kill timer were
       // unref'd, Node can exit before SIGKILL and the grandchild survives.
+      // Wait for the grandchild pid file before SIGTERM so the parent cannot exit
+      // before the pid is durable. A fixed 150ms delay raced spawn under load.
       await writeFile(
         hostScript,
         [
           "const { spawn } = require('node:child_process');",
+          "const { readFileSync } = require('node:fs');",
           "const checkScriptPath = process.argv[2];",
           "const pidPath = process.argv[3];",
           "const killGraceMs = Number(process.argv[4] || 120);",
@@ -1181,15 +1184,28 @@ describe("m8-s6 post-integration base workspace checks", () => {
           "    try { child.kill(signal); } catch { /* already dead */ }",
           "  }",
           "};",
-          // Abort shortly after start (same shape as host cancel).
-          "setTimeout(() => {",
+          "const waitForPidFile = () => new Promise((resolve, reject) => {",
+          "  const started = Date.now();",
+          "  const tick = () => {",
+          "    try {",
+          "      const text = readFileSync(pidPath, 'utf8').trim();",
+          "      const parsed = Number(text);",
+          "      if (Number.isSafeInteger(parsed) && parsed > 0) return resolve(parsed);",
+          "    } catch { /* not written yet */ }",
+          "    if (Date.now() - started > 5000) return reject(new Error('pid file timeout'));",
+          "    setTimeout(tick, 20);",
+          "  };",
+          "  tick();",
+          "});",
+          // Abort after the pid is durable (same shape as host cancel after start).
+          "waitForPidFile().then(() => {",
           "  killGroup('SIGTERM');",
           "  // Must stay referenced: await alone does not keep the loop alive.",
           "  const forceKillDone = new Promise((resolve) => {",
           "    setTimeout(() => { killGroup('SIGKILL'); resolve(); }, killGraceMs);",
           "  });",
           "  closed.then(() => forceKillDone).then(() => process.exit(0));",
-          "}, 150);",
+          "}).catch(() => process.exit(3));",
         ].join("\n"),
         "utf8",
       );
@@ -1243,15 +1259,23 @@ describe("m8-s6 post-integration base workspace checks", () => {
       // Isolated process path: no Vitest handles. Grandchild must die after host exits.
       const isolatedPidFile = join(base, "isolated-orphan.pid");
       await run(process.execPath, [hostScript, checkScript, isolatedPidFile, "120"], {
-        timeout: 10_000,
+        timeout: 15_000,
       });
+      // Poll for the durable pid. The host waits for the file before kill, so the
+      // path should not race spawn. Polling still absorbs filesystem lag.
       let isolatedPid: number | undefined;
-      try {
-        const text = await readFile(isolatedPidFile, "utf8");
-        const parsed = Number(text.trim());
-        if (Number.isSafeInteger(parsed) && parsed > 0) isolatedPid = parsed;
-      } catch {
-        // host may have cleaned before we read; require the file to exist
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const text = await readFile(isolatedPidFile, "utf8");
+          const parsed = Number(text.trim());
+          if (Number.isSafeInteger(parsed) && parsed > 0) {
+            isolatedPid = parsed;
+            break;
+          }
+        } catch {
+          // not written yet
+        }
+        await new Promise((r) => setTimeout(r, 20));
       }
       expect(isolatedPid).toBeTypeOf("number");
       let isolatedLive = true;

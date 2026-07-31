@@ -25,6 +25,39 @@ export class PiSessionWorkflowEventStore implements WorkflowEventStore {
     if (value) this.sequences.set(value.snapshot.workflowId, value.snapshot.sequence);
   }
 
+  /**
+   * Seed or refresh one workflow sequence without clearing other members.
+   * Use after family restore or before the first append for a child workflow
+   * whose history lives only in the family record until product dispatch.
+   */
+  noteWorkflowSequence(workflowId: string, sequence: number): void {
+    if (typeof workflowId !== "string" || !workflowId.trim()) {
+      throw new Error("noteWorkflowSequence requires a non-empty workflow ID.");
+    }
+    if (!Number.isInteger(sequence) || sequence < 0) {
+      throw new Error("noteWorkflowSequence requires a non-negative integer sequence.");
+    }
+    this.sequences.set(workflowId, sequence);
+  }
+
+  /**
+   * Seed sequences for every workflow stored on a family record.
+   * Does not clear an existing live root sequence when the family omits it.
+   * Prefer calling after synchronize(liveRoot) so the live root stays authoritative.
+   */
+  noteFamilyWorkflowSequences(
+    workflows: Readonly<Record<string, PersistedHypagraph>>,
+  ): void {
+    for (const [workflowId, stream] of Object.entries(workflows)) {
+      if (!stream?.snapshot) continue;
+      this.sequences.set(workflowId, stream.snapshot.sequence);
+    }
+  }
+
+  knownSequence(workflowId: string): number | undefined {
+    return this.sequences.get(workflowId);
+  }
+
   lease(): WorkflowEventStore {
     const generation = this.generation;
     return {

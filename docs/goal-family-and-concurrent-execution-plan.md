@@ -5,6 +5,7 @@
 - Current implementation baseline: M5B Slice 1 at `0bbe7f227fc28262958f29992cece9c663ecad2a`
 - Depends on: `docs/hypagoal-vertical-slice-plan.md`
 - Related architecture: `docs/delegation-and-visualisation.md`
+- Product surface program (tooling, controller, skill): `docs/goal-family-product-surface-plan.md`
 - Research source: https://github.com/ogulcancelik/pi-extensions/tree/main/packages/pi-codex-subagents
 - Writing standard: ASD-STE100 Simplified Technical English
 
@@ -330,6 +331,10 @@ export interface ExecutorResult {
 The worker does not mutate graph or family state. It submits an untrusted result envelope. The controller validates and commits state changes.
 
 ## 11. Isolated Pi executor
+
+Product default for model node attempts is isolated worker sessions. See
+`docs/isolated-model-session-execution-plan.md`. The main Pi session is the
+orchestrator. It is not the default runner for task bodies.
 
 The first model executor should launch Pi in isolated RPC mode.
 

@@ -31,6 +31,8 @@ Execution occurs through adapters. The controller owns:
 
 A child Hypagoal is not a subagent. A child Hypagoal defines another canonical workflow. A subagent executes one selected node attempt.
 
+Product default: each model node attempt runs in an isolated worker session or an explicit session fork. The main Pi session is the orchestrator. See `docs/isolated-model-session-execution-plan.md`.
+
 ## Visual surfaces
 
 Hypagraph should provide two graph surfaces inside Pi:

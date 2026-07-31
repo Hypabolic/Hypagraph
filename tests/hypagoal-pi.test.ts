@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 import { HYPAGRAPH_EVENT_BATCH_TYPE } from "../src/persistence/event-store.js";
 import { hypagoalStartSchema } from "../src/pi/hypagoal.js";
+import { withCurrentSessionTaskProfile } from "./helpers/current-session-task.js";
 
 interface ToolDefinition {
   name: string;
@@ -27,14 +28,14 @@ const authoredInput = (replacementConfirmation?: unknown, creationRequest?: unkn
     title: "Add workflow inspection",
     goal: "The model must not control the canonical objective field.",
     nodes: [
-      {
+      withCurrentSessionTaskProfile({
         id: "implement",
         title: "Implement the inspect command",
         description: "Add the user-facing command through the existing extension structure.",
         requires: [],
         acceptance: ["The command reports the current workflow state."],
         scope: { paths: ["src/**", "tests/**"] },
-      },
+      }),
       {
         id: "verify",
         title: "Run the repository test suite",
@@ -115,6 +116,7 @@ describe("Hypagoal Pi surfaces", () => {
     const properties = (hypagoalStartSchema as unknown as { properties: Record<string, unknown> }).properties;
     expect(Object.keys(properties)).toEqual([
       "objective",
+      "draftId",
       "definition",
       "advisories",
       "budget",
@@ -141,7 +143,8 @@ describe("Hypagoal Pi surfaces", () => {
     expect(prompt).toContain(JSON.stringify(proseObjective));
     expect(prompt).toContain("Inspect the relevant repository files");
     expect(prompt).toContain("smallest useful canonical Hypagraph workflow");
-    expect(prompt).toContain("Repair is one possible loop pattern");
+    expect(prompt).toContain("Prefer construction tools and recipes");
+    expect(prompt).toContain("hypagraph_draft_begin");
     expect(prompt).toContain("Use this exact creation request identity");
     expect(prompt).toContain("Call hypagoal_start one time");
     expect(prompt).toContain("Do not perform semantic implementation work after creation");
@@ -234,16 +237,17 @@ describe("Hypagoal Pi surfaces", () => {
     expect(value.entries).toHaveLength(0);
   });
 
-  it("does not let the legacy define surface silently replace an active root", async () => {
+  it("does not create state through hypagraph_validate when a root already exists", async () => {
     const value = harness();
     await value.tools.get("hypagoal_start")!.execute("first", authoredInput(), undefined, undefined, value.ctx);
-    await expect(value.tools.get("hypagraph_define")!.execute(
-      "legacy-replace",
+    const validated = await value.tools.get("hypagraph_validate")!.execute(
+      "validate-only",
       authoredInput().definition,
       undefined,
       undefined,
       value.ctx,
-    )).rejects.toThrow("explicit root replacement");
+    );
+    expect(String((validated.content as Array<{ text: string }>)[0]?.text ?? "")).toContain("No canonical state was created");
     expect(value.entries).toHaveLength(1);
   });
 

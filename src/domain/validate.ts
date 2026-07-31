@@ -26,6 +26,7 @@ import {
 } from "./effect-authoring.js";
 import { canonicalProtectedPath } from "./integrity-policy.js";
 import { buildOutgoing, isCyclicComponent, stronglyConnectedComponents } from "./scc.js";
+import { parseExecutorProfileRef } from "./model-executor-profile.js";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 /** Canonical dotted lower-case fact name. Shared by definition and binding validation. */
@@ -1334,6 +1335,27 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
         diagnostics.push(...validateTaskContext(node, nodesById, location));
       }
     }
+    if (node.executorProfile !== undefined) {
+      if (kind !== "task") {
+        diagnostics.push({
+          code: "non_task_has_executor_profile",
+          message: `Node '${node.id}' must not declare executorProfile. Only a task node may set a model executor profile.`,
+          location: `${location}.executorProfile`,
+        });
+      } else {
+        const parsed = parseExecutorProfileRef(node.executorProfile, `${location}.executorProfile`);
+        if (!parsed.ok) {
+          diagnostics.push(...parsed.diagnostics);
+        } else if (parsed.profile.kind === "deterministic") {
+          diagnostics.push({
+            code: "task_executor_profile_deterministic",
+            message: `Task node '${node.id}' cannot use executor kind deterministic. Use a model executor kind or omit the profile for isolated-pi.`,
+            location: `${location}.executorProfile.kind`,
+          });
+        }
+        // current-session is valid explicit opt-in. Host surfaces may show an advisory.
+      }
+    }
     if (kind === "check") {
       if (node.gate) diagnostics.push({ code: "check_has_gate", message: `Check node '${node.id}' must not contain a gate definition.`, location: `${location}.gate` });
       if (node.interaction) diagnostics.push({ code: "check_has_interaction", message: `Check node '${node.id}' must not contain an interaction definition.`, location: `${location}.interaction` });
@@ -1445,11 +1467,39 @@ export function validateDefinition(definition: HypagraphDefinition): Diagnostic[
     }
     for (const edge of loop.feedbackEdges) {
       const target = definition.nodes.find((node) => node.id === edge.to);
-      if (!loopNodes.has(edge.from) || !loopNodes.has(edge.to) || !target?.requires.includes(edge.from)) diagnostics.push({ code: "invalid_feedback_edge", message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`, location: `${location}.feedbackEdges` });
-      if (edge.from !== loop.evaluateAfter || edge.to !== loop.entry) diagnostics.push({ code: "invalid_feedback_boundary", message: `Feedback in loop '${loop.id}' must go from '${loop.evaluateAfter}' to '${loop.entry}'.`, location: `${location}.feedbackEdges` });
+      if (!loopNodes.has(edge.from) || !loopNodes.has(edge.to) || !target?.requires.includes(edge.from)) {
+        diagnostics.push({
+          code: "invalid_feedback_edge",
+          message: `Feedback edge '${edge.from} -> ${edge.to}' must be a dependency in loop '${loop.id}'.`,
+          location: `${location}.feedbackEdges`,
+          suggestion: `Add '${edge.from}' to node '${edge.to}'.requires. A feedback edge is a real cycle-closing dependency, not only loop metadata.`,
+        });
+      }
+      if (edge.from !== loop.evaluateAfter || edge.to !== loop.entry) {
+        diagnostics.push({
+          code: "invalid_feedback_boundary",
+          message: `Feedback in loop '${loop.id}' must go from '${loop.evaluateAfter}' to '${loop.entry}'.`,
+          location: `${location}.feedbackEdges`,
+          suggestion: `Set feedbackEdges to [{ from: '${loop.evaluateAfter}', to: '${loop.entry}' }] and put '${loop.evaluateAfter}' in node '${loop.entry}'.requires.`,
+        });
+      }
     }
-    if (loop.feedbackEdges.length === 0) diagnostics.push({ code: "missing_feedback_edge", message: `Loop '${loop.id}' must identify at least one feedback edge.`, location: `${location}.feedbackEdges` });
-    if (!cyclic.find((component) => sameSet(component, loop.nodes))) diagnostics.push({ code: "loop_scc_mismatch", message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`, location: `${location}.nodes` });
+    if (loop.feedbackEdges.length === 0) {
+      diagnostics.push({
+        code: "missing_feedback_edge",
+        message: `Loop '${loop.id}' must identify at least one feedback edge.`,
+        location: `${location}.feedbackEdges`,
+        suggestion: `Declare feedbackEdges: [{ from: '${loop.evaluateAfter}', to: '${loop.entry}' }] and put '${loop.evaluateAfter}' in node '${loop.entry}'.requires.`,
+      });
+    }
+    if (!cyclic.find((component) => sameSet(component, loop.nodes))) {
+      diagnostics.push({
+        code: "loop_scc_mismatch",
+        message: `The nodes in loop '${loop.id}' must be the same as one cyclic component.`,
+        location: `${location}.nodes`,
+        suggestion: "Close the cycle with requires edges, including entry.requires containing evaluateAfter for the feedback edge. Set loops[].nodes to exactly that cyclic node set. Do not add nodes outside the cycle.",
+      });
+    }
     if (loop.nodes.every((nodeId) => ids.has(nodeId)) && loopNodes.has(loop.entry) && loopNodes.has(loop.evaluateAfter)) {
       const iteration = iterationOutgoing(definition, loop);
       if (hasCycle(loop.nodes, iteration)) diagnostics.push({ code: "loop_iteration_not_acyclic", message: `Loop '${loop.id}' must become acyclic after feedback edges are removed.`, location: `${location}.feedbackEdges` });

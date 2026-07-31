@@ -37,6 +37,10 @@ Hypagraph must not adopt Rhai as its runtime model. It must reach the same
 wide-work product results through graph primitives. That direction already
 exists in `docs/deterministic-orchestration-plan.md`.
 
+For session shape, Hypagraph must also match the Grok product rule that the
+host drives the run and each unit of semantic agent work runs outside the main
+chat. `docs/isolated-model-session-execution-plan.md` defines that routing work.
+
 ## 3. How Grok Build workflows work
 
 ### 3.1 Shape

@@ -40,11 +40,13 @@ describe("M4 Slice 1 Pi loop path", () => {
       },
     };
     const signal = new AbortController().signal;
-    const define = tools.get("hypagraph_define")!;
+    const define = tools.get("hypagoal_start")!;
     const transition = tools.get("hypagraph_transition")!;
     const runCheck = tools.get("hypagraph_run_check")!;
 
     await define.execute("define", {
+      objective: "Pass the command check and release documentation",
+      definition: {
       title: "Pi one-iteration loop",
       goal: "Pass the command check and release documentation",
       nodes: [
@@ -81,6 +83,7 @@ describe("M4 Slice 1 Pi loop path", () => {
         maxIterations: 3,
       }],
       policy: { mode: "guided", requireEvidence: false },
+      },
     }, signal, undefined, ctx);
 
     await transition.execute("start-implement", { action: "start", nodeId: "implement" }, signal, undefined, ctx);

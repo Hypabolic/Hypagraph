@@ -8,6 +8,12 @@
 - Capability analysis which added M6A, M6.1, M6.2, M6.3, and M8.1: `docs/graph-capability-review.md`
 - Deterministic orchestration plan, which spans a new aggregate node, a synthesis node, M7, M8, and M8.1: `docs/deterministic-orchestration-plan.md`
 - Trigger and command surface plan: `docs/trigger-and-command-surface-plan.md`
+- Authoring tools and project store plan: `docs/authoring-tools-and-project-store-plan.md`
+- Isolated model-session execution plan: `docs/isolated-model-session-execution-plan.md`
+- Trigger editor highlight plan: `docs/trigger-editor-highlight-plan.md`
+- Interaction bottom-dock presentation plan: `docs/interaction-bottom-dock-plan.md`
+- Post-create graph dock plan: `docs/post-create-graph-dock-plan.md`
+- Product surface orchestration plan (run this): `docs/product-surface-orchestration-plan.md`
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
@@ -996,10 +1002,33 @@ Hypagraph can release version 1.0 when:
 
 ## 18. Immediate next work
 
-1. Start M6.1 interaction and approval nodes. `docs/m6-1-interaction-node-plan.md` gives the plan.
-2. Close stale tracking issues for completed milestones when their evidence is accepted.
-3. Treat a reviewer count as fixed at definition time. A fixed-width review quorum needs branch-scoped facts and the aggregate node only, so it does not need M8.1.
-4. M8.1 now has a confirmed use case. A review across the changed files of a diff derives its branch count at run time. M8.1 is therefore on the critical path, and `docs/deterministic-orchestration-plan.md` gives its position in the slice sequence.
-5. Add the aggregate node and branch-scoped facts before M7. Both are domain work, they need no executor, and they make a fixed-width review quorum available early.
-6. Do not start M6.3 before M6.2. The effect state model needs the code node as its execution mechanism.
-7. Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them. Use a monitor node instead. Section 16 gives the model.
+The cohesive product-surface program is in `docs/product-surface-orchestration-plan.md`.
+
+Waves 0–7 delivered the primary code path. Wave 8 S8.1 script is complete (live acceptance pending). S8.2 reconciled plan status. S8.3 release packaging is not started unless the user requests a release.
+
+| Wave | Result | Status |
+| --- | --- | --- |
+| 0 | Baseline verify + known fixes (validate suggestions, doc truth) | done |
+| 1 | Shared bottom-dock chrome | done |
+| 2 | Interaction ask docks at the bottom | code done; live dogfood pending |
+| 3 | Mermaid projection + [grok-mermaid](https://github.com/xl0/grok-mermaid) | done |
+| 4 | Post-create graph dock with Run / Question / Cancel; no auto-run until Run | code done; live dogfood pending |
+| 5 | Live trigger word highlight in the composer | code done; live dogfood pending (required surface, not deferred polish) |
+| 6 | Isolated model sessions by default (orchestrator ≠ runner) | code done for default path; S6.4–S6.5 deferred |
+| 7 | Authoring constructors + `.hypagraph` project store | code done for S7.1–S7.4; S7.5 deferred; S7.6 partial |
+| 8 | Integration dogfood + packaging | S8.1 script complete (live acceptance pending); S8.2 done; S8.3 skipped (no release request) |
+
+E2E path note: `docs/scratch/product-surface-e2e-path.md`.
+
+Detail plans remain authoritative inside each wave:
+
+- `docs/trigger-editor-highlight-plan.md`
+- `docs/interaction-bottom-dock-plan.md`
+- `docs/post-create-graph-dock-plan.md`
+- `docs/isolated-model-session-execution-plan.md`
+- `docs/authoring-tools-and-project-store-plan.md`
+- `docs/trigger-and-command-surface-plan.md`
+
+**Next work:** live interactive Pi dogfood of arm → create → post-create dock → Run → isolated task → interaction dock. Optional remainder: S6.4 affinity, S6.5 revision/loop workers, S7.5 project-first events.
+
+Do not add a resident supervisor, a trigger service, or a running timer. Design rule 3.9 rejects them.

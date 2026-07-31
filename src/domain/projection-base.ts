@@ -329,6 +329,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.updatedAt = event.timestamp;
       next.goal.completedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The canonical workflow completed.");
+      // Terminal goals must not keep a model-lane queue. Cancel already clears this field.
+      // Leaving it set shows a stale "Goal next" line and blocks orphan recovery.
+      delete next.goal.pendingContinuation;
       break;
     }
     case "hypagraph.goal.failed": {
@@ -337,6 +340,7 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       next.goal.updatedAt = event.timestamp;
       next.goal.completedAt = event.timestamp;
       next.goal.stopReason = String(event.data.reason ?? "The canonical workflow failed.");
+      delete next.goal.pendingContinuation;
       break;
     }
     case "hypagraph.goal.cancelled": {
