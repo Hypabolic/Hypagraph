@@ -9,11 +9,6 @@ import {
   postCreateDiagramLines,
   POST_CREATE_DOCK_ROWS,
 } from "../src/pi/post-create-dock.js";
-import {
-  BOTTOM_DOCK_FOOTER_MARGIN,
-  BOTTOM_DOCK_MIN_WIDTH,
-  bottomDockOverlayOptions,
-} from "../src/ui/bottom-dock-overlay.js";
 import { withCurrentSessionTaskProfile } from "./helpers/current-session-task.js";
 
 interface ToolDefinition {
@@ -196,11 +191,6 @@ const currentState = (value: ReturnType<typeof harness>): HypagraphState => {
   return batch.data.snapshot as HypagraphState;
 };
 
-const resolveOverlayOptions = (overlayOptions: unknown) => {
-  if (typeof overlayOptions === "function") return overlayOptions();
-  return overlayOptions;
-};
-
 const beforeAgentStart = async (value: ReturnType<typeof harness>, prompt = "What does this graph do?") => {
   const results = await invoke(value.handlers, "before_agent_start", {
     type: "before_agent_start",
@@ -355,15 +345,10 @@ describe("post-create gate and wiring (S4.2–S4.4)", () => {
 
     await agentEnd(value);
     expect(value.custom).toHaveBeenCalledOnce();
-    expect(value.captured[0]!.overlay).toBe(true);
-    const options = resolveOverlayOptions(value.captured[0]!.overlayOptions);
-    expect(options).toEqual(bottomDockOverlayOptions({ tui: value.factoryTui }));
-    expect(options).toMatchObject({
-      anchor: "bottom-center",
-      width: "100%",
-      minWidth: BOTTOM_DOCK_MIN_WIDTH,
-      margin: expect.objectContaining({ bottom: BOTTOM_DOCK_FOOTER_MARGIN }),
-    });
+    // Editor zone (prompt location), not a terminal-bottom floating overlay.
+    // Bottom-center overlays leave a large empty gap under a short chat history.
+    expect(value.captured[0]!.overlay).toBe(false);
+    expect(value.captured[0]!.overlayOptions).toBeUndefined();
 
     const prompts = continuationPrompts(value);
     expect(prompts).toHaveLength(1);

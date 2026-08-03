@@ -17,6 +17,17 @@ flowchart LR
     E -. feedback .-> A
 ```
 
+## Product tour
+
+A short real-Pi recording of start → post-create graph dock → **Run** → live status → live bottom graph dock will live here.
+
+**In-Pi demos:** `pi -e ./extensions/hypagraph.ts --skill ./skills`, then **`/hypagraph demo list`** and **`/hypagraph demo showcase`** (or `loop`, `fanout`, `parallel`, `pipeline`, `basic`). See [`docs/demo/JUST-RECORD.md`](docs/demo/JUST-RECORD.md).
+
+<!-- After the MP4 is in the tree or uploaded to GitHub, use one of:
+<video src="docs/demo/assets/hypagraph-demo.mp4" controls width="100%"></video>
+or paste the githubusercontent / user-attachments URL from a drag-and-drop upload.
+-->
+
 ## Why use Hypagraph?
 
 Coding agents often begin with a reasonable plan and lose structure as the session grows. Hypagraph makes the plan executable.
@@ -137,10 +148,10 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | `/hypagraph cancel [reason]` | Cancel the root goal without implying success. |
 | `/hypagraph ask [<node-id>]` | Present an open interaction question again. |
 | `/hypagraph loop` | Show canonical loop, progress, evaluation, and outcome state. |
-| `/hypagraph graph` | Open or focus the live graph pane. |
-| `/hypagraph graph toggle` | Open or close the graph pane. |
-| `/hypagraph graph focus` | Focus the graph pane. |
-| `/hypagraph graph close` | Close the graph pane. |
+| `/hypagraph graph` | Open or focus the live graph bottom dock (Mermaid LR, status colour). |
+| `/hypagraph graph toggle` | Open or close the live graph dock. |
+| `/hypagraph graph focus` | Focus the live graph dock. |
+| `/hypagraph graph close` | Close the live graph dock. |
 | `/hypagraph check active` | Show the active deterministic check. |
 | `/hypagraph check cancel [node-id]` | Cancel an active check. |
 | `/hypagraph history` | Show the most recent page of the event timeline. |
@@ -345,7 +356,8 @@ Package version is **0.14.0**. The start-to-run product surface is code-complete
 - family-aware controller selection dispatches work across members (sequential multi-member path);
 - child terminal return applies binding policies on the product path; child success does not complete the parent task;
 - `/hypagraph status` reports family members, bindings, child-wait, budget, focus, worker member goal id, and child definition-artifact write state;
-- `/hypagraph graph member <goalId>` focuses the graph pane on a family member.
+- `/hypagraph graph member <goalId>` focuses the live graph dock on a family member;
+- live graph is a bottom dock (not a right-side overlay): horizontal Mermaid with colour on active nodes and loops.
 
 ### Kernel and control plane (implemented)
 
@@ -356,7 +368,7 @@ Package version is **0.14.0**. The start-to-run product surface is code-complete
 - durable substantive-turn and token accounting with deterministic budget stops;
 - reload and branch-change pause with explicit `/hypagraph resume`;
 - task, check, gate, code, effect, and interaction node kinds;
-- live terminal graph pane, typed facts, durable event store, and replay;
+- live terminal graph bottom dock (Mermaid), typed facts, durable event store, and replay;
 - command, report, metric, file, and Git checks with cancellation and restore protection;
 - bounded iteration regions, evaluation contracts, and protected feedback;
 - generic action-dispatch model (deterministic, model, and executor lanes);

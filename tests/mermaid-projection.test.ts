@@ -247,8 +247,16 @@ describe("projectMermaidFlowchart", () => {
     expect(result.nodeCount).toBe(3);
     expect(result.edgeCount).toBe(2);
     expect(result.diagnostics).toEqual([]);
-    // Small graph without multi-node loop prefers LR.
+    // Default flowchart direction is horizontal left-to-right.
     expect(result.direction).toBe("LR");
+  });
+
+  it("defaults multi-node loop graphs to LR unless TD is requested", () => {
+    const created = createWorkflow(loopDefinition(), at, "workflow-loop-default-lr");
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    const view = projectGraphView(created.state);
+    expect(projectMermaidFlowchart(view).direction).toBe("LR");
+    expect(projectMermaidFlowchart(view, { direction: "TD" }).direction).toBe("TD");
   });
 
   it("projects gate branches with selected and skipped route labels", () => {

@@ -4,11 +4,13 @@ import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import { readyNodeIds } from "../domain/readiness.js";
 import { loopFailurePolicy } from "../domain/workflow-outcome.js";
 import type { FamilyGraphViewModel } from "../graph/family-projection.js";
-import { familyWidgetLines } from "./family-surface.js";
+import { projectMermaidFlowchart } from "../graph/mermaid-projection.js";
+import { projectGraphView } from "../graph/projection.js";
 import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
 import { waitingQuestionLines, waitingWidgetLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
+import { renderMermaidArtBestFit } from "./mermaid-art.js";
 import {
   formatGoalStatusBadge,
   formatPhaseBadge,
@@ -100,33 +102,113 @@ export interface RenderWidgetOptions {
    * Host increments this while the goal is running, blocked, or paused.
    */
   frameIndex?: number;
+  /**
+   * Maximum columns for the live Mermaid art in the widget.
+   * Defaults to 100 when omitted.
+   */
+  maxWidth?: number;
+  /**
+   * When false, omit Mermaid art (title + waiting only).
+   * Default true so the graph sits above the composer with the status line.
+   */
+  includeDiagram?: boolean;
+  /**
+   * Precomputed diagram lines. When set, skips Mermaid render (animation ticks).
+   */
+  diagramLines?: readonly string[];
 }
 
+/** Default art width when the host does not supply terminal columns. */
+const DEFAULT_WIDGET_DIAGRAM_WIDTH = 100;
+
+/** Cap art height so the widget does not push the composer off-screen. */
+const MAX_WIDGET_DIAGRAM_LINES = 14;
+
+/**
+ * Cache key → plain art lines. Avoid re-layout on every braille animation frame.
+ */
+const widgetDiagramCache = new Map<string, string[]>();
+
+/**
+ * Horizontal Mermaid art for the above-composer hypagraph widget.
+ *
+ * LR only (same product rule as the live dock). Compact labels when needed,
+ * then horizontal clip. Never vertical TD.
+ */
+export function renderWidgetDiagramLines(
+  state: HypagraphState,
+  maxWidth = DEFAULT_WIDGET_DIAGRAM_WIDTH,
+): string[] {
+  const budget = Math.max(20, maxWidth);
+  const cacheKey = `${state.workflowId}:${state.sequence}:${state.snapshotHash}:${budget}`;
+  const cached = widgetDiagramCache.get(cacheKey);
+  if (cached) return cached;
+
+  const view = projectGraphView(state);
+  const lr = projectMermaidFlowchart(view, { direction: "LR", statusMarkers: true });
+  const lrCompact = projectMermaidFlowchart(view, {
+    direction: "LR",
+    statusMarkers: true,
+    maxLabelLength: 16,
+    compact: true,
+  });
+  const lrTight = projectMermaidFlowchart(view, {
+    direction: "LR",
+    statusMarkers: true,
+    maxLabelLength: 10,
+    compact: true,
+  });
+  const art = renderMermaidArtBestFit(
+    [lr.source, lrCompact.source, lrTight.source],
+    {
+      maxWidth: budget,
+      preferSourceBox: false,
+      whenTooWide: "clip-art",
+    },
+  );
+  const lines = art.lines.slice(0, MAX_WIDGET_DIAGRAM_LINES);
+  // Keep the cache small: one entry per live paint path is enough in practice.
+  if (widgetDiagramCache.size > 8) widgetDiagramCache.clear();
+  widgetDiagramCache.set(cacheKey, lines);
+  return lines;
+}
+
+/**
+ * Compact above-composer hypagraph chrome.
+ *
+ * Normal use: one title line, the live horizontal graph, and wait hints only.
+ * Active / Ready / Budget / Family detail stays on /hypagraph status.
+ */
 export function renderWidget(
   state: HypagraphState,
-  family?: FamilyGraphViewModel,
+  _family?: FamilyGraphViewModel,
   options: RenderWidgetOptions = {},
 ): string[] {
   const frameIndex = options.frameIndex ?? 0;
-  const ready = readyNodeIds(state);
   const hypagoal = projectHypagoalSurface(state);
-  const shownLoop = loopSurfaceSummaries(state).find((loop) => loop.status === "running")
-    ?? loopSurfaceSummaries(state).find((loop) => loop.status === "failed" || loop.status === "succeeded");
-  const progress = shownLoop?.progress?.bestMetric === undefined
-    ? ""
-    : ` best ${shownLoop.progress.bestMetric} at ${shownLoop.progress.bestIteration}${shownLoop.progress.patience === undefined ? "" : ` patience ${shownLoop.progress.remainingPatience}/${shownLoop.progress.patience}`}`;
-  const policy = shownLoop ? ` ${shownLoop.failurePolicy}` : "";
-  const outcome = shownLoop?.exitReason ? ` ${shownLoop.exitReason}` : "";
   const phaseBadge = formatPhaseBadge(state.phase, frameIndex);
   const goalFragment = state.goal
     ? ` | Goal ${formatGoalStatusBadge(state.goal.status, frameIndex)}${hypagoal?.stopCode ? ` (${hypagoal.stopCode})` : ""}`
     : "";
-  return [
+  const lines: string[] = [
     `Hypagraph: ${state.definition.title} ${phaseBadge}${goalFragment}`,
-    `Active: ${activeNodeId(state) ?? "none"} | Ready: ${ready.join(", ") || "none"}${state.goal ? ` | Budget turns ${state.goal.budget.consumedTurns}/${state.goal.budget.limits.maximumTurns ?? "∞"}, tokens ${state.goal.budget.consumedTokens.totalTokens}/${state.goal.budget.limits.maximumTokens ?? "∞"} | Revision ${state.goal.automaticRevision.consumedAttempts}/${state.goal.automaticRevision.maximumAttempts}` : ""}${shownLoop ? ` | Loop ${shownLoop.id}: ${shownLoop.iteration.current}/${shownLoop.iteration.limit}${policy}${outcome}${progress}` : ""}`,
-    ...(family === undefined ? [] : familyWidgetLines(family)),
-    ...waitingWidgetLines(state),
   ];
+
+  const includeDiagram = options.includeDiagram !== false;
+  if (includeDiagram) {
+    const diagram = options.diagramLines
+      ?? renderWidgetDiagramLines(state, options.maxWidth ?? DEFAULT_WIDGET_DIAGRAM_WIDTH);
+    if (diagram.length > 0) {
+      lines.push("");
+      lines.push(...diagram);
+    }
+  }
+
+  const waiting = waitingWidgetLines(state);
+  if (waiting.length > 0) {
+    lines.push(...waiting);
+  }
+  return lines;
 }
 
 /**

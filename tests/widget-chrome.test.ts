@@ -74,7 +74,8 @@ describe("widget chrome", () => {
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const line = renderWidget(created.state, undefined, { frameIndex: 4 })[0]!;
+    const lines = renderWidget(created.state, undefined, { frameIndex: 4 });
+    const line = lines[0]!;
     expect(line).toContain("Hypagraph: Widget chrome");
     expect(line).toContain("running");
     expect(line).toContain(BRAILLE_SPINNER_FRAMES[4 % BRAILLE_SPINNER_FRAMES.length]);
@@ -82,6 +83,27 @@ describe("widget chrome", () => {
     expect(line).toContain("active");
     // Plain completed text still searchable without ANSI for other tests.
     expect(line).toMatch(/running/);
+    // Compact chrome: no Active/Family walls; live graph sits under the title.
+    expect(lines.some((row) => row.includes("Active:"))).toBe(false);
+    expect(lines.some((row) => row.includes("Family:"))).toBe(false);
+    expect(lines.length).toBeGreaterThan(1);
+  });
+
+  it("can suppress the widget diagram while another dock shows a graph", () => {
+    const created = createHypagoalWorkflow(definition(), {
+      workflowId: "w-widget-nodiag",
+      goalId: "g-widget-nodiag",
+      goalWorkflowId: "w-widget-nodiag",
+      at,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const withDiagram = renderWidget(created.state, undefined, { includeDiagram: true });
+    const without = renderWidget(created.state, undefined, { includeDiagram: false });
+    expect(withDiagram.length).toBeGreaterThan(without.length);
+    // Title only (no blank + art) while post-create owns the graph.
+    expect(without).toHaveLength(1);
+    expect(without[0]).toMatch(/Hypagraph:/);
   });
 
   it("drives widget animation painter while sync(true)", () => {

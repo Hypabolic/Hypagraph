@@ -14,8 +14,8 @@ export interface MermaidProjectionOptions {
   /**
    * Flowchart direction.
    *
-   * When omitted, the projector chooses TD for larger graphs and LR when the
-   * graph is small and has no multi-node loop subgraph.
+   * When omitted, the projector defaults to LR (horizontal left-to-right).
+   * Pass TD only when a vertical layout is required.
    */
   direction?: MermaidDirection;
   /** Maximum nodes to emit. Extra nodes produce a diagnostic. Default: 48. */
@@ -28,6 +28,11 @@ export interface MermaidProjectionOptions {
    * When false (default), emit skipped routes as dotted edges with a label.
    */
   compact?: boolean;
+  /**
+   * When true, prefix node labels with live status glyphs and mark running loops.
+   * Used by the live bottom graph dock for colour highlighting.
+   */
+  statusMarkers?: boolean;
 }
 
 export interface MermaidProjectionDiagnostic {
@@ -60,8 +65,8 @@ export interface MermaidProjectionResult {
 
 const DEFAULT_MAX_NODES = 48;
 const DEFAULT_MAX_LABEL_LENGTH = 28;
-/** Prefer LR when the graph is this small and has no multi-node loop. */
-const SMALL_GRAPH_NODE_LIMIT = 4;
+/** Default flowchart direction: horizontal left-to-right. */
+const DEFAULT_MERMAID_DIRECTION: MermaidDirection = "LR";
 /** Structural prefix so subgraph ids cannot equal any node mermaidSafeId output. */
 const SUBGRAPH_PREFIX = "sg_";
 
@@ -171,12 +176,35 @@ const nodeShapeClose = (kind: GraphViewNode["kind"]): string => {
   }
 };
 
+/** Status glyph for live Mermaid labels (keep in sync with live-graph-color). */
+const STATUS_GLYPH: Record<GraphViewNode["status"], string> = {
+  pending: "○",
+  ready: "◇",
+  starting: "▶",
+  running: "▶",
+  awaiting_evidence: "?",
+  awaiting_response: "…",
+  waiting_for_child: "↓",
+  verifying: "V",
+  succeeded: "✓",
+  failed: "✗",
+  blocked: "■",
+  cancelled: "×",
+  skipped: "–",
+  stale: "!",
+};
+
 const nodeDeclaration = (
   node: GraphViewNode,
   mermaidId: string,
   maxLabelLength: number,
+  statusMarkers: boolean,
 ): string => {
-  const label = escapeMermaidLabel(node.title || node.id, maxLabelLength);
+  const base = node.title || node.id;
+  const text = statusMarkers
+    ? `${STATUS_GLYPH[node.status] ?? "·"} ${base}`
+    : base;
+  const label = escapeMermaidLabel(text, maxLabelLength);
   return `${mermaidId}${nodeShapeOpen(node.kind)}"${label}"${nodeShapeClose(node.kind)}`;
 };
 
@@ -207,15 +235,11 @@ const edgeLine = (
 };
 
 const chooseDirection = (
-  view: GraphViewModel,
+  _view: GraphViewModel,
   options: MermaidProjectionOptions | undefined,
 ): MermaidDirection => {
   if (options?.direction !== undefined) return options.direction;
-  const multiNodeLoop = view.loops.some((loop) => loop.nodeIds.length > 1);
-  if (!multiNodeLoop && view.nodes.length > 0 && view.nodes.length <= SMALL_GRAPH_NODE_LIMIT) {
-    return "LR";
-  }
-  return "TD";
+  return DEFAULT_MERMAID_DIRECTION;
 };
 
 /**
@@ -265,6 +289,7 @@ export function projectMermaidFlowchart(
   const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
   const maxLabelLength = options.maxLabelLength ?? DEFAULT_MAX_LABEL_LENGTH;
   const compact = options.compact === true;
+  const statusMarkers = options.statusMarkers === true;
   const direction = chooseDirection(view, options);
   const diagnostics: MermaidProjectionDiagnostic[] = [];
   const emptyMaps = {
@@ -320,7 +345,7 @@ export function projectMermaidFlowchart(
     if (declared.has(node.id)) return;
     const mermaidId = mermaidNodeIds.get(node.id);
     if (mermaidId === undefined) return;
-    lines.push(`${indent}${nodeDeclaration(node, mermaidId, maxLabelLength)}`);
+    lines.push(`${indent}${nodeDeclaration(node, mermaidId, maxLabelLength, statusMarkers)}`);
     declared.add(node.id);
   };
 
@@ -332,7 +357,10 @@ export function projectMermaidFlowchart(
   // Multi-node loops as subgraphs.
   for (const loop of multiNodeLoops) {
     const subgraphId = mermaidSubgraphIds.get(loop.id)!;
-    const subgraphTitle = escapeMermaidLabel(loop.id, maxLabelLength);
+    const loopTitle = statusMarkers && loop.status === "running"
+      ? `▶ ${loop.id}`
+      : loop.id;
+    const subgraphTitle = escapeMermaidLabel(loopTitle, maxLabelLength);
     lines.push(`  subgraph ${subgraphId} ["${subgraphTitle}"]`);
     const members = nodes
       .filter((node) => loop.nodeIds.includes(node.id))

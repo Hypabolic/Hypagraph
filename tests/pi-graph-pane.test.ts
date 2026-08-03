@@ -122,7 +122,7 @@ describe("Pi graph pane component", () => {
 });
 
 describe("graph pane controller", () => {
-  it("uses a passive right-side overlay on wide terminals", () => {
+  it("uses a passive bottom live dock on wide terminals", () => {
     const controller = new GraphPaneController();
     controller.update(state());
     const fakeTui = tui(140, 50);
@@ -153,10 +153,9 @@ describe("graph pane controller", () => {
     controller.open(ctx);
     expect(custom).toHaveBeenCalledOnce();
     expect(overlayOptions?.()).toMatchObject({
-      anchor: "right-center",
+      anchor: "bottom-center",
       nonCapturing: true,
-      width: 63,
-      maxHeight: "90%",
+      width: "100%",
     });
     expect(unfocus).toHaveBeenCalledWith({ target: null });
 
@@ -210,7 +209,7 @@ describe("graph pane controller", () => {
     finish?.();
   });
 
-  it("uses a capturing full-screen overlay on narrow terminals", () => {
+  it("uses the bottom companion dock on narrow terminals as well", () => {
     const controller = new GraphPaneController();
     controller.update(state());
     const fakeTui = tui(80, 30);
@@ -237,12 +236,12 @@ describe("graph pane controller", () => {
 
     controller.open(ctx);
     expect(overlayOptions?.()).toMatchObject({
-      anchor: "center",
-      nonCapturing: false,
-      width: 78,
-      maxHeight: 28,
+      anchor: "bottom-center",
+      nonCapturing: true,
+      width: "100%",
     });
-    expect(handle.unfocus).not.toHaveBeenCalled();
+    // Companion dock leaves the composer focused on open.
+    expect(handle.unfocus).toHaveBeenCalledWith({ target: null });
     controller.close();
     finish?.();
   });

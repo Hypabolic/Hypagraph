@@ -40,27 +40,26 @@ Pi does not provide a native extension API that permanently divides the main scr
 
 Hypagraph must not fork Pi to add this function.
 
-Use an extension-owned overlay as the dedicated pane:
+Use an extension-owned **bottom dock** as the dedicated live graph surface
+(same zone as post-create review and interaction ask):
 
 ```text
-+--------------------------------------+---------------------------+
-| Pi messages and tool results         | Hypagraph graph           |
-|                                      |                           |
-|                                      |  [plan] ---> [code]       |
-|                                      |                |          |
-|                                      |                v          |
-|                                      |             [tests]       |
-|                                      |              /    \       |
-|                                      |             v      v      |
-|                                      |          [fix]   [docs]    |
-+--------------------------------------+---------------------------+
-| editor                                                           |
-+------------------------------------------------------------------+
++--------------------------------------------------------------+
+| Pi messages and tool results                                 |
++--------------------------------------------------------------+
+| Hypagraph live · <title>                                     |
+| LR Mermaid art · status glyphs · colour on active nodes/loops|
+| hot plan:running · selected code · ready                     |
++--------------------------------------------------------------+
+| editor / composer                                            |
++--------------------------------------------------------------+
 ```
 
-The pane uses a right-side overlay on wide terminals. It uses a full-screen custom component on narrow terminals.
+Product path: `LiveGraphDockComponent` via `GraphPaneController` (`/hypagraph graph`).
+Horizontal Mermaid (LR) with status markers. Active and ready nodes and running
+loops are colour-coded. The right-side box-layout overlay is retired for product use.
 
-The compact widget remains available when the pane is closed.
+The compact widget remains available when the dock is closed.
 
 ## 3. Product decision
 

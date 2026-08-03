@@ -20,7 +20,9 @@ import { graphLayoutKey, projectGraphView, type GraphViewModel, type GraphViewNo
 import { renderGraphScene, sanitizeTerminalText } from "../graph/renderer.js";
 import { compareReplayWithLive, replayToSequence } from "../history/replay.js";
 import type { TimelineEntry } from "../history/timeline.js";
+import { bottomDockOverlayOptions } from "../ui/bottom-dock-overlay.js";
 import { familyGraphSummaryLines } from "../ui/family-surface.js";
+import { LiveGraphDockComponent } from "./live-graph-dock.js";
 
 export type GraphDensity = "compact" | "normal" | "spacious";
 
@@ -39,8 +41,7 @@ export interface ReplayPaneControls {
   clear(): void;
 }
 
-const MIN_SIDE_WIDTH = 48;
-const MAX_SIDE_WIDTH = 96;
+/** Wide terminal threshold used only for initial unfocus companion behaviour. */
 const WIDE_TERMINAL_WIDTH = 100;
 
 const selectedNode = (view: GraphViewModel, selectedNodeId: string | undefined): GraphViewNode | undefined =>
@@ -733,13 +734,17 @@ export class PiGraphPaneComponent implements Component, Focusable {
   }
 }
 
+/**
+ * Product live graph controller.
+ *
+ * Opens the bottom Mermaid dock (LiveGraphDockComponent). The legacy side-pane
+ * box layout (PiGraphPaneComponent) is not used on the product path.
+ */
 export class GraphPaneController {
   private state: HypagraphState | undefined;
   private view: GraphViewModel | undefined;
   private family: FamilyGraphViewModel | undefined;
-  private layout: GraphLayout | undefined;
-  private layoutKey: string | undefined;
-  private component: PiGraphPaneComponent | undefined;
+  private component: LiveGraphDockComponent | undefined;
   private handle: OverlayHandle | undefined;
   private openPromise: Promise<void> | undefined;
   private density: GraphDensity = "normal";
@@ -776,7 +781,7 @@ export class GraphPaneController {
     return this.component?.familyFocusGoalIdForTest ?? this.family?.focusedGoalId;
   }
 
-  get componentForTest(): PiGraphPaneComponent | undefined {
+  get componentForTest(): LiveGraphDockComponent | undefined {
     return this.component;
   }
 
@@ -824,8 +829,6 @@ export class GraphPaneController {
     };
     if (member.graph) {
       this.view = member.graph;
-      this.layout = layoutGraph(member.graph, { density: this.density });
-      this.layoutKey = `${this.density}:${graphLayoutKey(member.graph)}`;
     }
     return { ok: true, goalId: trimmed };
   }
@@ -834,8 +837,6 @@ export class GraphPaneController {
     this.state = state === undefined ? undefined : structuredClone(state);
     if (!state) {
       this.view = undefined;
-      this.layout = undefined;
-      this.layoutKey = undefined;
       this.replaySequence = undefined;
       this.family = undefined;
       this.component?.setFamily(undefined);
@@ -904,49 +905,17 @@ export class GraphPaneController {
     if (!live) return;
     const replayed = this.replayView();
     const rendered = replayed?.state ?? live;
-    const view = projectGraphView(rendered);
-    // Include density so a density change rebuilds layout for the root view.
-    const nextKey = `${this.density}:${graphLayoutKey(view)}`;
-    if (!this.layout || this.layoutKey !== nextKey) {
-      this.layout = layoutGraph(view, {
-        density: this.density,
-        ...(this.layout === undefined ? {} : { previous: this.layout }),
-      });
-      this.layoutKey = nextKey;
-    }
-    this.view = view;
-    // During replay, still pass the family model for later restore, but the
-    // component ignores family focus while replay is active.
-    this.component?.update(view, this.layout, this.density, replayed?.replay, this.family);
-  }
-
-  private replayControls(): ReplayPaneControls {
-    return {
-      step: (delta: number) => {
-        const events = this.readEvents();
-        const live = this.state;
-        if (!live || events.length === 0) return;
-        const first = events[0]!.sequence;
-        const current = this.replaySequence ?? live.sequence;
-        const next = Math.min(live.sequence, Math.max(first, current + delta));
-        this.setReplaySequence(next === live.sequence ? undefined : next);
-      },
-      enter: () => {
-        const events = this.readEvents();
-        const live = this.state;
-        if (!live || events.length === 0) return;
-        this.setReplaySequence(Math.max(events[0]!.sequence, live.sequence - 1));
-      },
-      clear: () => this.setReplaySequence(undefined),
-    };
+    this.view = projectGraphView(rendered);
+    // Live dock: push full state so Mermaid art and colour markers stay current.
+    this.component?.updateState(rendered, this.family);
   }
 
   open(ctx: ExtensionContext): void {
     if (ctx.mode !== "tui") {
-      ctx.ui.notify("The Hypagraph graph pane is available only in TUI mode.", "warning");
+      ctx.ui.notify("The Hypagraph live graph dock is available only in TUI mode.", "warning");
       return;
     }
-    if (!this.view || !this.layout) {
+    if (!this.state) {
       ctx.ui.notify("There is no active Hypagraph to show.", "warning");
       return;
     }
@@ -956,22 +925,18 @@ export class GraphPaneController {
     }
 
     let tuiReference: TUI | undefined;
-    const initialView = this.view;
-    const initialLayout = this.layout;
+    const initialState = this.state;
+    const initialFamily = this.family;
     const promise = ctx.ui.custom<void>(
       (tui, theme, _keybindings, done) => {
         tuiReference = tui;
-        const component = new PiGraphPaneComponent(
+        const component = new LiveGraphDockComponent(
           tui,
           theme,
           done,
           () => this.releaseFocus(),
-          (density) => this.setDensity(density),
-          initialView,
-          initialLayout,
-          this.density,
-          this.replayControls(),
-          this.family,
+          initialState,
+          initialFamily,
         );
         this.component = component;
         return component;
@@ -981,15 +946,15 @@ export class GraphPaneController {
         overlayOptions: (): OverlayOptions => this.overlayOptions(tuiReference),
         onHandle: (handle) => {
           this.handle = handle;
-          if ((tuiReference?.terminal.columns ?? WIDE_TERMINAL_WIDTH) >= WIDE_TERMINAL_WIDTH) {
-            handle.unfocus({ target: null });
-          }
+          // Bottom companion dock: leave the composer focused so the user can type.
+          // Focus the dock with /hypagraph graph focus when needed.
+          handle.unfocus({ target: null });
         },
       },
     );
     this.openPromise = promise;
     void promise
-      .catch((error: unknown) => ctx.ui.notify(`Hypagraph graph pane failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
+      .catch((error: unknown) => ctx.ui.notify(`Hypagraph live graph dock failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
       .finally(() => {
         this.openPromise = undefined;
         this.component = undefined;
@@ -1024,46 +989,18 @@ export class GraphPaneController {
     this.state = undefined;
     this.view = undefined;
     this.family = undefined;
-    this.layout = undefined;
-    this.layoutKey = undefined;
   }
 
-  private setDensity(density: GraphDensity): void {
-    if (density === this.density) return;
-    this.density = density;
-    // Rebuild through refresh so replay state and family focus stay consistent.
-    // Layout cache keys include density on the controller and the component.
-    if (this.state) {
-      this.layoutKey = undefined;
-      this.refresh();
-      return;
-    }
-    if (!this.view) return;
-    this.layout = layoutGraph(this.view, {
-      density,
-      ...(this.layout === undefined ? {} : { previous: this.layout }),
-    });
-    this.layoutKey = `${density}:${graphLayoutKey(this.view)}`;
-    this.component?.update(this.view, this.layout, density, undefined, this.family);
-  }
-
+  /**
+   * Place the live Mermaid graph above the composer (bottom dock).
+   * The right-side box-layout overlay is retired on the product path.
+   */
   private overlayOptions(tui: TUI | undefined): OverlayOptions {
-    const columns = tui?.terminal.columns ?? WIDE_TERMINAL_WIDTH;
-    const rows = tui?.terminal.rows ?? 40;
-    if (columns < WIDE_TERMINAL_WIDTH) {
-      return {
-        anchor: "center",
-        width: Math.max(20, columns - 2),
-        maxHeight: Math.max(8, rows - 2),
-        margin: 0,
-        nonCapturing: false,
-      };
-    }
+    const base = tui
+      ? bottomDockOverlayOptions({ tui: { terminal: tui.terminal } })
+      : bottomDockOverlayOptions();
     return {
-      anchor: "right-center",
-      width: Math.min(MAX_SIDE_WIDTH, Math.max(MIN_SIDE_WIDTH, Math.floor(columns * 0.45))),
-      maxHeight: "90%",
-      margin: { right: 1 },
+      ...base,
       nonCapturing: true,
     };
   }

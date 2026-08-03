@@ -576,7 +576,9 @@ describe("M7-S9 nested graph and executor UI projection", () => {
     expect(bounded.every((line) => visibleWidth(line) <= 80)).toBe(true);
 
     const widget = renderWidget(rootState, largeView);
-    expect(widget.some((line) => line.includes("Family:"))).toBe(true);
+    // Normal widget chrome is title + graph only (no Family wall).
+    expect(widget[0]).toMatch(/Hypagraph:/);
+    expect(widget.some((line) => line.includes("Family:"))).toBe(false);
 
     const oneMember = projectFamilyGraphView(createOneMemberFamily());
     const oneBlock = appendFamilyStatusBlock("root-status", oneMember, 80);
@@ -1000,7 +1002,9 @@ describe("M7-S9 product surface wiring", () => {
     expect(combined).toContain("binding-product");
 
     const widget = renderWidget(childResult.parentState, productView);
-    expect(widget.some((line) => line.includes("family-product"))).toBe(true);
+    // Family ids stay on /hypagraph status, not the compact widget.
+    expect(widget[0]).toMatch(/Hypagraph:/);
+    expect(widget.some((line) => line.includes("Family:"))).toBe(false);
 
     // Mismatched live after replacement yields no family block.
     const replaced = createStartedWorkflow(rootTask("Other"), "wf-other", "goal-other");

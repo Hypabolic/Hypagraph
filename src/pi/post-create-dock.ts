@@ -1,8 +1,10 @@
 /**
  * Post-create graph review dock.
  *
- * After a successful interactive hypagoal_start, the TUI presents this bottom
- * dock so the user can choose Run, Question, or Cancel before autonomous work.
+ * After a successful interactive hypagoal_start, the TUI presents this dock in
+ * the composer / editor zone so the user can choose Run, Question, or Cancel
+ * before autonomous work. Placement is at the prompt (not a terminal-bottom
+ * floating overlay), so a short chat history does not leave a large empty gap.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -11,7 +13,7 @@ import type { HypagraphState } from "../domain/model.js";
 import { projectMermaidFlowchart } from "../graph/mermaid-projection.js";
 import { projectGraphView } from "../graph/projection.js";
 import { hypagoalReadyWork } from "./hypagoal.js";
-import { renderMermaidArt } from "../ui/mermaid-art.js";
+import { renderMermaidArtBestFit } from "../ui/mermaid-art.js";
 
 /** User choice from the post-create dock. */
 export type PostCreateDockResult =
@@ -93,22 +95,47 @@ export function postCreateDockMeta(state: HypagraphState): PostCreateDockMeta {
 /**
  * Project Mermaid and render Unicode art for the post-create dock.
  *
- * Returns plain lines. ANSI theming is optional for future polish.
+ * Always keeps a horizontal (LR) layout. Vertical TD is not used: it fits
+ * narrow terminals by width but grows too tall and is clipped by the dock.
+ * When LR is wider than the dock, try shorter labels, then clip the art.
+ * Never falls back to raw Mermaid source in the product dock.
  */
 export function postCreateDiagramLines(
   state: HypagraphState,
   maxWidth: number,
-): { lines: string[]; source: string; mode: string } {
+): { lines: string[]; source: string; mode: string; clipped?: boolean; direction: string } {
   const view = projectGraphView(state);
-  const projection = projectMermaidFlowchart(view);
-  const art = renderMermaidArt(projection.source, {
-    maxWidth: Math.max(20, maxWidth),
-    preferSourceBox: true,
+  const budget = Math.max(20, maxWidth);
+  const lr = projectMermaidFlowchart(view, {
+    direction: "LR",
+    statusMarkers: true,
   });
+  const lrCompact = projectMermaidFlowchart(view, {
+    direction: "LR",
+    statusMarkers: true,
+    maxLabelLength: 16,
+    compact: true,
+  });
+  const lrTight = projectMermaidFlowchart(view, {
+    direction: "LR",
+    statusMarkers: true,
+    maxLabelLength: 10,
+    compact: true,
+  });
+  const art = renderMermaidArtBestFit(
+    [lr.source, lrCompact.source, lrTight.source],
+    {
+      maxWidth: budget,
+      preferSourceBox: false,
+      whenTooWide: "clip-art",
+    },
+  );
   return {
     lines: art.lines,
-    source: projection.source,
+    source: art.source,
     mode: art.mode,
+    direction: "LR",
+    ...(art.clipped === true ? { clipped: true } : {}),
   };
 }
 
@@ -128,7 +155,7 @@ export function hostSupportsPostCreateDock(ctx: {
 }
 
 /**
- * The post-create review dock.
+ * The post-create review surface (editor-zone custom UI).
  *
  * Run is recommended and preselected. Esc maps to Question (safe dismiss).
  * Cancel requires the Cancel row or digit 3.
@@ -167,7 +194,7 @@ export class PostCreateDockComponent implements Component, Focusable {
       this.diagramTruncated = true;
     } else {
       this.diagramLines = diagram.lines;
-      this.diagramTruncated = false;
+      this.diagramTruncated = diagram.clipped === true;
     }
   }
 

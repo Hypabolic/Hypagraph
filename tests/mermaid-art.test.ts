@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { render as grokRender } from "grok-mermaid";
 import { projectMermaidFlowchart } from "../src/graph/mermaid-projection.js";
 import type { GraphViewModel } from "../src/graph/projection.js";
-import { renderMermaidArt } from "../src/ui/mermaid-art.js";
+import { renderMermaidArt, renderMermaidArtBestFit } from "../src/ui/mermaid-art.js";
+import { resolveDemoExample } from "../src/pi/demo-catalog.js";
+import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
+import { projectGraphView } from "../src/graph/projection.js";
 
 const simpleView = (): GraphViewModel => ({
   workflowId: "workflow-art",
@@ -123,5 +126,92 @@ describe("renderMermaidArt", () => {
     expect(result.art).toBeNull();
     expect(result.mode).toBe("text");
     expect(result.lines).toEqual(["text when art is null"]);
+  });
+
+  it("clip-art keeps Unicode art instead of raw Mermaid source when too wide", () => {
+    const source = "flowchart LR\n  A[Start] --> B[Middle] --> C[End] --> D[Extra]";
+    const full = renderMermaidArt(source);
+    expect(full.mode).toBe("art");
+    expect(full.width).toBeGreaterThan(10);
+
+    const clipped = renderMermaidArt(source, {
+      maxWidth: 12,
+      whenTooWide: "clip-art",
+      preferSourceBox: false,
+    });
+    expect(clipped.mode).toBe("art");
+    expect(clipped.clipped).toBe(true);
+    expect(clipped.lines.every((line) => line.length <= 12)).toBe(true);
+    // Must not dump flowchart source into the dock.
+    expect(clipped.lines.join("\n")).not.toMatch(/flowchart LR/);
+  });
+
+  it("best-fit keeps horizontal LR and clips instead of switching to tall TD", () => {
+    const example = resolveDemoExample("showcase")!;
+    const created = createHypagoalWorkflow(example.definition(), {
+      workflowId: "workflow-fit",
+      goalId: "goal-fit",
+      goalWorkflowId: "workflow-fit",
+      at: "2026-07-31T20:00:00.000Z",
+      ...(example.budget === undefined ? {} : { budget: example.budget }),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const view = projectGraphView(created.state);
+    const lr = projectMermaidFlowchart(view, { direction: "LR", statusMarkers: true });
+    const lrTight = projectMermaidFlowchart(view, {
+      direction: "LR",
+      statusMarkers: true,
+      maxLabelLength: 10,
+      compact: true,
+    });
+    const td = projectMermaidFlowchart(view, { direction: "TD", statusMarkers: true });
+    const lrArt = grokRender(lr.source);
+    const tdArt = grokRender(td.source);
+    expect(lrArt).not.toBeNull();
+    expect(tdArt).not.toBeNull();
+    expect(lrArt!.width).toBeGreaterThan(80);
+    expect(tdArt!.width).toBeLessThanOrEqual(80);
+    // TD is short in width but much taller — product docks must not pick it.
+    expect(tdArt!.plain.length).toBeGreaterThan(lrArt!.plain.length);
+
+    const fit = renderMermaidArtBestFit([lr.source, lrTight.source], {
+      maxWidth: 80,
+      preferSourceBox: false,
+      whenTooWide: "clip-art",
+    });
+    expect(fit.mode).toBe("art");
+    expect(fit.source.startsWith("flowchart LR")).toBe(true);
+    expect(fit.clipped).toBe(true);
+    expect(fit.lines.every((line) => line.length <= 80)).toBe(true);
+    expect(fit.lines.join("\n")).not.toMatch(/flowchart (LR|TD)/);
+    // Horizontal art stays short; product docks must not become a tall strip.
+    expect(fit.lines.length).toBeLessThanOrEqual(16);
+  });
+
+  it("product post-create and live diagrams stay LR even at 80 columns", async () => {
+    const { postCreateDiagramLines } = await import("../src/pi/post-create-dock.js");
+    const { renderLiveGraphDiagram } = await import("../src/pi/live-graph-dock.js");
+    const example = resolveDemoExample("showcase")!;
+    const created = createHypagoalWorkflow(example.definition(), {
+      workflowId: "workflow-lr-product",
+      goalId: "goal-lr-product",
+      goalWorkflowId: "workflow-lr-product",
+      at: "2026-07-31T20:00:00.000Z",
+      budget: example.budget,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const view = projectGraphView(created.state);
+    const theme = { fg: (_n: string, v: string) => v } as any;
+
+    const post = postCreateDiagramLines(created.state, 80);
+    expect(post.direction).toBe("LR");
+    expect(post.source.startsWith("flowchart LR")).toBe(true);
+    expect(post.lines.length).toBeLessThanOrEqual(16);
+
+    const live = renderLiveGraphDiagram(view, theme, 80);
+    expect(live.direction).toBe("LR");
+    expect(live.lines.length).toBeLessThanOrEqual(16);
   });
 });
