@@ -24,9 +24,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test",
-    "demo:readme": "npx --yes tsx docs/demo/play-scripted-demo.ts",
-    "demo:readme:fast": "npx --yes tsx docs/demo/play-scripted-demo.ts --fast"
+    "check": "npm run typecheck && npm test"
   },
   "pi": {
     "extensions": [

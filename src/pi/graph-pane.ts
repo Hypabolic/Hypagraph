@@ -737,8 +737,8 @@ export class PiGraphPaneComponent implements Component, Focusable {
 /**
  * Product live graph controller.
  *
- * Opens the bottom Mermaid dock (LiveGraphDockComponent). The legacy side-pane
- * box layout (PiGraphPaneComponent) is not used on the product path.
+ * Opens the bottom Mermaid dock or a full-view modal (LiveGraphDockComponent).
+ * The legacy side-pane box layout (PiGraphPaneComponent) is not used on the product path.
  */
 export class GraphPaneController {
   private state: HypagraphState | undefined;
@@ -749,12 +749,19 @@ export class GraphPaneController {
   private openPromise: Promise<void> | undefined;
   private density: GraphDensity = "normal";
   private replaySequence: number | undefined;
+  /** dock = bottom companion; modal = large centered full view. */
+  private presentation: "dock" | "modal" = "dock";
 
   /** The controller reads the stored event stream for replay. It never stores an event. */
   constructor(private readonly readEvents: () => readonly DomainEvent[] = () => []) {}
 
   get isOpen(): boolean {
     return this.openPromise !== undefined;
+  }
+
+  /** Current presentation of the open surface (or last open mode). */
+  get presentationForTest(): "dock" | "modal" {
+    return this.component?.presentationForTest ?? this.presentation;
   }
 
   get replaySequenceForTest(): number | undefined {
@@ -910,26 +917,68 @@ export class GraphPaneController {
     this.component?.updateState(rendered, this.family);
   }
 
+  /**
+   * Open the bottom companion live graph dock.
+   * Leaves the composer focused (non-capturing).
+   */
   open(ctx: ExtensionContext): void {
+    this.openPresentation(ctx, "dock");
+  }
+
+  /**
+   * Open a large centered full-view modal with colour-coded live graph.
+   * Captures keyboard focus. Close with q or Esc.
+   * Product shortcut: ctrl+shift+g. Command: /hypagraph graph full.
+   */
+  openFull(ctx: ExtensionContext): void {
+    this.openPresentation(ctx, "modal");
+  }
+
+  private openPresentation(ctx: ExtensionContext, presentation: "dock" | "modal"): void {
     if (ctx.mode !== "tui") {
-      ctx.ui.notify("The Hypagraph live graph dock is available only in TUI mode.", "warning");
+      ctx.ui.notify(
+        presentation === "modal"
+          ? "The Hypagraph full graph modal is available only in TUI mode."
+          : "The Hypagraph live graph dock is available only in TUI mode.",
+        "warning",
+      );
       return;
     }
     if (!this.state) {
       ctx.ui.notify("There is no active Hypagraph to show.", "warning");
       return;
     }
-    if (this.isOpen) {
+    // Same presentation already open: push the latest graph and keep the surface.
+    // Tour members (pipeline → rich) must not close+reopen: the old custom() finally
+    // can clear the new component and the modal disappears.
+    if (this.isOpen && this.presentation === presentation) {
+      this.refresh();
       this.focus();
       return;
     }
+    // Dock ↔ modal: close the other surface first.
+    if (this.isOpen) {
+      this.close();
+    }
 
+    this.presentation = presentation;
     let tuiReference: TUI | undefined;
     const initialState = this.state;
     const initialFamily = this.family;
+    const isModal = presentation === "modal";
     const promise = ctx.ui.custom<void>(
       (tui, theme, _keybindings, done) => {
         tuiReference = tui;
+        const rows = tui.terminal?.rows;
+        const cols = tui.terminal?.columns;
+        const maxContentLines = isModal
+          ? (typeof rows === "number" && rows > 0
+            ? Math.max(16, rows - 2)
+            : 36)
+          : undefined;
+        const artMaxWidth = typeof cols === "number" && cols > 0
+          ? Math.max(24, cols - (isModal ? 4 : 6))
+          : undefined;
         const component = new LiveGraphDockComponent(
           tui,
           theme,
@@ -937,25 +986,49 @@ export class GraphPaneController {
           () => this.releaseFocus(),
           initialState,
           initialFamily,
+          {
+            presentation,
+            ...(maxContentLines === undefined ? {} : { maxContentLines }),
+            ...(artMaxWidth === undefined ? {} : { artMaxWidth }),
+          },
         );
         this.component = component;
         return component;
       },
       {
         overlay: true,
-        overlayOptions: (): OverlayOptions => this.overlayOptions(tuiReference),
+        overlayOptions: (): OverlayOptions => (
+          isModal
+            ? this.modalOverlayOptions(tuiReference)
+            : this.dockOverlayOptions(tuiReference)
+        ),
         onHandle: (handle) => {
           this.handle = handle;
-          // Bottom companion dock: leave the composer focused so the user can type.
-          // Focus the dock with /hypagraph graph focus when needed.
-          handle.unfocus({ target: null });
+          if (isModal) {
+            // Full view owns the keyboard until the user closes it.
+            handle.focus();
+          } else {
+            // Bottom companion dock: leave the composer focused so the user can type.
+            handle.unfocus({ target: null });
+          }
         },
       },
     );
     this.openPromise = promise;
     void promise
-      .catch((error: unknown) => ctx.ui.notify(`Hypagraph live graph dock failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
+      .catch((error: unknown) => {
+        // Only report if this open is still current (not superseded by a later open).
+        if (this.openPromise === promise) {
+          ctx.ui.notify(
+            `Hypagraph live graph ${isModal ? "modal" : "dock"} failed: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+        }
+      })
       .finally(() => {
+        // Do not clear a newer open. Closing the previous tour modal used to race
+        // and wipe the replacement rich-graph modal.
+        if (this.openPromise !== promise) return;
         this.openPromise = undefined;
         this.component = undefined;
         this.handle = undefined;
@@ -963,8 +1036,14 @@ export class GraphPaneController {
   }
 
   close(): void {
+    const closing = this.openPromise;
     this.component?.finish();
     this.handle?.hide();
+    // Drop identity of the closing surface immediately so a concurrent openFull
+    // is not mistaken for the same open, and so finally can no-op for this promise.
+    if (this.openPromise === closing) {
+      this.openPromise = undefined;
+    }
     this.component = undefined;
     this.handle = undefined;
   }
@@ -972,6 +1051,12 @@ export class GraphPaneController {
   toggle(ctx: ExtensionContext): void {
     if (this.isOpen) this.close();
     else this.open(ctx);
+  }
+
+  /** Toggle the full-view modal (ctrl+shift+g). */
+  toggleFull(ctx: ExtensionContext): void {
+    if (this.isOpen && this.presentation === "modal") this.close();
+    else this.openFull(ctx);
   }
 
   focus(): void {
@@ -995,13 +1080,31 @@ export class GraphPaneController {
    * Place the live Mermaid graph above the composer (bottom dock).
    * The right-side box-layout overlay is retired on the product path.
    */
-  private overlayOptions(tui: TUI | undefined): OverlayOptions {
+  private dockOverlayOptions(tui: TUI | undefined): OverlayOptions {
     const base = tui
       ? bottomDockOverlayOptions({ tui: { terminal: tui.terminal } })
       : bottomDockOverlayOptions();
     return {
       ...base,
       nonCapturing: true,
+    };
+  }
+
+  /**
+   * Large centered modal for full graph viewing with colour markers.
+   */
+  private modalOverlayOptions(tui: TUI | undefined): OverlayOptions {
+    const rows = tui?.terminal?.rows;
+    const maxHeight = typeof rows === "number" && rows > 0
+      ? Math.max(18, rows - 1)
+      : "90%";
+    return {
+      anchor: "center",
+      width: "98%",
+      minWidth: 48,
+      maxHeight,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      nonCapturing: false,
     };
   }
 }

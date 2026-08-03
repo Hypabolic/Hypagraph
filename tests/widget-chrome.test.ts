@@ -9,9 +9,14 @@ import {
   GOLD_RGB,
   widgetPhaseAnimates,
 } from "../src/ui/widget-chrome.js";
-import { renderWidget } from "../src/ui/format.js";
+import {
+  PI_MAX_WIDGET_LINES,
+  renderWidget,
+  renderWidgetDiagramLines,
+} from "../src/ui/format.js";
 import type { HypagraphDefinition } from "../src/domain/model.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
+import { resolveDemoExample } from "../src/pi/demo-catalog.js";
 
 const at = "2026-07-31T16:00:00.000Z";
 
@@ -104,6 +109,26 @@ describe("widget chrome", () => {
     // Title only (no blank + art) while post-create owns the graph.
     expect(without).toHaveLength(1);
     expect(without[0]).toMatch(/Hypagraph:/);
+  });
+
+  it("stays within Pi MAX_WIDGET_LINES so the host does not show widget truncated", () => {
+    const example = resolveDemoExample("showcase")!;
+    const created = createHypagoalWorkflow(example.definition(), {
+      workflowId: "w-widget-cap",
+      goalId: "g-widget-cap",
+      goalWorkflowId: "w-widget-cap",
+      at,
+      budget: example.budget,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const lines = renderWidget(created.state, undefined, { maxWidth: 100 });
+    expect(lines.length).toBeLessThanOrEqual(PI_MAX_WIDGET_LINES);
+    expect(lines.some((row) => row.includes("widget truncated"))).toBe(false);
+    // No blank spacer wasted under the title.
+    expect(lines[1] === "").toBe(false);
+    const art = renderWidgetDiagramLines(created.state, 100);
+    expect(art.length).toBeLessThanOrEqual(PI_MAX_WIDGET_LINES - 1);
   });
 
   it("drives widget animation painter while sync(true)", () => {

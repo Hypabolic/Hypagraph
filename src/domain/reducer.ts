@@ -284,18 +284,42 @@ const requiredFactsArePresent = (state: HypagraphState, nodeId: string, attemptI
   }).map((contract) => contract.name);
 };
 
+const nodeHasOpenAttempt = (item: HypagraphState["runtime"]["nodes"][string]): boolean =>
+  ACTIVE_ATTEMPT_STATUSES.has(item.status)
+  || Object.values(item.attempts).some(
+    (attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying",
+  );
+
 /**
  * True when another node holds exclusive active-attempt ownership.
  * Interaction wait and child wait do not block independent work starts.
  */
-const exclusiveActiveAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
-  // An unanswered interaction waits without holding exclusive active-attempt ownership.
-  if (item.status === "awaiting_response") return false;
-  // A parent task waiting for a child goal suspends only that task.
-  if (item.status === "waiting_for_child") return false;
-  return ACTIVE_ATTEMPT_STATUSES.has(item.status)
-    || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying");
-});
+const exclusiveActiveAttemptExists = (state: HypagraphState): boolean =>
+  Object.values(state.runtime.nodes).some((item) => {
+    // An unanswered interaction waits without holding exclusive active-attempt ownership.
+    if (item.status === "awaiting_response") return false;
+    // A parent task waiting for a child goal suspends only that task.
+    if (item.status === "waiting_for_child") return false;
+    return nodeHasOpenAttempt(item);
+  });
+
+/**
+ * True when starting a check is blocked by non-check active work.
+ *
+ * Independent ready checks may run concurrently (parallel components).
+ * An active task, code, or effect attempt still blocks a new check start.
+ */
+const concurrentCheckStartBlocked = (state: HypagraphState): boolean => {
+  for (const [nodeId, item] of Object.entries(state.runtime.nodes)) {
+    if (item.status === "awaiting_response" || item.status === "waiting_for_child") continue;
+    if (!nodeHasOpenAttempt(item)) continue;
+    const kind = state.definition.nodes.find((node) => node.id === nodeId)?.kind ?? "task";
+    // Another check may already be running on an independent branch.
+    if (kind === "check") continue;
+    return true;
+  }
+  return false;
+};
 
 /**
  * True when revision is unsafe because an open attempt still owns workflow identity.
@@ -304,11 +328,10 @@ const exclusiveActiveAttemptExists = (state: HypagraphState): boolean => Object.
 const revisionBlockingAttemptExists = (state: HypagraphState): boolean => Object.values(state.runtime.nodes).some((item) => {
   if (item.status === "awaiting_response") return false;
   if (item.status === "waiting_for_child") return true;
-  return ACTIVE_ATTEMPT_STATUSES.has(item.status)
-    || Object.values(item.attempts).some((attempt) => attempt.status === "running" || attempt.status === "submitted" || attempt.status === "verifying");
+  return nodeHasOpenAttempt(item);
 });
 
-/** Exclusive active-attempt ownership for concurrent work starts. */
+/** Exclusive active-attempt ownership for concurrent work starts (tasks, code, effects). */
 const activeAttemptExists = exclusiveActiveAttemptExists;
 
 const validateCheckResult = (result: CheckResult, attemptId: string, definition: CheckDefinition): Rejection | undefined => {
@@ -1187,7 +1210,10 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
       if ((definitionNode.kind ?? "task") !== "check" || !definitionNode.check) return reject("node_not_check", `Node '${command.nodeId}' is not a check.`);
       const eligibility = evaluateCheckStart(node, definitionNode.check, command.attemptId, command.at);
       if (!eligibility.ok) return { ok: false, diagnostics: [eligibility.diagnostic] };
-      if (activeAttemptExists(state)) return reject("node_already_active", "Another node has an active attempt.");
+      // Independent ready checks may run together. Tasks, code, and effects stay exclusive.
+      if (concurrentCheckStartBlocked(state)) {
+        return reject("node_already_active", "Another node has an active attempt.");
+      }
       const evaluationKind = definitionNode.check.kind === "metric-report" ? metricEvaluationKind(definitionNode.check) : undefined;
       if (evaluationKind) {
         const budgetDiagnostic = evaluationStartDiagnostic(state.definition, state.runtime.evaluations, evaluationKind);

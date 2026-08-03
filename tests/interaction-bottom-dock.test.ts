@@ -3,9 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import hypagraphExtension from "../src/extension.js";
 import type { HypagraphState, InteractionDefinition } from "../src/domain/model.js";
 import {
-  BOTTOM_DOCK_FOOTER_MARGIN,
   BOTTOM_DOCK_MAX_HEIGHT,
-  BOTTOM_DOCK_MIN_WIDTH,
   bottomDockOverlayOptions,
 } from "../src/ui/bottom-dock-overlay.js";
 import { InteractionDialogComponent } from "../src/pi/interaction-dialog.js";
@@ -138,16 +136,8 @@ const currentState = (value: ReturnType<typeof tuiHarness>): HypagraphState => {
   return batch.data.snapshot as HypagraphState;
 };
 
-/** Host accepts OverlayOptions or a zero-arg resolver. */
-const resolveOverlayOptions = (overlayOptions: unknown) => {
-  if (typeof overlayOptions === "function") {
-    return overlayOptions();
-  }
-  return overlayOptions;
-};
-
 describe("interaction bottom dock present path (S2.1)", () => {
-  it("requests bottom-center dock options through ui.custom", async () => {
+  it("presents the interaction ask in the editor zone under the graph widget", async () => {
     const value = tuiHarness();
     await createRoot(value, soleInteractionInput());
 
@@ -161,24 +151,9 @@ describe("interaction bottom dock present path (S2.1)", () => {
 
     expect(value.custom).toHaveBeenCalledOnce();
     expect(value.captured).toHaveLength(1);
-    expect(value.captured[0]!.overlay).toBe(true);
-
-    const options = resolveOverlayOptions(value.captured[0]!.overlayOptions);
-    // Factory captured tui with 24 rows; options use terminal-derived maxHeight.
-    expect(options).toEqual(bottomDockOverlayOptions({ tui: value.factoryTui }));
-    expect(options).toMatchObject({
-      anchor: "bottom-center",
-      width: "100%",
-      minWidth: BOTTOM_DOCK_MIN_WIDTH,
-      margin: {
-        top: 0,
-        right: 0,
-        bottom: BOTTOM_DOCK_FOOTER_MARGIN,
-        left: 0,
-      },
-    });
-    expect(options.anchor).not.toBe("center");
-    expect(options.maxHeight).toBe(13);
+    // Editor replacement (not a floating bottom overlay) avoids a large empty gap.
+    expect(value.captured[0]!.overlay).toBe(false);
+    expect(value.captured[0]!.overlayOptions).toBeUndefined();
   });
 
   it("keeps the durable wait when the dock is cancelled", async () => {
@@ -196,7 +171,7 @@ describe("interaction bottom dock present path (S2.1)", () => {
     expect(currentState(value).runtime.nodes["approve-plan"]!.status).toBe("awaiting_response");
   });
 
-  it("resolves overlay options as object or function form", async () => {
+  it("does not open a floating overlay for the interaction ask", async () => {
     const value = tuiHarness();
     await createRoot(value, soleInteractionInput());
 
@@ -208,16 +183,8 @@ describe("interaction bottom dock present path (S2.1)", () => {
       value.ctx,
     );
 
-    const raw = value.captured[0]!.overlayOptions;
-    const options = resolveOverlayOptions(raw);
-    expect(options).toMatchObject({
-      anchor: "bottom-center",
-      width: "100%",
-      minWidth: BOTTOM_DOCK_MIN_WIDTH,
-    });
-    // Factory runs before options resolve, so tui-derived sizing applies.
-    const margin = options.margin;
-    expect(typeof margin === "object" ? margin.bottom : margin).toBe(BOTTOM_DOCK_FOOTER_MARGIN);
+    expect(value.captured[0]!.overlay).toBe(false);
+    expect(value.captured[0]!.overlayOptions).toBeUndefined();
   });
 });
 

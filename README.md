@@ -21,7 +21,7 @@ flowchart LR
 
 A short real-Pi recording of start → post-create graph dock → **Run** → live status → live bottom graph dock will live here.
 
-**In-Pi demos:** `pi -e ./extensions/hypagraph.ts --skill ./skills`, then **`/hypagraph demo list`** and **`/hypagraph demo showcase`** (or `loop`, `fanout`, `parallel`, `pipeline`, `basic`). See [`docs/demo/JUST-RECORD.md`](docs/demo/JUST-RECORD.md).
+**In-Pi demos:** `pi -e ./extensions/hypagraph.ts --skill ./skills`, then **`/hypagraph demo showcase`** for a **tour of every feature graph** (basic → loop → fanout → parallel → pipeline → rich), or one id such as `loop` / `fanout`. After **Run**, the full colour modal opens and steps hold briefly. See [`docs/demo/JUST-RECORD.md`](docs/demo/JUST-RECORD.md).
 
 <!-- After the MP4 is in the tree or uploaded to GitHub, use one of:
 <video src="docs/demo/assets/hypagraph-demo.mp4" controls width="100%"></video>
@@ -149,9 +149,10 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | `/hypagraph ask [<node-id>]` | Present an open interaction question again. |
 | `/hypagraph loop` | Show canonical loop, progress, evaluation, and outcome state. |
 | `/hypagraph graph` | Open or focus the live graph bottom dock (Mermaid LR, status colour). |
+| `/hypagraph graph full` | Open the full-view graph modal (colour-coded; same as **ctrl+shift+g**). |
 | `/hypagraph graph toggle` | Open or close the live graph dock. |
 | `/hypagraph graph focus` | Focus the live graph dock. |
-| `/hypagraph graph close` | Close the live graph dock. |
+| `/hypagraph graph close` | Close the live graph dock or full modal. |
 | `/hypagraph check active` | Show the active deterministic check. |
 | `/hypagraph check cancel [node-id]` | Cancel an active check. |
 | `/hypagraph history` | Show the most recent page of the event timeline. |
@@ -164,17 +165,27 @@ You can also paste an issue, checklist, or implementation plan. Hypagraph preser
 | `/hypagraph trigger set <word>` | Set the arming trigger word. The word highlights in the interactive composer while you type. |
 | `/hypagraph trigger off` | Disable message arming and live composer highlight. |
 
-Graph pane controls:
+Graph view:
 
 | Key | Action |
 | --- | --- |
-| Arrow keys or `h`, `j`, `k`, `l` | Move between nodes. |
+| **ctrl+shift+g** | Open or close the full-view graph modal (colour-coded active and completed nodes; taken gate routes highlighted). |
+| Arrow keys or `h`, `j`, `k`, `l` | Move between nodes (when the dock or modal is focused). |
 | Enter | Show selected-node details. |
-| Home | Select the active node. |
-| `r` | Select the ready frontier. |
-| `+` or `-` | Change graph density. |
-| Escape | Release focus on a wide terminal. |
-| `q` | Close the pane. |
+| Escape | Dock: release focus. Modal: close. |
+| `q` | Close the dock or modal. |
+| `]` / `[` | Next or previous family member (multi-member goals). |
+
+Colour legend (widget, dock, and full modal):
+
+| Colour | Meaning |
+| --- | --- |
+| Accent (cyan/highlight) | Active / running / waiting node |
+| Green | Succeeded or taken path |
+| Red | Failed |
+| Yellow | Blocked or stale |
+| Muted | Pending, skipped, or cancelled |
+| Route label `true`/`false` | Selected gate outcome (taken branch) |
 
 ## What a workflow can contain
 

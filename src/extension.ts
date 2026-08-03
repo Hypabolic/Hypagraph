@@ -64,11 +64,17 @@ import {
 } from "./hypagoal/root-creation.js";
 import {
   DEFAULT_DEMO_ID,
+  demoDispatchHoldMs,
   formatDemoCatalog,
+  isShowcaseTourId,
   resolveDemoExample,
+  showcaseTourIds,
+  sleepDemoHold,
+  type HypagraphDemoExample,
 } from "./pi/demo-catalog.js";
 import {
   continuationActionIsRunnable,
+  enumerateGoalContinuationCandidates,
   isDispatchableGoalContinuation,
   selectGoalContinuation,
   type GoalDispatchableContinuation,
@@ -153,7 +159,10 @@ import {
   projectModelVisibleWorkflowSummary,
 } from "./pi/model-visible-state.js";
 import { formatPiCheckCommand } from "./pi/check-runner.js";
-import { runDeterministicCheckDispatch } from "./pi/deterministic-check-runner.js";
+import {
+  runDeterministicCheckDispatch,
+  runParallelDeterministicCheckDispatch,
+} from "./pi/deterministic-check-runner.js";
 import { runDeterministicCodeDispatch } from "./pi/deterministic-code-runner.js";
 import { runDeterministicEffectDispatch } from "./pi/deterministic-effect-runner.js";
 import {
@@ -223,7 +232,7 @@ import {
   registerHypagoalTriggerEditor,
   type HypagoalTriggerEditorHandle,
 } from "./pi/hypagoal-trigger-editor.js";
-import { bottomDockOverlayOptions } from "./ui/bottom-dock-overlay.js";
+
 import {
   formatDiagnostics,
   renderStatusPhaseLabel,
@@ -305,39 +314,35 @@ const presentPostCreateDock = async (
   }
 };
 
-/** Present the rich dialog. TUI mode supports a custom overlay component. */
+/**
+ * Present the rich interaction dialog in the editor / composer zone.
+ *
+ * Use editor replacement (overlay: false), not a bottom-anchored overlay.
+ * Bottom overlays float over the chat area and leave a large empty gap when
+ * chat history is short. Editor replacement places the ask under the live
+ * graph widget, the same zone as the normal composer (see post-create dock).
+ */
 const presentInteractionDialog = async (
   ctx: ExtensionContext,
   interaction: InteractionDefinition,
 ): Promise<InteractionAnswer | undefined> => {
-  // Capture TUI from the factory so dock sizing can use terminal rows.
-  // The host resolves overlayOptions once at open (after the factory runs).
-  // This is not a resize listener.
-  let tuiReference: TUI | undefined;
   const result = await ctx.ui.custom<InteractionDialogResult>(
     (tui, theme, _keybindings, done) => {
-      tuiReference = tui;
-      const dock = bottomDockOverlayOptions({ tui });
-      // Match the overlay maxHeight so the component windows options itself.
-      // Host clipping keeps the head; without a viewport, lower rows go invisible.
-      const maxContentLines = typeof dock.maxHeight === "number" ? dock.maxHeight : undefined;
+      const rows = tui.terminal?.rows;
+      // Fit the editor stack: leave room for header, widget, and footer chrome.
+      const maxContentLines = typeof rows === "number" && rows > 0
+        ? Math.max(8, Math.min(20, rows - 8))
+        : 12;
       return new InteractionDialogComponent(
         tui,
         theme,
         interaction,
         done,
-        maxContentLines === undefined ? {} : { maxContentLines },
+        { maxContentLines },
       );
     },
-    {
-      overlay: true,
-      // Bottom composer zone. Do not use the Pi default center modal.
-      overlayOptions: () => (
-        tuiReference
-          ? bottomDockOverlayOptions({ tui: tuiReference })
-          : bottomDockOverlayOptions()
-      ),
-    },
+    // Editor zone (not floating overlay): sits under the graph widget at the prompt.
+    { overlay: false },
   );
   if (result.kind === "response") {
     const answer: InteractionAnswer = { responseId: result.responseId };
@@ -403,13 +408,13 @@ const hypagraphUsage = (): string => [
   "  explain [<nodeId>]                         Explain why work is not runnable.",
   "  loop                                       Show bounded iteration regions.",
   "  check active | check cancel [<nodeId>]     Inspect or stop a running check.",
-  "  graph [open | close | toggle | focus | member <goalId>]",
-  "                                             Optional expanded graph dock (live graph is in the widget).",
+  "  graph [open | close | toggle | full | focus | member <goalId>]",
+  "                                             Live graph: widget (compact), dock (open), full modal (ctrl+shift+g).",
   "  executor [status | probe | cancel]         Isolated Pi host status, probe, or cancel.",
   "  trigger set <word> | trigger off | trigger Show or change Hypagoal arming.",
   "                                             The trigger word highlights in the composer while you type.",
-  "  demo [list | <id>]                         Start a built-in showcase graph (post-create dock).",
-  "                                             Ids: basic, loop, fanout, parallel, pipeline, showcase.",
+  "  demo [list | <id>]                         Start a built-in graph (or showcase tour of all graphs).",
+  "                                             Ids: showcase (tour), basic, loop, fanout, parallel, pipeline, rich.",
   "  (no argument)                              Show the workflow.",
   "Create a goal with /hypagoal <objective> or the configured trigger word.",
   "Load this extension with: pi -e ./extensions/hypagraph.ts --skill ./skills",
@@ -529,12 +534,20 @@ function updateUi(
     ? Math.max(40, terminalColumns - 2)
     : 100;
   const includeDiagram = options.includeDiagram !== false;
-  ctx.ui.setWidget("hypagraph", renderWidget(state, family, {
-    frameIndex,
-    maxWidth,
-    includeDiagram,
-    ...(options.diagramLines === undefined ? {} : { diagramLines: options.diagramLines }),
-  }));
+  // Component factory receives Theme so compact art can colour active / done nodes.
+  ctx.ui.setWidget("hypagraph", (_tui, theme) => {
+    const lines = renderWidget(state, family, {
+      frameIndex,
+      maxWidth,
+      includeDiagram,
+      theme,
+      ...(options.diagramLines === undefined ? {} : { diagramLines: options.diagramLines }),
+    });
+    return {
+      render: () => lines,
+      invalidate: () => {},
+    };
+  });
 }
 
 interface PendingHypagoalAuthoring {
@@ -591,6 +604,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
    * Cleared on explicit /hypagraph graph open or a new workflow.
    */
   let liveGraphSuppressedWorkflowId: string | undefined;
+  /**
+   * When true, hold between deterministic check/gate steps so the live graph
+   * is readable. Set only by `/hypagraph demo`. Cleared on ordinary create.
+   */
+  let demoPacingEnabled = false;
+  /**
+   * Multi-graph showcase tour. When set, after each tour member finishes the
+   * host starts the next catalog graph (auto-run, no second post-create dock).
+   */
+  let demoTour: { ids: readonly string[]; index: number } | undefined;
   /**
    * In-flight root isolated model attempt (host memory).
    * Default task work uses this path instead of orchestrator follow-up.
@@ -1467,10 +1490,27 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (presentationOutcome === "failed") return "presentation-failed";
     if (presentationOutcome === "unavailable") return "unavailable";
     if (!ctx.hasUI) return "unavailable";
+    // Full graph modal covers the composer. Close it so the ask dock is usable.
+    // Demo re-opens the modal after the answer when pacing is still on.
+    const reopenDemoGraph = demoPacingEnabled
+      && graphPane.isOpen
+      && graphPane.presentationForTest === "modal";
+    if (graphPane.isOpen && graphPane.presentationForTest === "modal") {
+      graphPane.close();
+    }
     const { interaction } = awaiting;
-    const answer = ctx.mode === "tui"
-      ? await presentInteractionDialog(ctx, interaction)
-      : await presentInteractionSelect(ctx, interaction);
+    let answer: InteractionAnswer | undefined;
+    try {
+      answer = ctx.mode === "tui"
+        ? await presentInteractionDialog(ctx, interaction)
+        : await presentInteractionSelect(ctx, interaction);
+    } finally {
+      if (reopenDemoGraph && demoPacingEnabled && state?.goal?.status === "active" && ctx.mode === "tui") {
+        liveGraphSuppressedWorkflowId = undefined;
+        if (state) liveGraphOpenedForWorkflowId = state.workflowId;
+        graphPane.openFull(ctx);
+      }
+    }
     if (answer === undefined) return "dismissed";
 
     // Pre-check byte bounds before any store write so a failed answer does not
@@ -1605,34 +1645,76 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
   ): Promise<boolean> => {
     const runGeneration = sessionGeneration;
     const runBranch = branchGeneration;
-    ctx.ui.setStatus("hypagraph-check", `Check ${decision.nodeId}: running`);
+    // When several checks are ready (independent components), start them together
+    // so the live graph shows parallel paths instead of one-after-another.
+    // Primary must be the controller-selected decision: beginReadyCheckDispatch
+    // validates against selectGoalContinuation (round-robin), not definition order.
+    const readyChecks = enumerateGoalContinuationCandidates(state!)
+      .filter((candidate): candidate is ReadyCheckDecision => isReadyCheckDecision(candidate));
+    const peers = readyChecks.filter((item) => item.nodeId !== decision.nodeId);
+    const batch: ReadyCheckDecision[] = readyChecks.some((item) => item.nodeId === decision.nodeId)
+      ? [decision, ...peers]
+      : [decision];
+    const parallel = batch.length > 1;
+    ctx.ui.setStatus(
+      "hypagraph-check",
+      parallel
+        ? `Checks ${batch.map((item) => item.nodeId).join(", ")}: running in parallel`
+        : `Check ${decision.nodeId}: running`,
+    );
     try {
-      const dispatch = await runDeterministicCheckDispatch({
-        state: state!,
-        decision,
-        dispatchId: `hypagoal-dispatch:${randomUUID()}`,
-        attemptId: randomUUID(),
-        at: new Date().toISOString(),
-        store: eventStore.lease(),
-        executor: new CommandCheckExecutor({
-          rootDirectory: ctx.cwd,
-          artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
-        }),
-        registry: activeExecutions,
-        stale: () => sessionGeneration !== runGeneration || branchGeneration !== runBranch,
-        onCommit: (next, committed) => {
-          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
-          state = next;
-          events.push(...committed);
-          paintUi(ctx);
-        },
+      const executor = new CommandCheckExecutor({
+        rootDirectory: ctx.cwd,
+        artifactStore: new FileCheckArtifactStore(resolve(ctx.cwd, ".hypagraph", "check-artifacts")),
       });
+      const onCommit = (next: HypagraphState, committed: readonly import("./domain/model.js").DomainEvent[]) => {
+        if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
+        state = next;
+        events.push(...committed);
+        paintUi(ctx);
+      };
+      const stale = () => sessionGeneration !== runGeneration || branchGeneration !== runBranch;
+      const dispatch = parallel
+        ? await runParallelDeterministicCheckDispatch({
+          state: state!,
+          decisions: batch,
+          at: new Date().toISOString(),
+          store: eventStore.lease(),
+          executor,
+          registry: activeExecutions,
+          stale,
+          onCommit,
+          onAllStarted: async (started) => {
+            if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) return;
+            state = started;
+            paintUi(ctx);
+            // Hold while every parallel path shows as running.
+            if (demoPacingEnabled && ctx.hasUI) {
+              await sleepDemoHold(demoDispatchHoldMs());
+            }
+          },
+        })
+        : await runDeterministicCheckDispatch({
+          state: state!,
+          decision,
+          dispatchId: `hypagoal-dispatch:${randomUUID()}`,
+          attemptId: randomUUID(),
+          at: new Date().toISOString(),
+          store: eventStore.lease(),
+          executor,
+          registry: activeExecutions,
+          stale,
+          onCommit,
+        });
       if (!dispatch.ok) {
+        const label = parallel
+          ? `parallel checks (${batch.map((item) => item.nodeId).join(", ")})`
+          : `deterministic check '${decision.nodeId}'`;
         ctx.ui.notify(dispatch.dispatched
-          ? `Hypagoal ran deterministic check '${decision.nodeId}', but it could not store the dispatch outcome '${dispatch.outcome}'.
+          ? `Hypagoal ran ${label}, but it could not store the dispatch outcome '${dispatch.outcome}'.
 The check lifecycle is durable. Restore closes the interrupted dispatch.
 ${formatDiagnostics(dispatch.diagnostics)}`
-          : `Hypagoal deterministic check '${decision.nodeId}' was not dispatched.
+          : `Hypagoal ${label} was not dispatched.
 ${formatDiagnostics(dispatch.diagnostics)}`, "warning");
         return false;
       }
@@ -2836,6 +2918,20 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         if (deterministic) deterministicDispatches += 1;
       }
 
+      // Demo: hold after each deterministic step so the live graph is readable.
+      // Skip hold before interaction presentation and when the controller stops.
+      if (
+        demoPacingEnabled
+        && dispatchOutcome === "continue"
+        && ctx.hasUI
+      ) {
+        const holdMs = demoDispatchHoldMs();
+        if (holdMs > 0) {
+          paintUi(ctx);
+          await sleepDemoHold(holdMs);
+        }
+      }
+
       if (dispatchOutcome === "continue") continue;
       return;
     }
@@ -3384,6 +3480,9 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       const workflowId = randomUUID();
       const goalId = `goal-${randomUUID()}`;
       const createdAt = new Date().toISOString();
+      // Ordinary create is not a paced demo tour.
+      demoPacingEnabled = false;
+      demoTour = undefined;
       const result = await startRootHypagoal(eventStore.lease(), state, {
         objective,
         definition,
@@ -5098,6 +5197,12 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
         paintUi(ctx);
         graphPane.open(ctx);
       }
+      else if (action === "graph full" || action === "graph modal") {
+        liveGraphSuppressedWorkflowId = undefined;
+        if (state) liveGraphOpenedForWorkflowId = state.workflowId;
+        paintUi(ctx);
+        graphPane.openFull(ctx);
+      }
       else if (action === "graph close") {
         if (state) liveGraphSuppressedWorkflowId = state.workflowId;
         graphPane.close();
@@ -5430,15 +5535,15 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           );
         }
       } else if (words[0]?.toLowerCase() === "demo") {
-        // Built-in showcase graphs from inside Pi (no model authoring).
+        // Built-in graphs from inside Pi (no model authoring).
+        // showcase = tour of every feature graph in order.
         // Start Pi with: pi -e ./extensions/hypagraph.ts --skill ./skills
         const sub = (words[1] ?? DEFAULT_DEMO_ID).toLowerCase();
         if (sub === "list" || sub === "help" || sub === "?") {
           ctx.ui.notify(formatDemoCatalog(), "info");
           return;
         }
-        const example = resolveDemoExample(sub);
-        if (!example) {
+        if (!resolveDemoExample(sub) && !isShowcaseTourId(sub)) {
           ctx.ui.notify(
             `Unknown demo '${sub}'.\n${formatDemoCatalog()}`,
             "warning",
@@ -5453,86 +5558,192 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           return;
         }
 
-        hypagoalAuthoring = undefined;
-        clearPostCreateGate();
-        const definition = example.definition();
-        const workflowId = randomUUID();
-        const goalId = `goal-demo-${example.id}-${randomUUID()}`;
-        const createdAt = new Date().toISOString();
-        const replacement = state?.goal
-          ? replacementConfirmationFor(state, { sessionGeneration, branchGeneration })
-          : undefined;
-        // Turn budget only — never a token cap. Chat/model usage must not stop demos.
-        const budget = example.budget;
-        const advisory = {
-          code: "hypagraph_demo",
-          message: `Started from /hypagraph demo ${example.id}: ${example.summary} (deterministic; no model tasks).`,
-        };
-
-        const startInput = {
-          objective: example.objective,
-          definition,
-          workflowId,
-          goalId,
-          goalWorkflowId: workflowId,
-          sessionGeneration,
-          branchGeneration,
-          advisories: [advisory],
-          budget,
-        };
-
-        let result = await startRootHypagoal(eventStore.lease(), state, {
-          ...startInput,
-          at: createdAt,
-          ...(replacement === undefined ? {} : { replacementConfirmation: replacement }),
-        });
-
-        if (result.kind === "replacement-required") {
-          result = await startRootHypagoal(eventStore.lease(), state, {
-            ...startInput,
-            at: new Date().toISOString(),
-            replacementConfirmation: result.confirmation,
-          });
-        }
-
-        if (result.kind !== "created") {
-          ctx.ui.notify(
-            `Demo '${example.id}' was not created.\n${
-              result.kind === "rejected"
-                ? formatDiagnostics(result.diagnostics)
-                : "Replacement was not accepted."
-            }`,
-            "warning",
-          );
-          return;
-        }
-
-        state = result.state;
-        events = [...result.events];
-        projectStoreArtifactWritten = undefined;
-        childProjectStoreArtifactWritten = undefined;
-        childProjectStoreWorkflowId = undefined;
-        eventStore.synchronize({ events, snapshot: state });
-        if (hostSupportsPostCreateDock(ctx)) {
-          postCreateAwaitingUserChoice = true;
-          postCreateDockPresented = false;
-        } else {
+        /**
+         * Create one catalog graph and optionally wait for Run.
+         * Returns true when the controller may advance work for this member.
+         */
+        const startDemoMember = async (
+          example: HypagraphDemoExample,
+          options: {
+            /** Ask for Run on the post-create dock (first tour member / single demo). */
+            askRun: boolean;
+            /** Optional "Tour 2/6 · loop" line. */
+            tourLabel?: string;
+          },
+        ): Promise<boolean> => {
+          hypagoalAuthoring = undefined;
           clearPostCreateGate();
-        }
-        paintUi(ctx);
-        ctx.ui.notify(
-          `Demo '${example.id}' · ${example.title}\n`
-          + `${example.summary}\n`
-          + `Features: ${example.features.join(", ")}\n`
-          + `Goal ${state.goal?.goalId}. Post-create dock: choose Run. `
-          + "The live graph appears above the composer after Run. /hypagraph demo list for more.",
-          "info",
-        );
-
-        const mayContinue = await resolvePostCreateGate(ctx);
-        if (mayContinue) {
+          demoPacingEnabled = true;
+          const definition = example.definition();
+          const workflowId = randomUUID();
+          const goalId = `goal-demo-${example.id}-${randomUUID()}`;
+          const createdAt = new Date().toISOString();
+          const replacement = state?.goal
+            ? replacementConfirmationFor(state, { sessionGeneration, branchGeneration })
+            : undefined;
+          const budget = example.budget;
+          const advisory = {
+            code: "hypagraph_demo",
+            message: options.tourLabel
+              ? `${options.tourLabel}: ${example.summary} (deterministic; no model tasks).`
+              : `Started from /hypagraph demo ${example.id}: ${example.summary} (deterministic; no model tasks).`,
+          };
+          const startInput = {
+            objective: example.objective,
+            definition,
+            workflowId,
+            goalId,
+            goalWorkflowId: workflowId,
+            sessionGeneration,
+            branchGeneration,
+            advisories: [advisory],
+            budget,
+          };
+          let result = await startRootHypagoal(eventStore.lease(), state, {
+            ...startInput,
+            at: createdAt,
+            ...(replacement === undefined ? {} : { replacementConfirmation: replacement }),
+          });
+          if (result.kind === "replacement-required") {
+            result = await startRootHypagoal(eventStore.lease(), state, {
+              ...startInput,
+              at: new Date().toISOString(),
+              replacementConfirmation: result.confirmation,
+            });
+          }
+          if (result.kind !== "created") {
+            demoPacingEnabled = false;
+            demoTour = undefined;
+            ctx.ui.notify(
+              `Demo '${example.id}' was not created.\n${
+                result.kind === "rejected"
+                  ? formatDiagnostics(result.diagnostics)
+                  : "Replacement was not accepted."
+              }`,
+              "warning",
+            );
+            return false;
+          }
+          state = result.state;
+          events = [...result.events];
+          projectStoreArtifactWritten = undefined;
+          childProjectStoreArtifactWritten = undefined;
+          childProjectStoreWorkflowId = undefined;
+          eventStore.synchronize({ events, snapshot: state });
           paintUi(ctx);
+          const header = options.tourLabel
+            ? `${options.tourLabel}\nDemo '${example.id}' · ${example.title}`
+            : `Demo '${example.id}' · ${example.title}`;
+          if (options.askRun && hostSupportsPostCreateDock(ctx)) {
+            postCreateAwaitingUserChoice = true;
+            postCreateDockPresented = false;
+            ctx.ui.notify(
+              `${header}\n`
+              + `${example.summary}\n`
+              + `Features: ${example.features.join(", ")}\n`
+              + `Goal ${state.goal?.goalId}. Post-create dock: choose Run. `
+              + (demoTour
+                ? `Showcase tour: ${demoTour.ids.length} graphs (${demoTour.ids.join(" → ")}). `
+                : "")
+              + "After Run, the full colour graph modal opens and each step holds briefly.",
+              "info",
+            );
+            const mayContinue = await resolvePostCreateGate(ctx);
+            if (!mayContinue) return false;
+          } else {
+            clearPostCreateGate();
+            ctx.ui.notify(
+              `${header}\n`
+              + `${example.summary}\n`
+              + `Features: ${example.features.join(", ")}`,
+              "info",
+            );
+          }
+          paintUi(ctx);
+          if (demoPacingEnabled && ctx.hasUI && ctx.mode === "tui") {
+            liveGraphSuppressedWorkflowId = undefined;
+            liveGraphOpenedForWorkflowId = state.workflowId;
+            // Keep the full modal open across tour members (pipeline → rich).
+            // openFull refreshes art in place when the modal is already open.
+            graphPane.openFull(ctx);
+          }
           await queueGoalContinuation(ctx);
+          return true;
+        };
+
+        /** After one tour member finishes, start the next graph (or end the tour). */
+        const advanceDemoTour = async (): Promise<void> => {
+          if (!demoTour) return;
+          const finishedId = demoTour.ids[demoTour.index] ?? "?";
+          // Brief hold on the completed graph so the user can see the final state.
+          await sleepDemoHold(demoDispatchHoldMs() || 400);
+          demoTour = { ids: demoTour.ids, index: demoTour.index + 1 };
+          if (demoTour.index >= demoTour.ids.length) {
+            const total = demoTour.ids.length;
+            demoTour = undefined;
+            demoPacingEnabled = false;
+            graphPane.close();
+            ctx.ui.notify(
+              `Showcase tour complete (${total} graphs, last: ${finishedId}). `
+              + "Run /hypagraph demo list for individual graphs.",
+              "info",
+            );
+            paintUi(ctx);
+            return;
+          }
+          const nextId = demoTour.ids[demoTour.index]!;
+          const next = resolveDemoExample(nextId);
+          if (!next) {
+            demoTour = undefined;
+            demoPacingEnabled = false;
+            ctx.ui.notify(`Showcase tour stopped: unknown demo '${nextId}'.`, "warning");
+            return;
+          }
+          try {
+            ensureNoActiveExecution();
+          } catch {
+            // Previous goal is terminal; replacement create is still allowed.
+          }
+          const label = `Tour ${demoTour.index + 1}/${demoTour.ids.length} · ${next.id}`;
+          const ok = await startDemoMember(next, { askRun: false, tourLabel: label });
+          if (!ok) {
+            demoTour = undefined;
+            demoPacingEnabled = false;
+            return;
+          }
+          // Recurse for remaining members when this graph also finished.
+          if (state?.goal?.status === "completed") {
+            await advanceDemoTour();
+          }
+        };
+
+        // showcase / full / tour → multi-graph tour. Other ids → one graph.
+        if (isShowcaseTourId(sub)) {
+          const ids = showcaseTourIds();
+          demoTour = { ids, index: 0 };
+          const first = resolveDemoExample(ids[0]!);
+          if (!first) {
+            demoTour = undefined;
+            ctx.ui.notify("Showcase tour has no first graph.", "warning");
+            return;
+          }
+          const ok = await startDemoMember(first, {
+            askRun: true,
+            tourLabel: `Tour 1/${ids.length} · ${first.id}`,
+          });
+          if (!ok) {
+            demoTour = undefined;
+            demoPacingEnabled = false;
+            return;
+          }
+          if (state?.goal?.status === "completed") {
+            await advanceDemoTour();
+          }
+        } else {
+          demoTour = undefined;
+          const example = resolveDemoExample(sub)!;
+          const ok = await startDemoMember(example, { askRun: true });
+          if (!ok) demoPacingEnabled = false;
         }
       } else if (words.length === 0) {
         ctx.ui.notify(state ? renderWorkflow(state) : "There is no active Hypagraph.", "info");
@@ -5543,4 +5754,26 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
       }
     },
   });
+
+  /**
+   * Full-view colour-coded graph modal.
+   * ctrl+g is Pi external editor; use ctrl+shift+g for Hypagraph.
+   * Same path as /hypagraph graph full.
+   * Guard the call: older test harnesses and hosts may omit registerShortcut.
+   */
+  if (typeof pi.registerShortcut === "function") {
+    pi.registerShortcut("ctrl+shift+g", {
+      description: "Open Hypagraph full graph modal (colour-coded live Mermaid)",
+      handler: async (ctx) => {
+        if (!state) {
+          ctx.ui.notify("There is no active Hypagraph to show.", "info");
+          return;
+        }
+        liveGraphSuppressedWorkflowId = undefined;
+        liveGraphOpenedForWorkflowId = state.workflowId;
+        paintUi(ctx);
+        graphPane.toggleFull(ctx);
+      },
+    });
+  }
 }

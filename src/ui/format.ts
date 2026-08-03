@@ -1,3 +1,4 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { assessEvaluationAuthoring, formatEvaluationAuthoringAdvisories } from "../domain/evaluation-authoring.js";
 import { assessCodeAuthoring, formatCodeAuthoringAdvisories } from "../domain/code-authoring.js";
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
@@ -10,6 +11,7 @@ import { loopSurfaceSummaries, renderLoopStatus } from "./loop-surface.js";
 import { waitingQuestionLines, waitingWidgetLines } from "./interaction-surface.js";
 import { projectGoalControlSurface, projectHypagoalSurface } from "./hypagoal-surface.js";
 import { protectedTextPolicy } from "../domain/presentation-redaction.js";
+import { colorizeLiveGraphArtLines } from "./live-graph-color.js";
 import { renderMermaidArtBestFit } from "./mermaid-art.js";
 import {
   formatGoalStatusBadge,
@@ -116,13 +118,29 @@ export interface RenderWidgetOptions {
    * Precomputed diagram lines. When set, skips Mermaid render (animation ticks).
    */
   diagramLines?: readonly string[];
+  /**
+   * Optional Pi theme for status colour on node labels in the compact widget.
+   * When omitted, art stays plain (tests and hosts without theme).
+   */
+  theme?: Theme;
 }
 
 /** Default art width when the host does not supply terminal columns. */
 const DEFAULT_WIDGET_DIAGRAM_WIDTH = 100;
 
-/** Cap art height so the widget does not push the composer off-screen. */
-const MAX_WIDGET_DIAGRAM_LINES = 14;
+/**
+ * Pi InteractiveMode.MAX_WIDGET_LINES (see pi-coding-agent interactive-mode.js).
+ *
+ * String-array widgets longer than this are clipped and show "... (widget truncated)".
+ * Hypagraph must stay within this budget so the live graph is not cut off.
+ */
+export const PI_MAX_WIDGET_LINES = 10;
+
+/**
+ * Maximum Mermaid art rows in the widget when the title uses one line.
+ * Title + art must not exceed PI_MAX_WIDGET_LINES.
+ */
+export const MAX_WIDGET_DIAGRAM_LINES = PI_MAX_WIDGET_LINES - 1;
 
 /**
  * Cache key → plain art lines. Avoid re-layout on every braille animation frame.
@@ -134,28 +152,38 @@ const widgetDiagramCache = new Map<string, string[]>();
  *
  * LR only (same product rule as the live dock). Compact labels when needed,
  * then horizontal clip. Never vertical TD.
+ *
+ * @param maxHeight - Max art rows (default MAX_WIDGET_DIAGRAM_LINES).
  */
 export function renderWidgetDiagramLines(
   state: HypagraphState,
   maxWidth = DEFAULT_WIDGET_DIAGRAM_WIDTH,
+  maxHeight = MAX_WIDGET_DIAGRAM_LINES,
+  theme?: Theme,
 ): string[] {
   const budget = Math.max(20, maxWidth);
-  const cacheKey = `${state.workflowId}:${state.sequence}:${state.snapshotHash}:${budget}`;
-  const cached = widgetDiagramCache.get(cacheKey);
-  if (cached) return cached;
+  const height = Math.max(1, maxHeight);
+  // Plain art is cacheable; coloured lines include theme SGR and skip the cache.
+  const cacheKey = `${state.workflowId}:${state.sequence}:${state.snapshotHash}:${budget}:${height}`;
+  let lines: string[];
+  if (!theme) {
+    const cached = widgetDiagramCache.get(cacheKey);
+    if (cached) return cached;
+  }
 
   const view = projectGraphView(state);
-  const lr = projectMermaidFlowchart(view, { direction: "LR", statusMarkers: true });
+  // Prefer slightly longer labels first; fall back to compact when art is wide.
+  const lr = projectMermaidFlowchart(view, { direction: "LR", statusMarkers: true, maxLabelLength: 18 });
   const lrCompact = projectMermaidFlowchart(view, {
     direction: "LR",
     statusMarkers: true,
-    maxLabelLength: 16,
+    maxLabelLength: 12,
     compact: true,
   });
   const lrTight = projectMermaidFlowchart(view, {
     direction: "LR",
     statusMarkers: true,
-    maxLabelLength: 10,
+    maxLabelLength: 8,
     compact: true,
   });
   const art = renderMermaidArtBestFit(
@@ -166,17 +194,21 @@ export function renderWidgetDiagramLines(
       whenTooWide: "clip-art",
     },
   );
-  const lines = art.lines.slice(0, MAX_WIDGET_DIAGRAM_LINES);
-  // Keep the cache small: one entry per live paint path is enough in practice.
-  if (widgetDiagramCache.size > 8) widgetDiagramCache.clear();
-  widgetDiagramCache.set(cacheKey, lines);
-  return lines;
+  lines = art.lines.slice(0, height);
+  if (!theme) {
+    // Keep the cache small: one entry per live paint path is enough in practice.
+    if (widgetDiagramCache.size > 8) widgetDiagramCache.clear();
+    widgetDiagramCache.set(cacheKey, lines);
+    return lines;
+  }
+  return colorizeLiveGraphArtLines(lines, view, theme);
 }
 
 /**
  * Compact above-composer hypagraph chrome.
  *
- * Normal use: one title line, the live horizontal graph, and wait hints only.
+ * Normal use: one title line and the live horizontal graph (no blank separator).
+ * Total lines stay at or under PI_MAX_WIDGET_LINES so Pi does not truncate.
  * Active / Ready / Budget / Family detail stays on /hypagraph status.
  */
 export function renderWidget(
@@ -196,19 +228,28 @@ export function renderWidget(
 
   const includeDiagram = options.includeDiagram !== false;
   if (includeDiagram) {
+    // Reserve title line. Do not insert a blank separator (wastes a Pi slot).
+    const artBudget = Math.max(1, PI_MAX_WIDGET_LINES - lines.length);
     const diagram = options.diagramLines
-      ?? renderWidgetDiagramLines(state, options.maxWidth ?? DEFAULT_WIDGET_DIAGRAM_WIDTH);
+      ? options.diagramLines.slice(0, artBudget)
+      : renderWidgetDiagramLines(
+        state,
+        options.maxWidth ?? DEFAULT_WIDGET_DIAGRAM_WIDTH,
+        artBudget,
+        options.theme,
+      );
     if (diagram.length > 0) {
-      lines.push("");
       lines.push(...diagram);
     }
   }
 
+  // Wait hints only if they still fit under Pi's hard line cap.
   const waiting = waitingWidgetLines(state);
-  if (waiting.length > 0) {
-    lines.push(...waiting);
+  for (const row of waiting) {
+    if (lines.length >= PI_MAX_WIDGET_LINES) break;
+    lines.push(row);
   }
-  return lines;
+  return lines.slice(0, PI_MAX_WIDGET_LINES);
 }
 
 /**
