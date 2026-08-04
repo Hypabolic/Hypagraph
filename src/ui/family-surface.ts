@@ -116,11 +116,15 @@ export function formatFamilyDispatchSurfaceLine(
 export function familyWidgetLines(view: FamilyGraphViewModel): string[] {
   const childCount = Math.max(0, view.memberCount - 1);
   const bindingWait = view.bindings.filter((binding) => binding.status === "active").length;
-  const dispatch = view.scheduler.pending
-    ? `dispatch ${view.scheduler.pending.status}`
-    : view.scheduler.lastOutcome
-      ? `last dispatch ${view.scheduler.lastOutcome.status}`
-      : "dispatch idle";
+  const pendingCount = view.scheduler.pendings?.length
+    ?? (view.scheduler.pending ? 1 : 0);
+  const dispatch = pendingCount > 1
+    ? `dispatch pending x${pendingCount}`
+    : view.scheduler.pending
+      ? `dispatch ${view.scheduler.pending.status}`
+      : view.scheduler.lastOutcome
+        ? `last dispatch ${view.scheduler.lastOutcome.status}`
+        : "dispatch idle";
   const executor = view.executor
     ? ` | executor ${view.executor.kindLabel}`
       + (view.executor.activeProcessCount === undefined

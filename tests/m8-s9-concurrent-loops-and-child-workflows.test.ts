@@ -234,7 +234,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       });
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
-      expect(childOnlyCommit.family.pendingDispatch?.selection.goalId).toBe("goal-child");
+      expect(childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]?.selection.goalId).toBe("goal-child");
 
       // Sequential path remains blocked.
       const sequential = selectFamilySchedulerAction(childOnlyCommit.family, {
@@ -736,10 +736,9 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         },
       });
       expect(decision.kind).toBe("select-batch");
-      // Pure selection returns occupancy for the caller. Family pendingDispatch is unchanged.
-      expect(family.pendingDispatch).toBeUndefined();
+      // Pure selection returns occupancy for the caller. Family pendingDispatches stay empty.
+      expect(Object.keys(family.pendingDispatches)).toEqual([]);
       expect(family.schemaVersion).toBe(GOAL_FAMILY_SCHEMA_VERSION);
-      expect(family.schemaVersion).toBe(2);
     });
   });
 
@@ -769,7 +768,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
 
-      const pendingSelection = childOnlyCommit.family.pendingDispatch!.selection;
+      const pendingSelection = childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]!.selection;
       const pendingAttemptFields: Parameters<typeof buildFamilyConcurrentAttemptId>[0] = {
         familyId: pendingSelection.familyId,
         goalId: pendingSelection.goalId,
@@ -1316,7 +1315,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
 
-      const pendingSelection = childOnlyCommit.family.pendingDispatch!.selection;
+      const pendingSelection = childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]!.selection;
       const pendingAttemptFields: Parameters<typeof buildFamilyConcurrentAttemptId>[0] = {
         familyId: pendingSelection.familyId,
         goalId: pendingSelection.goalId,
@@ -1403,7 +1402,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
 
-      const pendingSelection = childOnlyCommit.family.pendingDispatch!.selection;
+      const pendingSelection = childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]!.selection;
       const pendingAttemptFields: Parameters<typeof buildFamilyConcurrentAttemptId>[0] = {
         familyId: pendingSelection.familyId,
         goalId: pendingSelection.goalId,
@@ -1873,7 +1872,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
 
-      const pendingSelection = childOnlyCommit.family.pendingDispatch!.selection;
+      const pendingSelection = childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]!.selection;
       const pendingAttemptFields: Parameters<typeof buildFamilyConcurrentAttemptId>[0] = {
         familyId: pendingSelection.familyId,
         goalId: pendingSelection.goalId,
@@ -1939,7 +1938,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       expect(childOnlyCommit.ok).toBe(true);
       if (!childOnlyCommit.ok) return;
 
-      const pendingSelection = childOnlyCommit.family.pendingDispatch!.selection;
+      const pendingSelection = childOnlyCommit.family.pendingDispatches[Object.keys(childOnlyCommit.family.pendingDispatches)[0]!]!.selection;
       const pendingAttemptFields: Parameters<typeof buildFamilyConcurrentAttemptId>[0] = {
         familyId: pendingSelection.familyId,
         goalId: pendingSelection.goalId,
@@ -1988,7 +1987,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
   });
 
   describe("re-review: own-data pendingDispatch parse", () => {
-    it("rejects a throwing accessor on family.pendingDispatch", () => {
+    it("rejects a throwing accessor on family.pendingDispatches", () => {
       const { family } = createRootOnlyFamily("family-pending-accessor");
       const rootState = createMemberWorkflow(singleTask("Root work"), "workflow-root", "goal-root");
       const preferred = enumerateFamilyPreferredDispatchables(family, {
@@ -1996,10 +1995,10 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       });
 
       const hostileFamily: Record<string, unknown> = { ...family };
-      Object.defineProperty(hostileFamily, "pendingDispatch", {
+      Object.defineProperty(hostileFamily, "pendingDispatches", {
         enumerable: true,
         get() {
-          throw new Error("pendingDispatch getter must not run");
+          throw new Error("pendingDispatches getter must not run");
         },
       });
 
@@ -2050,7 +2049,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
 
       const hostileFamily: Record<string, unknown> = {
         ...family,
-        pendingDispatch: pending,
+        pendingDispatches: { "dispatch-hostile": pending },
       };
 
       const decision = selectFamilyConcurrentBatchFromCandidates({
@@ -2212,13 +2211,14 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       const badTimestamp = selectFamilyConcurrentBatchFromCandidates({
         family: {
           ...family,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d1": {
             dispatchId: "d1",
             status: "selected",
             selectedAt: "not-a-date",
             schedulerOrdinal: 1,
             selection: baseSelection(family.familyId, rootState),
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2234,14 +2234,15 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         family: {
           ...family,
           schedulerOrdinal: 1,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d2": {
             dispatchId: "d2",
             status: "selected",
             selectedAt: later,
             dispatchedAt: doneAt,
             schedulerOrdinal: 1,
             selection: baseSelection(family.familyId, rootState),
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2265,13 +2266,14 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         family: {
           ...family,
           schedulerOrdinal: 1,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d3": {
             dispatchId: "d3",
             status: "selected",
             selectedAt: later,
             schedulerOrdinal: 99,
             selection: baseSelection(family.familyId, rootState),
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2287,7 +2289,8 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         family: {
           ...family,
           schedulerOrdinal: 1,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d4": {
             dispatchId: "d4",
             status: "selected",
             selectedAt: later,
@@ -2296,7 +2299,7 @@ describe("m8-s9 concurrent loops and child workflows", () => {
               ...baseSelection(family.familyId, rootState),
               goalId: "goal-missing",
             },
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2320,13 +2323,14 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         family: {
           ...family,
           schedulerOrdinal: 1,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d5": {
             dispatchId: "d5",
             status: "dispatched",
             selectedAt: later,
             schedulerOrdinal: 1,
             selection: baseSelection(family.familyId, rootState),
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2342,14 +2346,15 @@ describe("m8-s9 concurrent loops and child workflows", () => {
         family: {
           ...family,
           schedulerOrdinal: 1,
-          pendingDispatch: {
+          pendingDispatches: {
+            "d6": {
             dispatchId: "d6",
             status: "dispatched",
             selectedAt: doneAt,
             dispatchedAt: later,
             schedulerOrdinal: 1,
             selection: baseSelection(family.familyId, rootState),
-          },
+          },          },
         } as never,
         candidates: preferred,
       });
@@ -2422,10 +2427,10 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       const childState = createMemberWorkflow(singleTask("Child work"), "workflow-child", "goal-child");
 
       const hostileFamily: GoalFamilyRuntime = { ...family };
-      Object.defineProperty(hostileFamily, "pendingDispatch", {
+      Object.defineProperty(hostileFamily, "pendingDispatches", {
         enumerable: true,
         get() {
-          throw new Error("pendingDispatch getter must not run");
+          throw new Error("pendingDispatches getter must not run");
         },
       });
 
@@ -2437,16 +2442,16 @@ describe("m8-s9 concurrent loops and child workflows", () => {
       ).toBe(false);
     });
 
-    it("enumeration returns diagnostics when pendingDispatch is a throwing accessor", () => {
+    it("enumeration returns diagnostics when pendingDispatches is a throwing accessor", () => {
       const { family } = createTwoMemberFamily();
       const rootState = createMemberWorkflow(singleTask("Root work"), "workflow-root", "goal-root");
       const childState = createMemberWorkflow(singleTask("Child work"), "workflow-child", "goal-child");
 
       const hostileFamily: GoalFamilyRuntime = { ...family };
-      Object.defineProperty(hostileFamily, "pendingDispatch", {
+      Object.defineProperty(hostileFamily, "pendingDispatches", {
         enumerable: true,
         get() {
-          throw new Error("pendingDispatch getter must not run in enumerate");
+          throw new Error("pendingDispatches getter must not run in enumerate");
         },
       });
 

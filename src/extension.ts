@@ -94,10 +94,19 @@ import {
 import type { PersistedGoalFamily } from "./persistence/family-store.js";
 import { PiSessionWorkflowEventStore } from "./persistence/pi-session-store.js";
 import {
+  buildFamilyControllerMemberStates,
   mergeLiveRootIntoFamily,
   replaceFamilyMemberWorkflow,
   selectFamilyProductControllerAction,
 } from "./pi/family-product-dispatch.js";
+import {
+  commitConcurrentFamilyBatchForHost,
+  commitSequentialFamilySelectionForHost,
+  familySettleOutcomeFromHostDispatch,
+  isDeterministicFamilyMemberDecision,
+  markFamilyPendingDispatchedForHost,
+  settleFamilyPendingForHost,
+} from "./pi/family-controller-host.js";
 import {
   detectPendingChildReturn,
   renderChildReturnApplied,
@@ -1579,9 +1588,30 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     return "answered";
   };
 
-  const abandonPendingContinuation = async (reason: string): Promise<void> => {
+  /**
+   * Family multi-pending settle bound after persistFamilySnapshotUpdate exists.
+   * Callers pass optional ctx so the latest session family can be reloaded.
+   */
+  let settleFamilyDispatchById: (
+    dispatchId: string | undefined,
+    outcome: "completed" | "failed" | "interrupted",
+    reason?: string,
+    ctx?: ExtensionContext,
+  ) => void = () => {};
+
+  const abandonPendingContinuation = async (
+    reason: string,
+    options?: { familyDispatchId?: string; ctx?: ExtensionContext },
+  ): Promise<void> => {
+    // Callers that clear pendingContinuation first must pass familyDispatchId.
+    const familyDispatchId = options?.familyDispatchId
+      ?? pendingContinuation?.familyDispatchId
+      ?? deliveredContinuation?.familyDispatchId;
     const canonical = state?.goal?.pendingContinuation;
-    if (!state?.goal || !canonical) return;
+    if (!state?.goal || !canonical) {
+      settleFamilyDispatchById(familyDispatchId, "interrupted", reason, options?.ctx);
+      return;
+    }
     const result = await applyCommandsAndCommit(eventStore.lease(), state, [{
       type: "abandon-goal-continuation",
       goalId: state.goal.goalId,
@@ -1601,9 +1631,12 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (result.ok) {
       state = result.value.state;
       events.push(...result.value.events);
+      settleFamilyDispatchById(familyDispatchId, "interrupted", reason, options?.ctx);
       return;
     }
     // Keep the durable request visible. A later recovery path must clear it.
+    // Still interrupt the family pending so multi-pending capacity is not stranded.
+    settleFamilyDispatchById(familyDispatchId, "interrupted", reason, options?.ctx);
   };
 
   /**
@@ -1622,9 +1655,13 @@ ${formatDiagnostics(paused.diagnostics)}`, "warning");
     if (!state?.goal || !canonical) return false;
     if (deliveredContinuation) return false;
     if (continuationActionIsRunnable(state, canonical.action)) return false;
-    // Drop undelivered in-memory bookkeeping. The durable request is closed next.
+    // Capture family dispatch id before clearing in-memory bookkeeping.
+    const familyDispatchId = pendingContinuation?.familyDispatchId;
     pendingContinuation = undefined;
-    await abandonPendingContinuation(reason);
+    await abandonPendingContinuation(reason, {
+      ctx,
+      ...(familyDispatchId !== undefined ? { familyDispatchId } : {}),
+    });
     if (state.goal?.pendingContinuation) {
       ctx.ui.notify(
         `Hypagoal could not close the orphaned model-lane continuation '${canonical.operationId}'.`,
@@ -2491,17 +2528,75 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
    * For the live root, uses the existing root state/events path.
    * For a child member, temporarily swaps host state, dispatches, then persists.
    */
+  /**
+   * Persist family snapshot and events after multi-pending commit or settle.
+   * Keeps the caller family workflows by default. Merges the live root stream only
+   * when the live sequence is strictly ahead of the stored root stream (R5).
+   * Avoids overwriting a durable parent waiting_for_child snapshot with a stale
+   * root clone restored after a non-root member swap. Does not mutate inputs.
+   */
+  const persistFamilySnapshotUpdate = (
+    family: PersistedGoalFamily,
+    nextSnapshot: import("./domain/goal-family.js").GoalFamilyRuntime,
+    extraEvents: import("./domain/goal-family.js").GoalFamilyEvent[],
+  ): PersistedGoalFamily => {
+    let baseFamily = family;
+    if (state && events) {
+      const storedRoot = family.workflows[state.workflowId];
+      const storedSequence = storedRoot?.snapshot.sequence ?? -1;
+      if (state.sequence > storedSequence) {
+        baseFamily = mergeLiveRootIntoFamily(baseFamily, {
+          workflowId: state.workflowId,
+          events,
+          snapshot: state,
+        });
+      }
+    }
+    const nextFamily: PersistedGoalFamily = {
+      schemaVersion: baseFamily.schemaVersion,
+      familyEvents: [...structuredClone(baseFamily.familyEvents), ...structuredClone(extraEvents)],
+      familySnapshot: structuredClone(nextSnapshot),
+      workflows: structuredClone(baseFamily.workflows),
+    };
+    appendOneMemberFamilyRecord(pi, nextFamily);
+    rememberFamilyRecord(nextFamily);
+    return nextFamily;
+  };
+
+  settleFamilyDispatchById = (
+    dispatchId: string | undefined,
+    outcome: "completed" | "failed" | "interrupted",
+    reason?: string,
+    ctx?: ExtensionContext,
+  ): void => {
+    if (!dispatchId) return;
+    let family = ctx ? loadFamilyRecordForController(ctx) : undefined;
+    if (!family) family = latestFamilyRecord;
+    if (!family) return;
+    if (!family.familySnapshot.pendingDispatches[dispatchId]) return;
+    const settled = settleFamilyPendingForHost({
+      family: family.familySnapshot,
+      dispatchId,
+      at: new Date().toISOString(),
+      outcome,
+      ...(reason !== undefined ? { reason } : {}),
+    });
+    if (!settled.ok) return;
+    persistFamilySnapshotUpdate(family, settled.family, settled.events);
+  };
+
   const dispatchSelectedMemberAction = async (
     ctx: ExtensionContext,
     selection: Extract<
       ReturnType<typeof selectFamilyProductControllerAction>,
       { kind: "dispatch" }
     >,
+    options?: { familyDispatchId?: string },
   ): Promise<"continue" | "stop" | "model-follow-up"> => {
     const decision = selection.decision;
 
     if (selection.isLiveRoot) {
-      return dispatchDecisionOnLiveState(ctx, decision);
+      return dispatchDecisionOnLiveState(ctx, decision, options);
     }
 
     // Non-root member: swap host state to the child workflow for this action only.
@@ -2534,7 +2629,7 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     let outcome: "continue" | "stop" | "model-follow-up" = "stop";
     let familyAfterChild = selection.family;
     try {
-      outcome = await dispatchDecisionOnLiveState(ctx, decision);
+      outcome = await dispatchDecisionOnLiveState(ctx, decision, options);
     } finally {
       // Always attempt to persist child mutations and restore the live root.
       const childState = state;
@@ -2591,6 +2686,7 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
   const dispatchDecisionOnLiveState = async (
     ctx: ExtensionContext,
     decision: GoalDispatchableContinuation,
+    options?: { familyDispatchId?: string },
   ): Promise<"continue" | "stop" | "model-follow-up"> => {
     if (!state) return "stop";
 
@@ -2743,7 +2839,13 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
       ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
       return "stop";
     }
-    pendingContinuation = createPendingGoalContinuation(decision, state, { sessionGeneration, branchGeneration }, operationId);
+    pendingContinuation = createPendingGoalContinuation(
+      decision,
+      state,
+      { sessionGeneration, branchGeneration },
+      operationId,
+      options?.familyDispatchId,
+    );
     pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
     return "model-follow-up";
   };
@@ -2868,6 +2970,14 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         return;
       }
 
+      if (controller.kind === "family-rejected") {
+        ctx.ui.notify(
+          `Hypagoal family concurrent selection was rejected: ${controller.reason}`,
+          "warning",
+        );
+        return;
+      }
+
       let decision: GoalDispatchableContinuation;
       let dispatchOutcome: "continue" | "stop" | "model-follow-up";
 
@@ -2892,8 +3002,172 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         }
         dispatchOutcome = await dispatchDecisionOnLiveState(ctx, decision);
         if (deterministic) deterministicDispatches += 1;
+      } else if (controller.kind === "dispatch-batch") {
+        // Gate 1.1 concurrent product path (AC4):
+        // 1) Commit the full selected multi-pending batch.
+        // 2) Mark all startable members dispatched before any host start
+        //    (all deterministic + one model when isolated capacity is free).
+        // 3) Interrupt unstartable model pendings (no stranded selected occupancy).
+        // 4) Start every startable member serially WITHOUT settling between starts.
+        // 5) After all starts finish, settle each by dispatchId (reload before settle).
+        // The second start runs while the first family pending is still dispatched.
+        // Host await is serial (shared session). Model capacity is one isolated attempt.
+        const at = new Date().toISOString();
+        const memberStates = buildFamilyControllerMemberStates(controller.family, state);
+
+        const committed = commitConcurrentFamilyBatchForHost({
+          family: controller.family.familySnapshot,
+          memberStates,
+          items: controller.items,
+          at,
+          maxBatchSize: controller.maxBatchSize,
+          createDispatchId: (index, item) =>
+            `family-concurrent:${controller.family.familySnapshot.familyId}:${item.memberGoalId}:${index}:${randomUUID()}`,
+        });
+        if (!committed.ok) {
+          ctx.ui.notify(
+            `Hypagoal could not commit concurrent family batch. `
+            + committed.diagnostics.map((d) => d.message).join("; "),
+            "warning",
+          );
+          return;
+        }
+        familyRecord = persistFamilySnapshotUpdate(
+          controller.family,
+          committed.family,
+          committed.events,
+        );
+
+        ctx.ui.notify(
+          `Hypagoal family concurrent batch selected ${committed.items.length} members: `
+          + committed.items.map((item) => item.memberGoalId).join(", ") + ".",
+          "info",
+        );
+
+        type BatchStartItem = (typeof committed.items)[number];
+        const modelCapacityFree = !(
+          activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
+        );
+        let modelSlots = modelCapacityFree ? 1 : 0;
+        const startableItems: BatchStartItem[] = [];
+        const deferredModelItems: BatchStartItem[] = [];
+        for (const item of committed.items) {
+          if (isDeterministicFamilyMemberDecision(item.decision)) {
+            startableItems.push(item);
+            continue;
+          }
+          if (modelSlots > 0) {
+            startableItems.push(item);
+            modelSlots -= 1;
+          } else {
+            deferredModelItems.push(item);
+          }
+        }
+
+        // Interrupt model pendings the host cannot start in this pass.
+        for (const item of deferredModelItems) {
+          settleFamilyDispatchById(
+            item.dispatchId,
+            "interrupted",
+            `Host model capacity is one isolated attempt. Deferred member '${item.memberGoalId}'.`,
+            ctx,
+          );
+        }
+        familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+
+        // Mark every startable pending as dispatched before any member host start.
+        const markedItems: BatchStartItem[] = [];
+        for (const item of startableItems) {
+          familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+          const marked = markFamilyPendingDispatchedForHost({
+            family: familyRecord.familySnapshot,
+            dispatchId: item.dispatchId,
+            at: new Date().toISOString(),
+            memberState: item.memberState,
+          });
+          if (!marked.ok) {
+            ctx.ui.notify(
+              `Hypagoal could not mark family dispatch '${item.dispatchId}' as dispatched. `
+              + `Member '${item.memberGoalId}' was not started. `
+              + marked.diagnostics.map((d) => d.message).join("; "),
+              "warning",
+            );
+            settleFamilyDispatchById(
+              item.dispatchId,
+              "interrupted",
+              `Could not mark family dispatch '${item.dispatchId}' as dispatched.`,
+              ctx,
+            );
+            familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+            continue;
+          }
+          familyRecord = persistFamilySnapshotUpdate(
+            familyRecord,
+            marked.family,
+            marked.events,
+          );
+          markedItems.push(item);
+        }
+
+        // All marked items are dispatched. Start all before any terminal settle.
+        type BatchStartOutcome = {
+          item: BatchStartItem;
+          itemOutcome: "continue" | "stop" | "model-follow-up";
+        };
+        const startOutcomes: BatchStartOutcome[] = [];
+        for (const item of markedItems) {
+          familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+          const itemOutcome = await dispatchSelectedMemberAction(
+            ctx,
+            {
+              kind: "dispatch",
+              memberGoalId: item.memberGoalId,
+              memberWorkflowId: item.memberWorkflowId,
+              memberState: item.memberState,
+              isLiveRoot: item.isLiveRoot,
+              decision: item.decision,
+              family: familyRecord,
+              selectionReason: item.selectionReason,
+            },
+            { familyDispatchId: item.dispatchId },
+          );
+          startOutcomes.push({ item, itemOutcome });
+          if (isDeterministicFamilyMemberDecision(item.decision)) {
+            deterministicDispatches += 1;
+          }
+        }
+
+        // Settle only after every startable member has been started (or failed to start).
+        // model-follow-up keeps the pending dispatched until agent_end / abandon.
+        let batchContinue = false;
+        let batchModelFollowUp = false;
+        for (const { item, itemOutcome } of startOutcomes) {
+          const settleOutcome = familySettleOutcomeFromHostDispatch(itemOutcome);
+          if (settleOutcome) {
+            familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+            settleFamilyDispatchById(
+              item.dispatchId,
+              settleOutcome,
+              itemOutcome === "stop"
+                ? `Member '${item.memberGoalId}' host dispatch stopped.`
+                : undefined,
+              ctx,
+            );
+            familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+          }
+          if (itemOutcome === "continue") batchContinue = true;
+          if (itemOutcome === "model-follow-up") batchModelFollowUp = true;
+        }
+
+        if (batchModelFollowUp) {
+          dispatchOutcome = "model-follow-up";
+        } else if (batchContinue) {
+          dispatchOutcome = "continue";
+        } else {
+          dispatchOutcome = "stop";
+        }
       } else {
-        // Multi-member family selection.
+        // Multi-member sequential family selection (concurrent off or maxBatchSize 1).
         decision = controller.decision;
         const deterministic = isReadyGateDecision(decision)
           || isReadyCheckDecision(decision)
@@ -2914,7 +3188,84 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
             "info",
           );
         }
-        dispatchOutcome = await dispatchSelectedMemberAction(ctx, controller);
+        // Commit sequential pending so settle targets a durable dispatchId.
+        const sequentialAt = new Date().toISOString();
+        const sequentialStates = buildFamilyControllerMemberStates(controller.family, state);
+        const sequentialDispatchId =
+          `family-sequential:${controller.family.familySnapshot.familyId}:${controller.memberGoalId}:${randomUUID()}`;
+        const sequentialCommit = commitSequentialFamilySelectionForHost({
+          family: controller.family.familySnapshot,
+          memberStates: sequentialStates,
+          at: sequentialAt,
+          dispatchId: sequentialDispatchId,
+        });
+        if (!sequentialCommit.ok) {
+          ctx.ui.notify(
+            `Hypagoal could not commit sequential family selection. `
+            + sequentialCommit.diagnostics.map((d) => d.message).join("; "),
+            "warning",
+          );
+          return;
+        }
+        if (sequentialCommit.events.length === 0) {
+          // Idle commit: no durable pending. Do not start member work.
+          ctx.ui.notify("Hypagoal sequential family selection was idle.", "info");
+          return;
+        }
+        familyRecord = persistFamilySnapshotUpdate(
+          controller.family,
+          sequentialCommit.family,
+          sequentialCommit.events,
+        );
+        const marked = markFamilyPendingDispatchedForHost({
+          family: familyRecord.familySnapshot,
+          dispatchId: sequentialDispatchId,
+          at: new Date().toISOString(),
+          memberState: controller.memberState,
+        });
+        if (!marked.ok) {
+          ctx.ui.notify(
+            `Hypagoal could not mark family dispatch '${sequentialDispatchId}' as dispatched. `
+            + `Member '${controller.memberGoalId}' was not started. `
+            + marked.diagnostics.map((d) => d.message).join("; "),
+            "warning",
+          );
+          // Interrupt the committed selected pending so sequential selection is not blocked.
+          settleFamilyDispatchById(
+            sequentialDispatchId,
+            "interrupted",
+            `Could not mark family dispatch '${sequentialDispatchId}' as dispatched.`,
+            ctx,
+          );
+          return;
+        }
+        familyRecord = persistFamilySnapshotUpdate(
+          familyRecord,
+          marked.family,
+          marked.events,
+        );
+        dispatchOutcome = await dispatchSelectedMemberAction(
+          ctx,
+          {
+            ...controller,
+            family: familyRecord,
+          },
+          { familyDispatchId: sequentialDispatchId },
+        );
+        // Reload after member host work so child workflow progress is not overwritten.
+        familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+        const settleOutcome = familySettleOutcomeFromHostDispatch(dispatchOutcome);
+        if (settleOutcome) {
+          settleFamilyDispatchById(
+            sequentialDispatchId,
+            settleOutcome,
+            dispatchOutcome === "stop"
+              ? `Member '${controller.memberGoalId}' host dispatch stopped.`
+              : undefined,
+            ctx,
+          );
+          familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+        }
         if (deterministic) deterministicDispatches += 1;
       }
 
@@ -3078,10 +3429,19 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     }
     if (deliveredContinuation) {
       const delivered = deliveredContinuation;
+      const familyDispatchId = delivered.familyDispatchId;
       deliveredContinuation = undefined;
       const goal = state?.goal;
       const revisionRequest = goal?.pendingContinuation;
-      if (!state || !goal) return;
+      if (!state || !goal) {
+        settleFamilyDispatchById(
+          familyDispatchId,
+          "interrupted",
+          "Family model follow-up ended without active goal state.",
+          ctx,
+        );
+        return;
+      }
       // Terminal goals clear pendingContinuation on complete/fail/cancel. The
       // host still holds delivery bookkeeping. Do not treat this as a missing
       // goal: notify the terminal lifecycle and stop without usage accounting.
@@ -3091,6 +3451,19 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           ctx.ui.notify(
             renderHypagoalLifecycleMessage(state),
             goal.status === "completed" ? "info" : "warning",
+          );
+          settleFamilyDispatchById(
+            familyDispatchId,
+            goal.status === "completed" ? "completed" : "failed",
+            `Goal reached terminal status '${goal.status}' after model follow-up.`,
+            ctx,
+          );
+        } else {
+          settleFamilyDispatchById(
+            familyDispatchId,
+            "interrupted",
+            "Model follow-up ended without a durable continuation request.",
+            ctx,
           );
         }
         return;
@@ -3133,6 +3506,12 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         paintUi(ctx);
         ctx.ui.notify(`Hypagoal paused because usage could not be accounted. ${normalized.message}`, "warning");
         ctx.ui.notify(renderHypagoalLifecycleMessage(state!), "warning");
+        settleFamilyDispatchById(
+          familyDispatchId,
+          "failed",
+          `Usage could not be accounted: ${normalized.message}`,
+          ctx,
+        );
         return;
       }
       const canonical = revisionRequest;
@@ -3160,6 +3539,12 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
       if (!recorded.ok) {
         ctx.ui.notify(`Hypagoal usage was not recorded.
 ${formatDiagnostics(recorded.diagnostics)}`, "warning");
+        settleFamilyDispatchById(
+          familyDispatchId,
+          "failed",
+          "Goal turn usage was not recorded.",
+          ctx,
+        );
         return;
       }
       state = recorded.value.state;
@@ -3167,12 +3552,26 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       paintUi(ctx);
       if (state.goal?.status === "budget_limited") {
         ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
+        settleFamilyDispatchById(
+          familyDispatchId,
+          "failed",
+          "Goal reached budget_limited after model follow-up.",
+          ctx,
+        );
         return;
       }
       if (semanticSequenceBeforeAccounting === delivered.committedSequence) {
         ctx.ui.notify(`Hypagoal continuation '${delivered.operationId}' made no canonical progress. Automatic continuation stopped.`, "warning");
+        settleFamilyDispatchById(
+          familyDispatchId,
+          "failed",
+          "Model follow-up made no canonical progress.",
+          ctx,
+        );
         return;
       }
+      // Accepted model-lane progress. Clear the family multi-pending dispatch.
+      settleFamilyDispatchById(familyDispatchId, "completed", undefined, ctx);
     } else {
       // A durable request without delivery bookkeeping blocks later selection.
       await recoverOrphanedModelContinuation(
@@ -3218,17 +3617,28 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
 
     if (pendingContinuation) {
       const pending = pendingContinuation;
+      const familyDispatchId = pending.familyDispatchId;
       const validation = validatePendingGoalContinuation(
         pending,
         state,
         { sessionGeneration, branchGeneration },
       );
       pendingContinuation = undefined;
+      const abandonOpts = {
+        ctx,
+        ...(familyDispatchId !== undefined ? { familyDispatchId } : {}),
+      };
       if (event.prompt !== pending.prompt) {
-        await abandonPendingContinuation("A user or tool message took priority over the queued continuation.");
+        await abandonPendingContinuation(
+          "A user or tool message took priority over the queued continuation.",
+          abandonOpts,
+        );
         suppressContinuationAtNextAgentEnd = true;
       } else if (!validation.ok || !state) {
-        await abandonPendingContinuation(validation.message ?? "The queued continuation became stale.");
+        await abandonPendingContinuation(
+          validation.message ?? "The queued continuation became stale.",
+          abandonOpts,
+        );
         suppressContinuationAtNextAgentEnd = true;
         staleContinuationTurn = true;
         ctx.ui.notify(`Hypagoal continuation stopped: ${validation.code ?? "stale_continuation"} — ${validation.message ?? "The continuation is stale."}`, "warning");

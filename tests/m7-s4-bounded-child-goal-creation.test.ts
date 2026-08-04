@@ -759,11 +759,11 @@ describe("M7-S4 bounded child-goal creation", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("Expected schema rejection.");
     expect(result.diagnostics[0]?.code).toBe("unsupported_goal_family_schema");
-    expect(result.diagnostics[0]?.message).toMatch(/Expected schema version 2/);
+    expect(result.diagnostics[0]?.message).toMatch(/Expected schema version 3/);
 
     expect(() => {
       throw new UnsupportedGoalFamilySchemaError(99);
-    }).toThrow(/Unsupported goal-family schema version '99'.*Expected schema version 2/);
+    }).toThrow(/Unsupported goal-family schema version '99'.*Expected schema version 3/);
   });
 
   it("does not mutate input objects on successful creation", () => {
@@ -966,7 +966,7 @@ describe("M7-S4 bounded child-goal creation", () => {
       assertPersistedGoalFamilyShape(versionOne);
     } catch (error) {
       expect(error).toBeInstanceOf(UnsupportedGoalFamilySchemaError);
-      expect((error as Error).message).toMatch(/Expected schema version 2/);
+      expect((error as Error).message).toMatch(/Expected schema version 3/);
     }
   });
 
@@ -1375,7 +1375,7 @@ describe("M7-S4 bounded child-goal creation", () => {
       assertPersistedGoalFamilyShape(versionOneSnapshot);
     } catch (error) {
       expect(error).toBeInstanceOf(UnsupportedGoalFamilySchemaError);
-      expect((error as Error).message).toMatch(/Expected schema version 2/);
+      expect((error as Error).message).toMatch(/Expected schema version 3/);
     }
   });
 

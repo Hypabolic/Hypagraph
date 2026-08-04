@@ -21,9 +21,10 @@ import type {
  * This version is independent of HYPAGRAPH_SCHEMA_VERSION on workflow aggregates.
  * Version 2 adds family bounds, child bindings, family budget reservation,
  * and terminal child-return fields on bindings.
+ * Version 3 replaces single pendingDispatch with multi-pending pendingDispatches.
  * Before the first external family adoption, unsupported versions are rejected.
  */
-export const GOAL_FAMILY_SCHEMA_VERSION = 2 as const;
+export const GOAL_FAMILY_SCHEMA_VERSION = 3 as const;
 
 /** Event payload version for family-level events. */
 export const GOAL_FAMILY_EVENT_VERSION = 1 as const;
@@ -221,7 +222,8 @@ export type FamilyDispatchTerminalStatus = "completed" | "failed" | "interrupted
 
 /**
  * In-flight family-level selection or dispatch.
- * Sequential policy permits at most one pending family dispatch.
+ * Concurrent policy may hold more than one. Sequential policy admits at most one.
+ * Each pending targets one member goal. Two pendings for the same goalId are illegal.
  */
 export interface FamilyPendingDispatch {
   dispatchId: string;
@@ -269,15 +271,72 @@ export interface GoalFamilyRuntime {
    * Descendant usage is charged against these limits.
    */
   familyBudget: FamilyBudgetRuntime;
-  /** At most one pending family-level selection or dispatch. */
-  pendingDispatch?: FamilyPendingDispatch;
+  /**
+   * In-flight family-level selections and dispatches keyed by dispatchId.
+   * Always present. Empty object means no pending work.
+   * Concurrent product path may hold more than one entry.
+   */
+  pendingDispatches: Record<string, FamilyPendingDispatch>;
   /**
    * Most recent terminal family dispatch outcome.
    * Dispatch ID uniqueness is bounded: a new selection rejects a dispatchId that
-   * equals pendingDispatch.dispatchId (already exclusive) or lastDispatchOutcome.dispatchId.
+   * is already pending or equals lastDispatchOutcome.dispatchId.
    * The family does not retain a full historical set of dispatch IDs on the snapshot.
    */
   lastDispatchOutcome?: FamilyDispatchOutcome;
+}
+
+/**
+ * List pending dispatches in stable order.
+ * Primary key is schedulerOrdinal ascending. Secondary key is dispatchId ascending.
+ * Returns deep clones so callers cannot mutate the family through the result.
+ */
+export function listPendingDispatches(family: GoalFamilyRuntime): FamilyPendingDispatch[] {
+  return Object.values(family.pendingDispatches)
+    .sort((left, right) => {
+      if (left.schedulerOrdinal !== right.schedulerOrdinal) {
+        return left.schedulerOrdinal - right.schedulerOrdinal;
+      }
+      if (left.dispatchId < right.dispatchId) return -1;
+      if (left.dispatchId > right.dispatchId) return 1;
+      return 0;
+    })
+    .map((pending) => structuredClone(pending));
+}
+
+/** Read one pending dispatch by id. Returns a deep clone when present. */
+export function getPendingDispatch(
+  family: GoalFamilyRuntime,
+  dispatchId: string,
+): FamilyPendingDispatch | undefined {
+  const pending = family.pendingDispatches[dispatchId];
+  return pending === undefined ? undefined : structuredClone(pending);
+}
+
+/** Number of in-flight family dispatches. */
+export function pendingDispatchCount(family: GoalFamilyRuntime): number {
+  return Object.keys(family.pendingDispatches ?? {}).length;
+}
+
+/** True when the family has one or more in-flight dispatches. */
+export function hasAnyPendingDispatch(family: GoalFamilyRuntime): boolean {
+  return pendingDispatchCount(family) > 0;
+}
+
+/**
+ * Find the pending dispatch that occupies a member goal, if any.
+ * Concurrent policy admits at most one pending per goalId.
+ */
+export function findPendingDispatchForGoal(
+  family: GoalFamilyRuntime,
+  goalId: string,
+): FamilyPendingDispatch | undefined {
+  for (const pending of Object.values(family.pendingDispatches ?? {})) {
+    if (pending.selection.goalId === goalId) {
+      return structuredClone(pending);
+    }
+  }
+  return undefined;
 }
 
 export type GoalFamilyEventType =
@@ -847,6 +906,7 @@ export function applyFamilyEvent(
         reservedTurns: 0,
         reservedTokens: 0,
       },
+      pendingDispatches: {},
     };
   }
 
@@ -1833,16 +1893,17 @@ function applyActionSelectedEvent(
   current: GoalFamilyRuntime,
   event: Extract<GoalFamilyEvent, { type: "hypagraph.family.action-selected" }>,
 ): GoalFamilyRuntime {
-  if (current.pendingDispatch) {
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  const pendings = current.pendingDispatches ?? {};
+
+  if (pendings[dispatchId]) {
     restoreFail(
-      "goal_family_dispatch_pending",
-      `Goal family '${current.familyId}' still has pending dispatch '${current.pendingDispatch.dispatchId}'.`,
+      "goal_family_dispatch_id_duplicate",
+      `Goal family '${current.familyId}' already has pending dispatch '${dispatchId}'.`,
     );
   }
-
-  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
   // Bounded reuse policy: reject only the most recent terminal dispatch ID.
-  // Pending is already exclusive. Full historical dispatch ID lists are not retained.
+  // Full historical dispatch ID lists are not retained.
   if (current.lastDispatchOutcome?.dispatchId === dispatchId) {
     restoreFail(
       "goal_family_dispatch_id_reused",
@@ -1873,10 +1934,22 @@ function applyActionSelectedEvent(
     );
   }
 
+  // Exclusive member occupancy: at most one pending per goalId.
+  for (const existing of Object.values(pendings)) {
+    if (existing.selection.goalId === selection.goalId) {
+      restoreFail(
+        "goal_family_dispatch_goal_pending",
+        `Goal family '${current.familyId}' already has pending dispatch `
+        + `'${existing.dispatchId}' for member '${selection.goalId}'.`,
+      );
+    }
+  }
+
   const next: GoalFamilyRuntime = structuredClone(current);
+  if (!next.pendingDispatches) next.pendingDispatches = {};
   next.schedulerOrdinal = event.sequence;
   next.updatedAt = event.timestamp;
-  next.pendingDispatch = {
+  next.pendingDispatches[dispatchId] = {
     dispatchId,
     selection: structuredClone(selection),
     status: "selected",
@@ -1890,18 +1963,12 @@ function applyActionDispatchedEvent(
   current: GoalFamilyRuntime,
   event: Extract<GoalFamilyEvent, { type: "hypagraph.family.action-dispatched" }>,
 ): GoalFamilyRuntime {
-  const pending = current.pendingDispatch;
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  const pending = current.pendingDispatches?.[dispatchId];
   if (!pending) {
     restoreFail(
       "goal_family_dispatch_missing",
-      `Goal family '${current.familyId}' has no pending dispatch for action-dispatched.`,
-    );
-  }
-  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
-  if (dispatchId !== pending.dispatchId) {
-    restoreFail(
-      "goal_family_dispatch_id_mismatch",
-      `Family dispatch event targets '${dispatchId}', but pending dispatch is '${pending.dispatchId}'.`,
+      `Goal family '${current.familyId}' has no pending dispatch '${dispatchId}' for action-dispatched.`,
     );
   }
   if (pending.status !== "selected") {
@@ -1920,7 +1987,7 @@ function applyActionDispatchedEvent(
   const next: GoalFamilyRuntime = structuredClone(current);
   next.schedulerOrdinal = event.sequence;
   next.updatedAt = event.timestamp;
-  next.pendingDispatch = {
+  next.pendingDispatches[dispatchId] = {
     ...structuredClone(pending),
     status: "dispatched",
     dispatchedAt: event.timestamp,
@@ -1940,18 +2007,12 @@ function applyActionTerminalEvent(
     }
   >,
 ): GoalFamilyRuntime {
-  const pending = current.pendingDispatch;
+  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
+  const pending = current.pendingDispatches?.[dispatchId];
   if (!pending) {
     restoreFail(
       "goal_family_dispatch_missing",
-      `Goal family '${current.familyId}' has no pending dispatch for '${event.type}'.`,
-    );
-  }
-  const dispatchId = requireIdentity(event.data.dispatchId, "dispatch ID");
-  if (dispatchId !== pending.dispatchId) {
-    restoreFail(
-      "goal_family_dispatch_id_mismatch",
-      `Family dispatch event targets '${dispatchId}', but pending dispatch is '${pending.dispatchId}'.`,
+      `Goal family '${current.familyId}' has no pending dispatch '${dispatchId}' for '${event.type}'.`,
     );
   }
 
@@ -2017,7 +2078,8 @@ function applyActionTerminalEvent(
     ...(pending.dispatchedAt === undefined ? {} : { dispatchedAt: pending.dispatchedAt }),
     ...(event.data.reason === undefined ? {} : { reason: event.data.reason }),
   };
-  delete next.pendingDispatch;
+  // Clear only this dispatch. Unrelated pendings remain intact.
+  delete next.pendingDispatches[dispatchId];
   return next;
 }
 
@@ -2319,15 +2381,50 @@ export function validateFamilyMembershipGraph(family: GoalFamilyRuntime): void {
 /**
  * Validate pending and terminal family scheduler state on a snapshot.
  * Mirrors root validateActionDispatchRuntime rules for ordinal, status, and timestamps.
- * Dispatch ID uniqueness is not a full historical set: only pending and last outcome matter.
+ * Dispatch ID uniqueness is not a full historical set: only pending keys and last outcome matter.
+ * Multi-pending: at most one pending per goalId; map keys must equal dispatchId.
  */
 export function validateFamilySchedulerState(family: GoalFamilyRuntime): void {
-  const pending = family.pendingDispatch;
-  if (pending) {
+  if (
+    !family.pendingDispatches
+    || typeof family.pendingDispatches !== "object"
+    || Array.isArray(family.pendingDispatches)
+  ) {
+    restoreFail(
+      "invalid_goal_family_scheduler_state",
+      `Goal family '${family.familyId}' must include a pendingDispatches object.`,
+    );
+  }
+
+  const occupiedGoals = new Set<string>();
+  for (const [mapKey, pending] of Object.entries(family.pendingDispatches)) {
+    // Align with concurrent parser: accept Object.prototype and null-prototype only.
+    // Reject arrays, Date, Map, Set, and other class instances.
+    let pendingIsStrictPlain = false;
+    if (pending !== null && typeof pending === "object" && !Array.isArray(pending)) {
+      try {
+        const prototype = Object.getPrototypeOf(pending);
+        pendingIsStrictPlain = prototype === Object.prototype || prototype === null;
+      } catch {
+        pendingIsStrictPlain = false;
+      }
+    }
+    if (!pendingIsStrictPlain) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Goal family '${family.familyId}' pendingDispatches['${mapKey}'] must be a plain object.`,
+      );
+    }
     if (typeof pending.dispatchId !== "string" || !pending.dispatchId.trim()) {
       restoreFail(
         "invalid_goal_family_scheduler_state",
         `Goal family '${family.familyId}' pending dispatch requires a non-empty dispatch ID.`,
+      );
+    }
+    if (pending.dispatchId !== mapKey) {
+      restoreFail(
+        "invalid_goal_family_scheduler_state",
+        `Pending dispatch map key '${mapKey}' must equal dispatchId '${pending.dispatchId}'.`,
       );
     }
     if (!Number.isSafeInteger(pending.schedulerOrdinal) || pending.schedulerOrdinal < 1) {
@@ -2358,6 +2455,15 @@ export function validateFamilySchedulerState(family: GoalFamilyRuntime): void {
         `Pending dispatch selects missing member '${pending.selection.goalId}'.`,
       );
     }
+    if (occupiedGoals.has(pending.selection.goalId)) {
+      restoreFail(
+        "goal_family_dispatch_goal_pending",
+        `Goal family '${family.familyId}' has more than one pending dispatch for member `
+        + `'${pending.selection.goalId}'.`,
+      );
+    }
+    occupiedGoals.add(pending.selection.goalId);
+
     if (pending.status === "dispatched") {
       if (!pending.dispatchedAt || !Number.isFinite(Date.parse(pending.dispatchedAt))) {
         restoreFail(
@@ -2547,10 +2653,13 @@ export function restoreFamilyProjection(
     }
   }
 
-  if (canonicalJsonStringify(rebuilt.pendingDispatch ?? null) !== canonicalJsonStringify(snapshot.pendingDispatch ?? null)) {
+  if (
+    canonicalJsonStringify(rebuilt.pendingDispatches ?? {})
+    !== canonicalJsonStringify(snapshot.pendingDispatches ?? {})
+  ) {
     restoreFail(
       "goal_family_scheduler_mismatch",
-      `The restored family pending dispatch for '${snapshot.familyId}' does not match the stored snapshot.`,
+      `The restored family pending dispatches for '${snapshot.familyId}' do not match the stored snapshot.`,
     );
   }
   if (

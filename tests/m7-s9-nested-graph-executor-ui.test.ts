@@ -459,23 +459,25 @@ describe("M7-S9 nested graph and executor UI projection", () => {
 
     const familyWithSecret: GoalFamilyRuntime = structuredClone(childResult.family);
     // Pending selection with a previously unstored reason on the protected node owner.
-    familyWithSecret.pendingDispatch = {
-      dispatchId: "dispatch-pending-secret",
-      selection: {
-        familyId: familyWithSecret.familyId,
-        goalId: "goal-child-protected",
-        workflowId: "workflow-child-protected",
-        revision: blockedChild.state.revision,
-        nodeId: "evaluate",
-        action: { kind: "run-ready-check", nodeId: "evaluate" },
-        reason: UNSTORED_SELECTION,
-        selectedSequence: blockedChild.state.sequence,
-        selectedSnapshotHash: blockedChild.state.snapshotHash,
-        memberContinuationOrdinal: blockedChild.state.goal!.continuationOrdinal,
+    familyWithSecret.pendingDispatches = {
+      "dispatch-pending-secret": {
+        dispatchId: "dispatch-pending-secret",
+        selection: {
+          familyId: familyWithSecret.familyId,
+          goalId: "goal-child-protected",
+          workflowId: "workflow-child-protected",
+          revision: blockedChild.state.revision,
+          nodeId: "evaluate",
+          action: { kind: "run-ready-check", nodeId: "evaluate" },
+          reason: UNSTORED_SELECTION,
+          selectedSequence: blockedChild.state.sequence,
+          selectedSnapshotHash: blockedChild.state.snapshotHash,
+          memberContinuationOrdinal: blockedChild.state.goal!.continuationOrdinal,
+        },
+        status: "selected",
+        selectedAt: later,
+        schedulerOrdinal: familyWithSecret.schedulerOrdinal,
       },
-      status: "selected",
-      selectedAt: later,
-      schedulerOrdinal: familyWithSecret.schedulerOrdinal,
     };
     // Terminal outcome with a different unstored reason on the same protected owner.
     familyWithSecret.lastDispatchOutcome = {
@@ -670,24 +672,26 @@ describe("M7-S9 nested graph and executor UI projection", () => {
   it("shows loopId on pending and terminal family dispatch status lines", () => {
     const { family, rootState, memberStates } = createOneMemberFamily();
     const withLoop: GoalFamilyRuntime = structuredClone(family);
-    withLoop.pendingDispatch = {
-      dispatchId: "dispatch-loop-pending",
-      selection: {
-        familyId: family.familyId,
-        goalId: "goal-root",
-        workflowId: "workflow-root",
-        revision: rootState.revision,
-        nodeId: "parent-task",
-        loopId: "loop-refine",
-        action: { kind: "continue-active-task", nodeId: "parent-task", loopId: "loop-refine" },
-        reason: "Continue the refine loop.",
-        selectedSequence: rootState.sequence,
-        selectedSnapshotHash: rootState.snapshotHash,
-        memberContinuationOrdinal: rootState.goal!.continuationOrdinal,
+    withLoop.pendingDispatches = {
+      "dispatch-loop-pending": {
+        dispatchId: "dispatch-loop-pending",
+        selection: {
+          familyId: family.familyId,
+          goalId: "goal-root",
+          workflowId: "workflow-root",
+          revision: rootState.revision,
+          nodeId: "parent-task",
+          loopId: "loop-refine",
+          action: { kind: "continue-active-task", nodeId: "parent-task", loopId: "loop-refine" },
+          reason: "Continue the refine loop.",
+          selectedSequence: rootState.sequence,
+          selectedSnapshotHash: rootState.snapshotHash,
+          memberContinuationOrdinal: rootState.goal!.continuationOrdinal,
+        },
+        status: "selected",
+        selectedAt: later,
+        schedulerOrdinal: family.schedulerOrdinal,
       },
-      status: "selected",
-      selectedAt: later,
-      schedulerOrdinal: family.schedulerOrdinal,
     };
     const pendingView = projectFamilyGraphView({
       family: withLoop,

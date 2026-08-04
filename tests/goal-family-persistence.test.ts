@@ -154,7 +154,7 @@ describe("goal family domain helpers", () => {
 
     expect(() => rebuildFamilyMembershipFromSnapshot(unsupported)).toThrow(UnsupportedGoalFamilySchemaError);
     expect(() => rebuildFamilyMembershipFromSnapshot(unsupported)).toThrow(
-      /Unsupported goal-family schema version '99'.*Expected schema version 2/,
+      /Unsupported goal-family schema version '99'.*Expected schema version 3/,
     );
   });
 
@@ -563,7 +563,7 @@ describe("goal family persistence above workflow aggregates", () => {
 
     await expect(store.load("family-bad-schema")).rejects.toBeInstanceOf(UnsupportedGoalFamilySchemaError);
     await expect(store.load("family-bad-schema")).rejects.toThrow(
-      /Unsupported goal-family schema version '99'.*Expected schema version 2/,
+      /Unsupported goal-family schema version '99'.*Expected schema version 3/,
     );
     expect(() => restorePersistedGoalFamily(unsupported)).toThrow(UnsupportedGoalFamilySchemaError);
   });

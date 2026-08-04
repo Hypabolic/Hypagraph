@@ -19,6 +19,10 @@ import {
   GOAL_FAMILY_EVENT_VERSION,
   GOAL_FAMILY_SCHEMA_VERSION,
   applyFamilyEvent,
+  findPendingDispatchForGoal,
+  getPendingDispatch,
+  hasAnyPendingDispatch,
+  listPendingDispatches,
   rejectGoalFamily,
   requireGoalFamilyNonEmpty,
   requireGoalFamilyTimestamp,
@@ -248,14 +252,15 @@ export function enumerateFamilyPreferredDispatchables(
 /**
  * Pure family scheduler decision for sequential dispatch.
  *
- * Selection policy for this slice:
- * 1. Reject a new selection while a family dispatch is pending.
+ * Selection policy for sequential mode:
+ * 1. Reject a new selection while any family dispatch is pending.
  * 2. Report incomplete-input when any member state is missing or mismatched.
  * 3. Prefer each member's selectGoalContinuation result (reconcile and active work first).
  * 4. Order members by depth ascending, then goalId ascending.
  * 5. Select exactly one preferred dispatchable when any exist.
  * 6. Otherwise return idle.
  *
+ * Concurrent multi-pending selection uses selectFamilyConcurrentActions instead.
  * The selected action must be committed through commitFamilySelection so replay is event-backed.
  * This helper does not read the clock and does not mutate inputs.
  */
@@ -263,13 +268,16 @@ export function selectFamilySchedulerAction(
   family: GoalFamilyRuntime,
   memberStates: Readonly<Record<string, HypagraphState>>,
 ): FamilySchedulerDecision {
-  if (family.pendingDispatch) {
+  if (hasAnyPendingDispatch(family)) {
+    const pendings = listPendingDispatches(family);
+    const first = pendings[0]!;
+    const idList = pendings.map((pending) => pending.dispatchId).join(", ");
     return {
       kind: "blocked-pending",
       reason:
-        `Goal family '${family.familyId}' still has pending dispatch `
-        + `'${family.pendingDispatch.dispatchId}'. Complete or interrupt it before a new selection.`,
-      dispatchId: family.pendingDispatch.dispatchId,
+        `Goal family '${family.familyId}' still has pending dispatch(es) `
+        + `'${idList}'. Complete or interrupt them before a sequential selection.`,
+      dispatchId: first.dispatchId,
     };
   }
 
@@ -338,8 +346,9 @@ function assertFamilySchema(family: GoalFamilyRuntime): Diagnostic[] | undefined
 
 /**
  * Commit one sequential family selection when work exists.
- * Only this helper (and apply of its events) produces family selection state.
- * A second selection while a dispatch is pending fails with goal_family_dispatch_pending.
+ * Sequential policy admits at most one pending. A second selection while any
+ * dispatch is pending fails with goal_family_dispatch_pending.
+ * Use commitFamilyConcurrentBatch for multi-pending concurrent commit.
  * Idle decisions return ok with no events and an unchanged family clone.
  * Timestamps and identifiers are pure inputs.
  */
@@ -363,12 +372,14 @@ export function commitFamilySelection(input: {
   const atError = requireTimestamp(input.at);
   if (atError) return rejectCommit("invalid_goal_family_timestamp", atError, "at");
 
-  if (input.family.pendingDispatch) {
+  if (hasAnyPendingDispatch(input.family)) {
+    const pendings = listPendingDispatches(input.family);
+    const idList = pendings.map((p) => p.dispatchId).join(", ");
     return rejectCommit(
       "goal_family_dispatch_pending",
-      `Goal family '${input.family.familyId}' still has pending dispatch `
-      + `'${input.family.pendingDispatch.dispatchId}'. Complete or interrupt it before a new selection.`,
-      "family.pendingDispatch",
+      `Goal family '${input.family.familyId}' still has pending dispatch(es) `
+      + `'${idList}'. Complete or interrupt them before a sequential selection.`,
+      "family.pendingDispatches",
     );
   }
 
@@ -418,7 +429,7 @@ export function commitFamilySelection(input: {
     return rejectCommit(
       "goal_family_dispatch_pending",
       decision.reason,
-      "family.pendingDispatch",
+      "family.pendingDispatches",
     );
   }
   if (decision.kind === "idle") {
@@ -467,7 +478,7 @@ export function commitFamilySelection(input: {
 
 /**
  * Mark a selected family action as dispatched.
- * Sequential policy keeps the same pending dispatch until a terminal event.
+ * Targets one dispatchId. Other pendings stay intact.
  * When memberState is supplied, reject a stale selection that no longer matches the member snapshot.
  */
 export function markFamilyActionDispatched(input: {
@@ -488,19 +499,12 @@ export function markFamilyActionDispatched(input: {
   const atError = requireTimestamp(input.at);
   if (atError) return reject("invalid_goal_family_timestamp", atError, "at");
 
-  const pending = input.family.pendingDispatch;
+  const pending = getPendingDispatch(input.family, input.dispatchId);
   if (!pending) {
     return reject(
       "goal_family_dispatch_missing",
-      `Goal family '${input.family.familyId}' has no pending dispatch to mark as dispatched.`,
-      "family.pendingDispatch",
-    );
-  }
-  if (pending.dispatchId !== input.dispatchId) {
-    return reject(
-      "goal_family_dispatch_id_mismatch",
-      `Pending family dispatch is '${pending.dispatchId}', not '${input.dispatchId}'.`,
-      "dispatchId",
+      `Goal family '${input.family.familyId}' has no pending dispatch '${input.dispatchId}' to mark as dispatched.`,
+      "family.pendingDispatches",
     );
   }
   if (pending.status !== "selected") {
@@ -594,19 +598,12 @@ function completeFamilyActionWithStatus(input: {
   const atError = requireTimestamp(input.at);
   if (atError) return reject("invalid_goal_family_timestamp", atError, "at");
 
-  const pending = input.family.pendingDispatch;
+  const pending = getPendingDispatch(input.family, input.dispatchId);
   if (!pending) {
     return reject(
       "goal_family_dispatch_missing",
-      `Goal family '${input.family.familyId}' has no pending dispatch to complete.`,
-      "family.pendingDispatch",
-    );
-  }
-  if (pending.dispatchId !== input.dispatchId) {
-    return reject(
-      "goal_family_dispatch_id_mismatch",
-      `Pending family dispatch is '${pending.dispatchId}', not '${input.dispatchId}'.`,
-      "dispatchId",
+      `Goal family '${input.family.familyId}' has no pending dispatch '${input.dispatchId}' to complete.`,
+      "family.pendingDispatches",
     );
   }
 
@@ -699,8 +696,8 @@ function completeFamilyActionWithStatus(input: {
 }
 
 /**
- * Record successful completion of the pending family dispatch.
- * Clears pending dispatch so the next sequential selection is allowed.
+ * Record successful completion of one pending family dispatch by dispatchId.
+ * Clears only that pending. Unrelated pendings remain.
  */
 export function completeFamilyAction(input: {
   family: GoalFamilyRuntime;
@@ -715,8 +712,8 @@ export function completeFamilyAction(input: {
 }
 
 /**
- * Record failure of the pending family dispatch.
- * Clears pending dispatch so the next sequential selection is allowed.
+ * Record failure of one pending family dispatch by dispatchId.
+ * Clears only that pending. Unrelated pendings remain.
  */
 export function failFamilyAction(input: {
   family: GoalFamilyRuntime;
@@ -731,8 +728,8 @@ export function failFamilyAction(input: {
 }
 
 /**
- * Record interruption of the pending family dispatch.
- * Clears pending dispatch so the next sequential selection is allowed.
+ * Record interruption of one pending family dispatch by dispatchId.
+ * Clears only that pending. Unrelated pendings remain.
  * Interrupt is allowed while status is selected (abort before dispatch) or dispatched.
  */
 export function interruptFamilyAction(input: {
@@ -760,12 +757,220 @@ export type FamilyConcurrentSchedulerDecision =
     mismatchedGoalIds: string[];
   };
 
+export type FamilyConcurrentCommitResult =
+  | {
+    ok: true;
+    family: GoalFamilyRuntime;
+    events: GoalFamilyEvent[];
+    decision: FamilyConcurrentSchedulerDecision;
+    /** Dispatch IDs committed in selection order. Empty when idle. */
+    committedDispatchIds: string[];
+  }
+  | { ok: false; diagnostics: Diagnostic[] };
+
+/**
+ * Commit a concurrent family batch as multi-pending selected dispatches.
+ *
+ * Runs selectFamilyConcurrentActions, then applies one action-selected event
+ * per selected candidate using the supplied dispatchIds (same order and length).
+ * Existing pendings remain occupancy. Capacity is enforced by concurrent selection.
+ * Timestamps and identifiers are pure inputs. Does not mutate inputs.
+ */
+export function commitFamilyConcurrentBatch(input: {
+  family: GoalFamilyRuntime;
+  memberStates: Readonly<Record<string, HypagraphState>>;
+  at: string;
+  /** One non-empty dispatch ID per selected candidate, in selection order. */
+  dispatchIds: string[];
+  candidateSource?: "preferred" | "runnable";
+  attributesByAttemptId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+  attributesByGoalId?: Readonly<Record<string, FamilyConcurrentCandidateAttributes>>;
+  concurrencyLimits?: unknown;
+  groupRegistry?: unknown;
+  concurrencyState?: FamilyConcurrentBatchInput["concurrencyState"];
+  groupState?: FamilyConcurrentBatchInput["groupState"];
+  leaseSet?: FamilyConcurrentBatchInput["leaseSet"];
+  fairnessOrdinal?: number;
+  maxBatchSize?: number;
+  treatPendingAsOccupancy?: boolean;
+  eventIdPrefix?: string;
+  correlationId?: string;
+  causationId?: string;
+}): FamilyConcurrentCommitResult {
+  const schemaError = assertFamilySchema(input.family);
+  if (schemaError) {
+    return { ok: false, diagnostics: schemaError };
+  }
+
+  const atError = requireTimestamp(input.at);
+  if (atError) {
+    return rejectCommit("invalid_goal_family_timestamp", atError, "at") as FamilyConcurrentCommitResult;
+  }
+
+  if (!Array.isArray(input.dispatchIds)) {
+    return rejectCommit(
+      "invalid_goal_family_dispatch_id",
+      "dispatchIds must be an array of non-empty strings.",
+      "dispatchIds",
+    ) as FamilyConcurrentCommitResult;
+  }
+
+  const seenDispatchIds = new Set<string>();
+  for (let index = 0; index < input.dispatchIds.length; index += 1) {
+    const dispatchId = input.dispatchIds[index];
+    const idError = requireNonEmpty(dispatchId ?? "", "dispatch ID");
+    if (idError) {
+      return rejectCommit(
+        "invalid_goal_family_dispatch_id",
+        idError,
+        `dispatchIds[${index}]`,
+      ) as FamilyConcurrentCommitResult;
+    }
+    if (seenDispatchIds.has(dispatchId!)) {
+      return rejectCommit(
+        "goal_family_dispatch_id_duplicate",
+        `dispatchIds contains duplicate dispatch ID '${dispatchId}'.`,
+        `dispatchIds[${index}]`,
+      ) as FamilyConcurrentCommitResult;
+    }
+    seenDispatchIds.add(dispatchId!);
+    if (input.family.pendingDispatches[dispatchId!]) {
+      return rejectCommit(
+        "goal_family_dispatch_id_duplicate",
+        `Goal family '${input.family.familyId}' already has pending dispatch '${dispatchId}'.`,
+        `dispatchIds[${index}]`,
+      ) as FamilyConcurrentCommitResult;
+    }
+    if (input.family.lastDispatchOutcome?.dispatchId === dispatchId) {
+      return rejectCommit(
+        "goal_family_dispatch_id_reused",
+        `Goal family '${input.family.familyId}' already used dispatch ID '${dispatchId}' `
+        + "as the last terminal dispatch outcome.",
+        `dispatchIds[${index}]`,
+      ) as FamilyConcurrentCommitResult;
+    }
+  }
+
+  const concurrentInput: Parameters<typeof selectFamilyConcurrentActions>[0] = {
+    family: input.family,
+    memberStates: input.memberStates,
+  };
+  if (input.candidateSource !== undefined) concurrentInput.candidateSource = input.candidateSource;
+  if (input.attributesByAttemptId !== undefined) {
+    concurrentInput.attributesByAttemptId = input.attributesByAttemptId;
+  }
+  if (input.attributesByGoalId !== undefined) {
+    concurrentInput.attributesByGoalId = input.attributesByGoalId;
+  }
+  if (input.concurrencyLimits !== undefined) {
+    concurrentInput.concurrencyLimits = input.concurrencyLimits;
+  }
+  if (input.groupRegistry !== undefined) concurrentInput.groupRegistry = input.groupRegistry;
+  if (input.concurrencyState !== undefined) {
+    concurrentInput.concurrencyState = input.concurrencyState;
+  }
+  if (input.groupState !== undefined) concurrentInput.groupState = input.groupState;
+  if (input.leaseSet !== undefined) concurrentInput.leaseSet = input.leaseSet;
+  if (input.fairnessOrdinal !== undefined) concurrentInput.fairnessOrdinal = input.fairnessOrdinal;
+  if (input.maxBatchSize !== undefined) concurrentInput.maxBatchSize = input.maxBatchSize;
+  if (input.treatPendingAsOccupancy !== undefined) {
+    concurrentInput.treatPendingAsOccupancy = input.treatPendingAsOccupancy;
+  }
+  const decision = selectFamilyConcurrentActions(concurrentInput);
+
+  if (decision.kind === "incomplete-input") {
+    return rejectCommit(
+      "goal_family_member_state_missing",
+      decision.reason,
+      "memberStates",
+    ) as FamilyConcurrentCommitResult;
+  }
+  if (decision.kind === "rejected") {
+    return { ok: false, diagnostics: decision.diagnostics };
+  }
+  if (decision.kind === "idle") {
+    return {
+      ok: true,
+      family: structuredClone(input.family),
+      events: [],
+      decision,
+      committedDispatchIds: [],
+    };
+  }
+
+  // decision.kind === "select-batch"
+  if (input.dispatchIds.length !== decision.candidates.length) {
+    return rejectCommit(
+      "goal_family_concurrent_dispatch_id_count",
+      `Expected ${decision.candidates.length} dispatch ID(s) for the concurrent batch, `
+      + `but received ${input.dispatchIds.length}.`,
+      "dispatchIds",
+    ) as FamilyConcurrentCommitResult;
+  }
+
+  let family = input.family;
+  const events: GoalFamilyEvent[] = [];
+  const committedDispatchIds: string[] = [];
+  const eventIdPrefix = input.eventIdPrefix ?? "family-action-selected";
+
+  for (let index = 0; index < decision.candidates.length; index += 1) {
+    const candidate = decision.candidates[index]!;
+    const dispatchId = input.dispatchIds[index]!;
+    // Exclusive goal occupancy is also enforced in applyActionSelectedEvent.
+    if (findPendingDispatchForGoal(family, candidate.goalId)) {
+      return rejectCommit(
+        "goal_family_dispatch_goal_pending",
+        `Goal family '${family.familyId}' already has a pending dispatch for member `
+        + `'${candidate.goalId}'.`,
+        `dispatchIds[${index}]`,
+      ) as FamilyConcurrentCommitResult;
+    }
+
+    const sequence = family.schedulerOrdinal + 1;
+    const correlationId = input.correlationId
+      ?? `family-select-batch:${family.familyId}:${sequence}:${dispatchId}`;
+    const causationId = input.causationId ?? correlationId;
+    const eventId = `${eventIdPrefix}:${family.familyId}:${sequence}:${dispatchId}`;
+    const selection = toSelectedAction(
+      candidate as FamilyRunnableCandidate,
+      `${decision.reason} (batch index ${index}).`,
+    );
+
+    const event: GoalFamilyEvent = {
+      eventId,
+      familyId: family.familyId,
+      sequence,
+      type: "hypagraph.family.action-selected",
+      version: GOAL_FAMILY_EVENT_VERSION,
+      timestamp: input.at,
+      causationId,
+      correlationId,
+      data: {
+        dispatchId,
+        selection,
+      },
+    };
+
+    family = applyFamilyEvent(family, event);
+    events.push(event);
+    committedDispatchIds.push(dispatchId);
+  }
+
+  return {
+    ok: true,
+    family,
+    events,
+    decision,
+    committedDispatchIds,
+  };
+}
+
 /**
  * Pure concurrent family scheduler selection for independent loops and child workflows.
  *
  * Unlike sequential selectFamilySchedulerAction, this helper does not block when
- * pendingDispatch is set. The pending dispatch occupies one concurrency slot and
- * excludes that goal from re-selection. Other compatible members remain selectable
+ * pendingDispatches is non-empty. Existing pendings occupy capacity and exclude
+ * those goals from re-selection. Other compatible members remain selectable
  * when global limits, groups, and leases permit.
  *
  * Selection composes:
@@ -774,9 +979,9 @@ export type FamilyConcurrentSchedulerDecision =
  * - concurrency groups and fair batch selection;
  * - optional workspace lease compatibility.
  *
- * This helper does not commit multi-pending family state. Multi-pending persistence
- * is deferred. Sequential commitFamilySelection remains the event-backed single
- * selection path. Does not read the clock and does not mutate inputs.
+ * Commit multi-pending state with commitFamilyConcurrentBatch.
+ * Sequential commitFamilySelection remains the single-selection path.
+ * Does not read the clock and does not mutate inputs.
  */
 export function selectFamilyConcurrentActions(input: {
   family: GoalFamilyRuntime;
@@ -861,7 +1066,7 @@ export function selectFamilyConcurrentActions(input: {
 }
 
 /**
- * True when a sequential pending dispatch is present and concurrent selection
+ * True when at least one pending dispatch is present and concurrent selection
  * can still choose at least one other compatible action under pending occupancy.
  * Returns false when the family has no pending dispatch.
  * Forces treatPendingAsOccupancy for this predicate. Pure. Does not mutate inputs.
@@ -874,12 +1079,12 @@ export function familyConcurrentSelectionAllowsOverlapWithPending(
     "family" | "memberStates" | "treatPendingAsOccupancy"
   >,
 ): boolean {
-  // Parse pendingDispatch with own data properties only. Do not read it normally.
+  // Parse pendingDispatches with own data properties only. Do not read it normally.
   const pendingParse = parseFamilyPendingDispatchOwnData(
     family as object,
-    "family.pendingDispatch",
+    "family.pendingDispatches",
   );
-  if (!pendingParse.ok || pendingParse.value === undefined) {
+  if (!pendingParse.ok || pendingParse.value.length === 0) {
     return false;
   }
   const decision = selectFamilyConcurrentActions({
@@ -954,20 +1159,20 @@ export function enumerateFamilyConcurrentCandidates(
   }
 
   const treatPending = options?.treatPendingAsOccupancy !== false;
-  let cleanPending: FamilyPendingDispatch | undefined;
+  let cleanPendings: FamilyPendingDispatch[] = [];
   if (treatPending) {
     const pendingParse = parseFamilyPendingDispatchOwnData(
       family as object,
-      "family.pendingDispatch",
+      "family.pendingDispatches",
     );
     if (!pendingParse.ok) {
       return { ok: false, diagnostics: pendingParse.diagnostics };
     }
-    cleanPending = pendingParse.value;
+    cleanPendings = pendingParse.value;
   }
   const filtered = excludePendingConcurrent(
     lifted.candidates,
-    cleanPending,
+    cleanPendings,
   );
 
   return {

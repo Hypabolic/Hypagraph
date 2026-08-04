@@ -691,7 +691,7 @@ describe("M7-S5 child return and parent failure policy", () => {
     if (result.ok) throw new Error("Expected unsupported schema rejection.");
     expect(result.diagnostics[0]?.code).toBe("unsupported_goal_family_schema");
     expect(result.diagnostics[0]?.message).toMatch(
-      /Unsupported goal-family schema version '99'.*Expected schema version 2/,
+      /Unsupported goal-family schema version '99'.*Expected schema version 3/,
     );
   });
 

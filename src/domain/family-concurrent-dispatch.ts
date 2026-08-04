@@ -11,13 +11,12 @@
  * - concurrency groups and fair selection (m8-s8);
  * - optional workspace lease compatibility (m8-s1).
  *
- * An existing sequential pendingDispatch counts as occupancy. It does not block
- * concurrent selection of other compatible members. Child creation does not
- * clear or freeze independent loop candidates on other members.
+ * Existing pendingDispatches count as occupancy. They do not block concurrent
+ * selection of other compatible members. Child creation does not clear or freeze
+ * independent loop candidates on other members.
  *
- * Persistence of multi-pending family dispatch is deferred. This module selects
- * a batch. Commit of more than one concurrent selection still uses sequential
- * single-pending APIs until a later slice adds multi-pending family state.
+ * Multi-pending family state lives on GoalFamilyRuntime.pendingDispatches (schema 3).
+ * Commit concurrent batches with commitFamilyConcurrentBatch in family-scheduler.
  *
  * Domain helpers are pure: no clock, random, files, network, or input mutation.
  * Untrusted property reads use own data-property descriptors only.
@@ -221,8 +220,8 @@ export interface FamilyConcurrentBatchInput {
    */
   maxBatchSize?: number;
   /**
-   * When true (default), family.pendingDispatch occupies capacity and its
-   * selection identity is excluded from re-selection.
+   * When true (default), family.pendingDispatches occupy capacity and their
+   * selection identities are excluded from re-selection.
    */
   treatPendingAsOccupancy?: boolean;
 }
@@ -1944,27 +1943,39 @@ function pendingOccupiesCandidate(
 }
 
 /**
- * Filter concurrent candidates against sequential pending occupancy.
+ * Filter concurrent candidates against multi-pending occupancy.
+ * Each pending occupies its goal and selection identity.
  * Does not mutate inputs.
  */
 export function excludePendingFamilyConcurrentCandidates(
   candidates: readonly FamilyConcurrentCandidate[],
-  pending: FamilyPendingDispatch | undefined,
+  pendings: readonly FamilyPendingDispatch[] | FamilyPendingDispatch | undefined,
 ): {
   candidates: FamilyConcurrentCandidate[];
+  pendingAttemptIds: string[];
+  /** First pending attempt id for backward-compatible call sites. */
   pendingAttemptId?: string;
 } {
-  if (!pending) {
+  const list = pendings === undefined
+    ? []
+    : Array.isArray(pendings)
+      ? pendings
+      : [pendings];
+  if (list.length === 0) {
     return {
       candidates: candidates.map(copyConcurrentCandidate),
+      pendingAttemptIds: [],
     };
   }
-  const pendingAttemptId = buildFamilyConcurrentAttemptIdFromSelection(pending.selection);
+  const pendingAttemptIds = list.map((pending) =>
+    buildFamilyConcurrentAttemptIdFromSelection(pending.selection)
+  );
   return {
     candidates: candidates
-      .filter((candidate) => !pendingOccupiesCandidate(pending, candidate))
+      .filter((candidate) => !list.some((pending) => pendingOccupiesCandidate(pending, candidate)))
       .map(copyConcurrentCandidate),
-    pendingAttemptId,
+    pendingAttemptIds,
+    ...(pendingAttemptIds[0] !== undefined ? { pendingAttemptId: pendingAttemptIds[0] } : {}),
   };
 }
 
@@ -2291,34 +2302,15 @@ function parseFamilySelectedActionOwnData(
 }
 
 /**
- * Parse family.pendingDispatch with own data-property reads only.
- * Absent pendingDispatch yields undefined. Invalid structure returns diagnostics.
+ * Parse one pending dispatch record with own data-property reads only.
  */
-export function parseFamilyPendingDispatchOwnData(
+function parseOneFamilyPendingDispatchRecord(
+  record: object,
   familyObject: object,
-  location = "family.pendingDispatch",
+  location: string,
 ):
-  | { ok: true; value: FamilyPendingDispatch | undefined }
+  | { ok: true; value: FamilyPendingDispatch }
   | { ok: false; diagnostics: Diagnostic[] } {
-  const pendingRead = readOwnDataProperty(familyObject, "pendingDispatch", location);
-  if (!pendingRead.ok) {
-    return { ok: false, diagnostics: [pendingRead.diagnostic] };
-  }
-  if (!pendingRead.present || pendingRead.value === undefined) {
-    return { ok: true, value: undefined };
-  }
-  if (!isStrictPlainObject(pendingRead.value)) {
-    return {
-      ok: false,
-      diagnostics: [reject(
-        "family_concurrent_pending_not_plain_object",
-        "family.pendingDispatch must be a plain object when present.",
-        location,
-      )],
-    };
-  }
-
-  const record = pendingRead.value as object;
   const diagnostics: Diagnostic[] = [];
 
   const dispatchIdRead = readOwnDataProperty(record, "dispatchId", `${location}.dispatchId`);
@@ -2511,7 +2503,7 @@ export function parseFamilyPendingDispatchOwnData(
       ok: false,
       diagnostics: [reject(
         "family_concurrent_pending_invalid_family_identity",
-        "family.familyId must be a non-empty string when pendingDispatch is present.",
+        "family.familyId must be a non-empty string when pendingDispatches is present.",
         "family.familyId",
       )],
     };
@@ -2544,7 +2536,7 @@ export function parseFamilyPendingDispatchOwnData(
       ok: false,
       diagnostics: [reject(
         "family_concurrent_pending_invalid_family_identity",
-        "family.schedulerOrdinal must be a non-negative safe integer when pendingDispatch is present.",
+        "family.schedulerOrdinal must be a non-negative safe integer when pendingDispatches is present.",
         "family.schedulerOrdinal",
       )],
     };
@@ -2571,7 +2563,7 @@ export function parseFamilyPendingDispatchOwnData(
       ok: false,
       diagnostics: [reject(
         "family_concurrent_pending_invalid_family_identity",
-        "family.members must be a plain object when pendingDispatch is present.",
+        "family.members must be a plain object when pendingDispatches is present.",
         "family.members",
       )],
     };
@@ -2641,29 +2633,115 @@ export function parseFamilyPendingDispatchOwnData(
 }
 
 /**
- * Seed virtual occupancy from sequential pending dispatch.
+ * Parse family.pendingDispatches with own data-property reads only.
+ * Schema version 3 requires pendingDispatches as an own plain-object property.
+ * Empty object is valid. Absent or undefined is rejected.
+ */
+export function parseFamilyPendingDispatchOwnData(
+  familyObject: object,
+  location = "family.pendingDispatches",
+):
+  | { ok: true; value: FamilyPendingDispatch[] }
+  | { ok: false; diagnostics: Diagnostic[] } {
+  const mapRead = readOwnDataProperty(familyObject, "pendingDispatches", location);
+  if (!mapRead.ok) {
+    return { ok: false, diagnostics: [mapRead.diagnostic] };
+  }
+  if (!mapRead.present || mapRead.value === undefined) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "family_concurrent_pending_dispatches_required",
+        "family.pendingDispatches must be present as a plain object for schema version 3.",
+        location,
+      )],
+    };
+  }
+  if (!isStrictPlainObject(mapRead.value)) {
+    return {
+      ok: false,
+      diagnostics: [reject(
+        "family_concurrent_pending_not_plain_object",
+        "family.pendingDispatches must be a plain object.",
+        location,
+      )],
+    };
+  }
+
+  const mapObject = mapRead.value as object;
+  const keysResult = readOwnEnumerableKeys(mapObject, location);
+  if (!keysResult.ok) {
+    return { ok: false, diagnostics: [keysResult.diagnostic] };
+  }
+
+  const pendings: FamilyPendingDispatch[] = [];
+  const occupiedGoals = new Set<string>();
+  const sortedKeys = [...keysResult.keys].sort(compareIdentity);
+  for (const key of sortedKeys) {
+    const entryLocation = `${location}[${JSON.stringify(key)}]`;
+    const entryRead = readOwnDataProperty(mapObject, key, entryLocation);
+    if (!entryRead.ok) {
+      return { ok: false, diagnostics: [entryRead.diagnostic] };
+    }
+    if (!entryRead.present || !isStrictPlainObject(entryRead.value)) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "family_concurrent_pending_not_plain_object",
+          `family.pendingDispatches entry '${key}' must be a plain object.`,
+          entryLocation,
+        )],
+      };
+    }
+    const parsed = parseOneFamilyPendingDispatchRecord(
+      entryRead.value as object,
+      familyObject,
+      entryLocation,
+    );
+    if (!parsed.ok) {
+      return parsed;
+    }
+    if (parsed.value.dispatchId !== key) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "family_concurrent_pending_invalid_field",
+          `Pending dispatch map key '${key}' must equal dispatchId '${parsed.value.dispatchId}'.`,
+          entryLocation,
+        )],
+      };
+    }
+    if (occupiedGoals.has(parsed.value.selection.goalId)) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "family_concurrent_pending_goal_duplicate",
+          `More than one pending dispatch occupies member '${parsed.value.selection.goalId}'.`,
+          entryLocation,
+        )],
+      };
+    }
+    occupiedGoals.add(parsed.value.selection.goalId);
+    pendings.push(parsed.value);
+  }
+  return { ok: true, value: pendings };
+}
+
+/**
+ * Seed virtual occupancy from one pending dispatch.
  * Includes executor, group, and optional lease attributes for the pending work.
  * When occupancy already contains the pending attempt id, executor kind and group
  * membership must match exactly. Content mismatch is a hard diagnostic.
  */
-function seedOccupancyFromPending(
+function seedOccupancyFromOnePending(
   concurrencyState: ConcurrencyState,
   groupState: ConcurrencyGroupState,
   leaseSet: WorkspaceLeaseSet,
-  pending: FamilyPendingDispatch | undefined,
-  pendingAttemptId: string | undefined,
+  pending: FamilyPendingDispatch,
+  pendingAttemptId: string,
   attributes: FamilyConcurrentCandidateAttributes | undefined,
+  occupiedAttemptIds: string[],
 ): SeedOccupancyResult {
-  if (!pending || !pendingAttemptId) {
-    return {
-      ok: true,
-      concurrencyState,
-      groupState,
-      leaseSet,
-      occupiedAttemptIds: [],
-    };
-  }
-
   const executorKind = attributes?.executorKind ?? DEFAULT_FAMILY_CONCURRENT_EXECUTOR_KIND;
   const groupIds = attributes?.groupIds !== undefined
     ? [...attributes.groupIds].sort(compareIdentity)
@@ -2803,7 +2881,56 @@ function seedOccupancyFromPending(
     concurrencyState: nextConcurrency,
     groupState: nextGroup,
     leaseSet: nextLeases,
-    occupiedAttemptIds: [pendingAttemptId],
+    occupiedAttemptIds: [...occupiedAttemptIds, pendingAttemptId],
+  };
+}
+
+/**
+ * Seed virtual occupancy from all multi-pending dispatches.
+ */
+function seedOccupancyFromPendings(
+  concurrencyState: ConcurrencyState,
+  groupState: ConcurrencyGroupState,
+  leaseSet: WorkspaceLeaseSet,
+  pendings: readonly FamilyPendingDispatch[],
+  resolveAttributes: (
+    pending: FamilyPendingDispatch,
+    pendingAttemptId: string,
+  ) => FamilyConcurrentCandidateAttributes | undefined,
+): SeedOccupancyResult {
+  let nextConcurrency = concurrencyState;
+  let nextGroup = groupState;
+  let nextLeases = leaseSet;
+  const occupiedAttemptIds: string[] = [];
+
+  for (const pending of pendings) {
+    const pendingAttemptId = buildFamilyConcurrentAttemptIdFromSelection(pending.selection);
+    const attributes = resolveAttributes(pending, pendingAttemptId);
+    const seeded = seedOccupancyFromOnePending(
+      nextConcurrency,
+      nextGroup,
+      nextLeases,
+      pending,
+      pendingAttemptId,
+      attributes,
+      occupiedAttemptIds,
+    );
+    if (!seeded.ok) {
+      return seeded;
+    }
+    nextConcurrency = seeded.concurrencyState;
+    nextGroup = seeded.groupState;
+    nextLeases = seeded.leaseSet;
+    occupiedAttemptIds.length = 0;
+    occupiedAttemptIds.push(...seeded.occupiedAttemptIds);
+  }
+
+  return {
+    ok: true,
+    concurrencyState: nextConcurrency,
+    groupState: nextGroup,
+    leaseSet: nextLeases,
+    occupiedAttemptIds,
   };
 }
 
@@ -2837,9 +2964,9 @@ function toFairnessCandidate(candidate: FamilyConcurrentCandidate): FairnessCand
  * 1. Reject unsupported family schema versions with diagnostics.
  * 2. Parse and lift supplied candidates with strict plain-object rules.
  * 3. Validate supplied occupancy states before any direct field reads.
- * 4. Exclude sequential pending identities when treatPendingAsOccupancy is true.
- * 5. Seed occupancy from concurrency, group, and lease state, and from sequential
- *    pendingDispatch (including a pending lease attribute when supplied).
+ * 4. Exclude pendingDispatches identities when treatPendingAsOccupancy is true.
+ * 5. Seed occupancy from concurrency, group, and lease state, and from all
+ *    pendingDispatches (including pending lease attributes when supplied).
  * 6. Iteratively select with fairness, limits, groups, and leases until the batch
  *    is full or no admissible candidate remains. Soft exclusions remove a candidate
  *    and continue. Hard input errors reject the selection.
@@ -2847,7 +2974,7 @@ function toFairnessCandidate(candidate: FamilyConcurrentCandidate): FairnessCand
  * 8. Proposed leases must match the candidate identity before acquisition.
  *
  * Does not mutate inputs. Does not commit family events.
- * Multi-pending family persistence remains deferred.
+ * Commit multi-pending state with commitFamilyConcurrentBatch.
  */
 export function selectFamilyConcurrentBatch(
   input: unknown,
@@ -2895,16 +3022,16 @@ export function selectFamilyConcurrentBatch(
 
   const pendingParse = parseFamilyPendingDispatchOwnData(
     familyObject,
-    "input.family.pendingDispatch",
+    "input.family.pendingDispatches",
   );
   if (!pendingParse.ok) {
     return {
       kind: "rejected",
-      reason: "family.pendingDispatch is invalid or unreadable.",
+      reason: "family.pendingDispatches is invalid or unreadable.",
       diagnostics: pendingParse.diagnostics,
     };
   }
-  const cleanPendingDispatch = pendingParse.value;
+  const cleanPendingDispatches = pendingParse.value;
 
   const candidatesRead = readOwnDataProperty(input, "candidates", "input.candidates");
   if (!candidatesRead.ok) {
@@ -3083,7 +3210,7 @@ export function selectFamilyConcurrentBatch(
 
   const filtered = excludePendingFamilyConcurrentCandidates(
     lifted.candidates,
-    treatPending ? cleanPendingDispatch : undefined,
+    treatPending ? cleanPendingDispatches : [],
   );
 
   // Parse occupancy inputs into clean records. Do not structuredClone untrusted values.
@@ -3194,29 +3321,22 @@ export function selectFamilyConcurrentBatch(
     };
   }
 
-  const pendingAttributes = cleanPendingDispatch
-    ? resolveCleanAttributes(
-      filtered.pendingAttemptId ?? buildFamilyConcurrentAttemptIdFromSelection(
-        cleanPendingDispatch.selection,
-      ),
-      cleanPendingDispatch.selection.goalId,
-      attributesByAttemptIdResult.value,
-      attributesByGoalIdResult.value,
-    )
-    : undefined;
-
-  const seeded = seedOccupancyFromPending(
+  const seeded = seedOccupancyFromPendings(
     baseConcurrency,
     baseGroup,
     baseLeases,
-    treatPending ? cleanPendingDispatch : undefined,
-    treatPending ? filtered.pendingAttemptId : undefined,
-    pendingAttributes,
+    treatPending ? cleanPendingDispatches : [],
+    (pending, pendingAttemptId) => resolveCleanAttributes(
+      pendingAttemptId,
+      pending.selection.goalId,
+      attributesByAttemptIdResult.value,
+      attributesByGoalIdResult.value,
+    ),
   );
   if (!seeded.ok) {
     return {
       kind: "rejected",
-      reason: "Unable to seed concurrent occupancy from pending dispatch.",
+      reason: "Unable to seed concurrent occupancy from pending dispatches.",
       diagnostics: seeded.diagnostics,
     };
   }

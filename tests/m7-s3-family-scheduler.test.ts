@@ -284,7 +284,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     if (!first.ok) throw new Error("Expected first commit to succeed.");
     expect(first.events).toHaveLength(1);
     expect(first.events[0]?.type).toBe("hypagraph.family.action-selected");
-    expect(first.family.pendingDispatch).toMatchObject({
+    expect(first.family.pendingDispatches["dispatch-1"]).toMatchObject({
       dispatchId: "dispatch-1",
       status: "selected",
       selection: {
@@ -348,7 +348,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     expect(interrupted.ok).toBe(true);
     if (!interrupted.ok) throw new Error(JSON.stringify(interrupted.diagnostics));
-    expect(interrupted.family.pendingDispatch).toBeUndefined();
+    expect(Object.keys(interrupted.family.pendingDispatches)).toEqual([]);
     expect(interrupted.family.lastDispatchOutcome).toMatchObject({
       dispatchId: "dispatch-abort",
       status: "interrupted",
@@ -364,7 +364,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     expect(next.ok).toBe(true);
     if (!next.ok) throw new Error(JSON.stringify(next.diagnostics));
-    expect(next.family.pendingDispatch?.dispatchId).toBe("dispatch-next");
+    expect(Object.keys(next.family.pendingDispatches)[0]).toBe("dispatch-next");
   });
 
   it("allows the next selection after complete, fail, or interrupt of a dispatched action", () => {
@@ -409,7 +409,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
               reason: "The action was interrupted.",
             });
       if (!finished.ok) throw new Error(JSON.stringify(finished.diagnostics));
-      expect(finished.family.pendingDispatch).toBeUndefined();
+      expect(Object.keys(finished.family.pendingDispatches)).toEqual([]);
       expect(finished.family.lastDispatchOutcome?.status).toBe(terminal);
       return finished.family;
     };
@@ -426,7 +426,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     expect(next.ok).toBe(true);
     if (!next.ok) throw new Error(JSON.stringify(next.diagnostics));
-    expect(next.family.pendingDispatch?.dispatchId).toBe("dispatch-next");
+    expect(Object.keys(next.family.pendingDispatches)[0]).toBe("dispatch-next");
   });
 
   it("rejects reuse of a prior dispatchId", () => {
@@ -537,10 +537,11 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     // Selection-consistency branch: snapshot hash matches a tampered hash on the pending
     // selection, but selectGoalContinuation no longer names the stored action.
     const actionChanged: GoalFamilyRuntime = structuredClone(selected.family);
-    actionChanged.pendingDispatch = {
-      ...actionChanged.pendingDispatch!,
+    const pendingKey = Object.keys(actionChanged.pendingDispatches)[0]!;
+    actionChanged.pendingDispatches[pendingKey] = {
+      ...actionChanged.pendingDispatches[pendingKey]!,
       selection: {
-        ...actionChanged.pendingDispatch!.selection,
+        ...actionChanged.pendingDispatches[pendingKey]!.selection,
         action: { kind: "start-ready-task", nodeId: "missing-node" },
         nodeId: "missing-node",
         selectedSnapshotHash: rootState.snapshotHash,
@@ -619,11 +620,11 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
       ...dispatched.events,
     ];
     const rebuilt = replayFamilyEvents(events);
-    expect(rebuilt.pendingDispatch).toEqual(dispatched.family.pendingDispatch);
+    expect(rebuilt.pendingDispatches).toEqual(dispatched.family.pendingDispatches);
     expect(rebuilt.schedulerOrdinal).toBe(dispatched.family.schedulerOrdinal);
 
     const restored = restoreFamilyProjection(events, dispatched.family);
-    expect(restored.pendingDispatch).toMatchObject({
+    expect(restored.pendingDispatches["dispatch-restore"]).toMatchObject({
       dispatchId: "dispatch-restore",
       status: "dispatched",
       selection: {
@@ -633,7 +634,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
   });
 
-  it("accepts key-reordered pendingDispatch on restore via canonical comparison", () => {
+  it("accepts key-reordered pendingDispatches on restore via canonical comparison", () => {
     const created = createRootOnlyFamily("family-canonical");
     const rootState = createMemberWorkflow(singleTask("Root work"), "workflow-root", "goal-root");
     const selected = commitFamilySelection({
@@ -645,6 +646,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     if (!selected.ok) throw new Error(JSON.stringify(selected.diagnostics));
 
     const events = [...created.events, ...selected.events];
+    const source = selected.family.pendingDispatches["dispatch-canonical"]!;
     const reordered: GoalFamilyRuntime = {
       schemaVersion: selected.family.schemaVersion,
       updatedAt: selected.family.updatedAt,
@@ -656,34 +658,35 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
       bounds: selected.family.bounds,
       bindings: selected.family.bindings,
       familyBudget: selected.family.familyBudget,
-      pendingDispatch: {
-        status: selected.family.pendingDispatch!.status,
-        selectedAt: selected.family.pendingDispatch!.selectedAt,
-        schedulerOrdinal: selected.family.pendingDispatch!.schedulerOrdinal,
-        dispatchId: selected.family.pendingDispatch!.dispatchId,
-        selection: (() => {
-          const source = selected.family.pendingDispatch!.selection;
-          return {
-            reason: source.reason,
-            memberContinuationOrdinal: source.memberContinuationOrdinal,
-            selectedSnapshotHash: source.selectedSnapshotHash,
-            selectedSequence: source.selectedSequence,
-            action: source.action,
-            revision: source.revision,
-            workflowId: source.workflowId,
-            goalId: source.goalId,
-            familyId: source.familyId,
-            ...(source.nodeId !== undefined ? { nodeId: source.nodeId } : {}),
-            ...(source.loopId !== undefined ? { loopId: source.loopId } : {}),
-          };
-        })(),
+      pendingDispatches: {
+        "dispatch-canonical": {
+          status: source.status,
+          selectedAt: source.selectedAt,
+          schedulerOrdinal: source.schedulerOrdinal,
+          dispatchId: source.dispatchId,
+          selection: {
+            reason: source.selection.reason,
+            memberContinuationOrdinal: source.selection.memberContinuationOrdinal,
+            selectedSnapshotHash: source.selection.selectedSnapshotHash,
+            selectedSequence: source.selection.selectedSequence,
+            action: source.selection.action,
+            revision: source.selection.revision,
+            workflowId: source.selection.workflowId,
+            goalId: source.selection.goalId,
+            familyId: source.selection.familyId,
+            ...(source.selection.nodeId !== undefined ? { nodeId: source.selection.nodeId } : {}),
+            ...(source.selection.loopId !== undefined ? { loopId: source.selection.loopId } : {}),
+          },
+        },
       },
     };
 
-    expect(restoreFamilyProjection(events, reordered).pendingDispatch?.dispatchId).toBe("dispatch-canonical");
+    expect(
+      restoreFamilyProjection(events, reordered).pendingDispatches["dispatch-canonical"]?.dispatchId,
+    ).toBe("dispatch-canonical");
   });
 
-  it("rejects restore when pendingDispatch or timestamps are tampered", () => {
+  it("rejects restore when pendingDispatches or timestamps are tampered", () => {
     const created = createRootOnlyFamily("family-mismatch");
     const rootState = createMemberWorkflow(singleTask("Root work"), "workflow-root", "goal-root");
     const selected = commitFamilySelection({
@@ -696,8 +699,10 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     const events = [...created.events, ...selected.events];
 
     const tamperedPending = structuredClone(selected.family);
-    tamperedPending.pendingDispatch = {
-      ...tamperedPending.pendingDispatch!,
+    const original = tamperedPending.pendingDispatches["dispatch-mismatch"]!;
+    delete tamperedPending.pendingDispatches["dispatch-mismatch"];
+    tamperedPending.pendingDispatches["tampered-id"] = {
+      ...original,
       dispatchId: "tampered-id",
     };
     expect(() => restoreFamilyProjection(events, tamperedPending)).toThrow(GoalFamilyRestoreError);
@@ -712,12 +717,14 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     const { family } = createRootOnlyFamily("family-validate");
     const bad: GoalFamilyRuntime = {
       ...family,
-      pendingDispatch: {
-        dispatchId: "",
-        status: "dispatched",
-        selectedAt: at,
-        schedulerOrdinal: 999,
-        selection: validSelection(family, createMemberWorkflow(singleTask("x"), "workflow-root", "goal-root")),
+      pendingDispatches: {
+        "": {
+          dispatchId: "",
+          status: "dispatched",
+          selectedAt: at,
+          schedulerOrdinal: 999,
+          selection: validSelection(family, createMemberWorkflow(singleTask("x"), "workflow-root", "goal-root")),
+        },
       },
     };
     expect(() => rebuildFamilyMembershipFromSnapshot(bad)).toThrow(GoalFamilyRestoreError);
@@ -754,7 +761,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     if (!selected.ok) throw new Error(JSON.stringify(selected.diagnostics));
     expect(selected.family.schedulerOrdinal).toBe(3);
-    expect(selected.family.pendingDispatch?.schedulerOrdinal).toBe(3);
+    expect(selected.family.pendingDispatches[Object.keys(selected.family.pendingDispatches)[0]!]?.schedulerOrdinal).toBe(3);
 
     const events = [...root.events, ...child.events, ...selected.events];
     expect(replayFamilyEvents(events)).toEqual(selected.family);
@@ -786,7 +793,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     expect(committed.ok).toBe(true);
     if (!committed.ok) throw new Error(JSON.stringify(committed.diagnostics));
     expect(committed.events).toEqual([]);
-    expect(committed.family.pendingDispatch).toBeUndefined();
+    expect(Object.keys(committed.family.pendingDispatches)).toEqual([]);
     expect(committed.family.schedulerOrdinal).toBe(family.schedulerOrdinal);
   });
 
@@ -847,8 +854,8 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
       at: later,
     });
     expect(wrongId.ok).toBe(false);
-    if (wrongId.ok) throw new Error("Expected dispatch id mismatch.");
-    expect(wrongId.diagnostics[0]?.code).toBe("goal_family_dispatch_id_mismatch");
+    if (wrongId.ok) throw new Error("Expected missing dispatch for unknown id.");
+    expect(wrongId.diagnostics[0]?.code).toBe("goal_family_dispatch_missing");
 
     const beforeDispatch = completeFamilyAction({
       family: selected.family,
@@ -1011,8 +1018,8 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     expect(selected.ok).toBe(true);
     if (!selected.ok) throw new Error(JSON.stringify(selected.diagnostics));
-    expect(selected.family.pendingDispatch?.selection.action.kind).toBe("request-revision");
-    expect(selected.family.pendingDispatch?.selection.nodeId).toBeUndefined();
+    expect(selected.family.pendingDispatches[Object.keys(selected.family.pendingDispatches)[0]!]?.selection.action.kind).toBe("request-revision");
+    expect(selected.family.pendingDispatches[Object.keys(selected.family.pendingDispatches)[0]!]?.selection.nodeId).toBeUndefined();
 
     const dispatched = markFamilyActionDispatched({
       family: selected.family,
@@ -1022,7 +1029,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
     });
     expect(dispatched.ok).toBe(true);
     if (!dispatched.ok) throw new Error(JSON.stringify(dispatched.diagnostics));
-    expect(dispatched.family.pendingDispatch?.status).toBe("dispatched");
+    expect(dispatched.family.pendingDispatches[Object.keys(dispatched.family.pendingDispatches)[0]!]?.status).toBe("dispatched");
   });
 
   it("rejects selection identity nodeId that disagrees with the action", () => {
@@ -1113,6 +1120,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
         selection: validSelection(selected.family, rootState),
       },
     };
+    // Same member goal already has a pending. Multi-pending rejects a second goal occupancy.
     expect(() => applyFamilyEvent(selected.family, secondSelect)).toThrow(/pending dispatch/i);
 
     const terminalBeforeDispatch: GoalFamilyEvent = {
@@ -1139,7 +1147,7 @@ describe("M7-S3 family scheduler sequential dispatch", () => {
       correlationId: "c",
       data: { dispatchId: "not-the-pending" },
     };
-    expect(() => applyFamilyEvent(selected.family, wrongDispatch)).toThrow(/different dispatch|pending dispatch is/i);
+    expect(() => applyFamilyEvent(selected.family, wrongDispatch)).toThrow(/no pending dispatch/i);
   });
 
   it("validates family-store shape for scheduler events and rejects unknown types", () => {

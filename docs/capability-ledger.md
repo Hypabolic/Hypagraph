@@ -1,0 +1,83 @@
+# Hypagraph capability ledger
+
+- Status: active
+- Updated: 2026-08-04
+- Package baseline: 0.14.0
+- Writing standard: ASD-STE100 Simplified Technical English
+- Source of direction: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`
+
+## 1. Purpose
+
+This ledger states what Hypagraph can do and how far each capability reaches in the product.
+
+Use this ledger for README claims, release notes, and review. Do not treat a domain module as a shipped product path.
+
+## 2. Four states
+
+| State | Meaning |
+| --- | --- |
+| **Domain** | Domain module and automated tests exist. |
+| **Host** | Host or extension code calls the domain path. |
+| **Ordinary** | A normal user can reach the path without fixtures, demo-only code, or special engineer steps. |
+| **Live** | Accepted under a real Pi session dogfood or an equivalent live acceptance case recorded with a case ID. |
+
+Rules:
+
+1. A claim of “shipped” for a user feature requires at least **Ordinary**.
+2. A claim of release-accepted multi-agent behaviour requires **Live**.
+3. **Domain** alone is not a product claim.
+4. Update this file when a path moves state.
+
+## 3. Host versus domain boundary
+
+| Layer | Owns |
+| --- | --- |
+| Domain (`src/domain/`) | Commands, events, projection, readiness, gates, family helpers, validation |
+| Host (`src/extension.ts`, `src/pi/`, `src/ui/`, executors) | Pi session, UI, shell and process work, network, disk outside event append, worker spawn |
+
+Domain reduction may use convenience defaults (for example default workflow IDs). Absolute purity is not required. See `AGENTS.md` and the purity decision in `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`.
+
+The domain must not open files for effect, call the network, or start processes as the way it advances graph state. Those effects stay on the host and executors.
+
+## 4. Ledger rows
+
+States below reflect the adversarial review of 2026-08-04 and the in-tree product path on the demo branch. Adjust when evidence changes.
+
+| Capability | Domain | Host | Ordinary | Live | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Root Hypagoal create (`/hypagoal`, `hypagoal_start`) | Yes | Yes | Yes | Partial | Ordinary path is real. Full live multi-session dogfood remains a release bar. |
+| Post-create Run / Question / Cancel dock | Yes | Yes | Yes | Partial | Interactive TUI path exists. |
+| Single-root task + check + gate execution | Yes | Yes | Yes | Yes | Core durable path; strongest product surface. |
+| Deterministic checks (command, report, file, Git) | Yes | Yes | Yes | Yes | Host runners + durable lifecycle. |
+| Bounded loops and trusted evaluation | Yes | Yes | Yes | Partial | Kernel strong; protected production isolation still planned for some eval modes. |
+| Live graph bottom dock and full graph modal | Yes | Yes | Yes | Partial | Product UI on demo branch; demo tour uses it. |
+| Goal family projection and child create domain | Yes | Yes | Partial | No | Domain and host tools exist. Ordinary create-child needs Option A current-session parent. Live root→child→return dogfood not release-accepted. |
+| Sequential multi-member family dispatch | Yes | Yes | Partial | No | Product controller sequential path is wired. Ordinary UX still awkward (Option A, R4). |
+| Concurrent multi-pending family selection | Yes | Yes | Partial | No | Schema 3 multi-pending; product may commit multiple model pendings in a batch. Host marks all startable as dispatched, starts all startable before any settle, then settles each. Host starts at most one model per pass and interrupts extra model pendings. Host await is serial (shared session). Family follow-up settles on agent_end/abandon. Live Pi is Gate 1.3. |
+| Worktree leases / isolated checkout integration | Yes | Partial | No | No | Domain seams exist. Ordinary product wiring incomplete. |
+| Derived fan-out from collection facts | Yes | No | No | No | Domain + tests. Not ordinary product surface. |
+| Isolated model workers (`isolated-pi`) | Yes | Yes | Yes | Partial | Default for root model tasks when spawn works. |
+| ACP / CLI external executors | Yes | Yes | No | No | Adapters exist; engineer surface, not first-run product. |
+| Aggregate / quorum / synthesis nodes | No | No | No | No | Design and plans only. |
+| Named recipe library (beyond one implement-verify tool) | Partial | Partial | No | No | One minimal recipe tool. Library and launch-with-args incomplete. |
+| Gauntlet / blind multi-critic panel | Partial | No | No | No | Design docs only. |
+| In-Pi showcase demo tour | N/A | Yes | Yes | Partial | Deterministic fixtures only. Not multi-agent proof. |
+| Session restore and pause / resume | Yes | Yes | Yes | Partial | Kernel path strong; family live restore dogfood incomplete. |
+| Event history, explain, replay surfaces | Yes | Yes | Yes | Partial | Commands exist; live dogfood depth varies. |
+| Project store drafts and constructors | Yes | Yes | Partial | Partial | Task/check/require/loop constructors. Interaction, gate, code, effect free-form only. |
+
+## 5. Public claim policy
+
+| Allowed claim style | Example |
+| --- | --- |
+| Accurate | “Concurrent multi-pending family selection is on the host product path. Live multi-worker acceptance is not complete.” |
+| Accurate | “Kernel supports goal families. Ordinary multi-child concurrent desks are not live.” |
+| Forbidden | “Parallel nested graphs are shipped” when only domain concurrent selection exists. |
+| Forbidden | “Production-ready multi-agent product” without Ordinary + Live rows for width and synthesis. |
+
+## 6. Related documents
+
+- Next steps and purity decision: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`
+- Review synthesis: `docs/scratch/adversarial-review-2026-08-04/00-SYNTHESIS.md`
+- Host extraction plan: `docs/host-extraction-plan.md`
+- Session handoff: `docs/session-handoff.md`

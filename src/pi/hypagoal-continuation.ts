@@ -26,6 +26,11 @@ export interface PendingGoalContinuation extends GoalContinuationGeneration {
   committedSequence: number;
   committedSnapshotHash: string;
   prompt: string;
+  /**
+   * Family multi-pending dispatch id when this continuation was started from a
+   * family product dispatch. Settled on agent_end, abandon, cancel, or fail.
+   */
+  familyDispatchId?: string;
 }
 
 export interface GoalContinuationValidation {
@@ -100,6 +105,7 @@ export function createPendingGoalContinuation(
   committedState: HypagraphState,
   generations: GoalContinuationGeneration,
   operationId: string,
+  familyDispatchId?: string,
 ): PendingGoalContinuation {
   const canonical = committedState.goal?.pendingContinuation;
   if (!canonical || canonical.operationId !== operationId) throw new Error("The committed state does not contain the requested durable continuation.");
@@ -116,6 +122,7 @@ export function createPendingGoalContinuation(
     sessionGeneration: generations.sessionGeneration,
     branchGeneration: generations.branchGeneration,
     prompt: buildGoalContinuationPrompt(action, committedState, operationId),
+    ...(familyDispatchId !== undefined ? { familyDispatchId } : {}),
   };
 }
 

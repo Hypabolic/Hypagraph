@@ -117,7 +117,10 @@ export interface FamilyDispatchOutcomeView extends FamilyDispatchSelectionView {
 
 export interface FamilySchedulerStatusView {
   schedulerOrdinal: number;
+  /** First pending for compact surfaces (stable list order). */
   pending?: FamilyPendingDispatchView;
+  /** All in-flight family dispatches in stable order. */
+  pendings?: FamilyPendingDispatchView[];
   lastOutcome?: FamilyDispatchOutcomeView;
 }
 
@@ -464,13 +467,23 @@ export function projectFamilyGraphView(input: ProjectFamilyGraphViewInput): Fami
   const scheduler: FamilySchedulerStatusView = {
     schedulerOrdinal: family.schedulerOrdinal,
   };
-  if (family.pendingDispatch) {
-    const pending = family.pendingDispatch;
-    scheduler.pending = {
+  const pendingList = Object.values(family.pendingDispatches ?? {}).sort((left, right) => {
+    if (left.schedulerOrdinal !== right.schedulerOrdinal) {
+      return left.schedulerOrdinal - right.schedulerOrdinal;
+    }
+    if (left.dispatchId < right.dispatchId) return -1;
+    if (left.dispatchId > right.dispatchId) return 1;
+    return 0;
+  });
+  if (pendingList.length > 0) {
+    const pendingViews = pendingList.map((pending) => ({
       dispatchId: pending.dispatchId,
       status: pending.status,
       ...projectSelection(pending.selection, byGoal),
-    };
+    }));
+    scheduler.pendings = pendingViews;
+    const firstPending = pendingViews[0];
+    if (firstPending) scheduler.pending = firstPending;
   }
   if (family.lastDispatchOutcome) {
     const outcome = family.lastDispatchOutcome;
@@ -574,13 +587,23 @@ export function projectFamilyDispatchStatus(
   const scheduler: FamilySchedulerStatusView = {
     schedulerOrdinal: family.schedulerOrdinal,
   };
-  if (family.pendingDispatch) {
-    const pending = family.pendingDispatch;
-    scheduler.pending = {
+  const pendingList = Object.values(family.pendingDispatches ?? {}).sort((left, right) => {
+    if (left.schedulerOrdinal !== right.schedulerOrdinal) {
+      return left.schedulerOrdinal - right.schedulerOrdinal;
+    }
+    if (left.dispatchId < right.dispatchId) return -1;
+    if (left.dispatchId > right.dispatchId) return 1;
+    return 0;
+  });
+  if (pendingList.length > 0) {
+    const pendingViews = pendingList.map((pending) => ({
       dispatchId: pending.dispatchId,
       status: pending.status,
       ...projectSelection(pending.selection, byGoal),
-    };
+    }));
+    scheduler.pendings = pendingViews;
+    const firstPending = pendingViews[0];
+    if (firstPending) scheduler.pending = firstPending;
   }
   if (family.lastDispatchOutcome) {
     const outcome = family.lastDispatchOutcome;
