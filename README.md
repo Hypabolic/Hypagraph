@@ -349,7 +349,13 @@ Package version is **0.14.0**.
 
 Hypagraph is a strong execution-control **kernel** for coding agents. It is not a complete multi-agent team product yet. Use the four-state [capability ledger](docs/capability-ledger.md) (domain / host / ordinary / live) for honest claims. Do not read domain-only helpers as ordinary product features.
 
-The start-to-run **single-root** surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any multi-agent release claim. Concurrent multi-pending family selection is on the **host product path** (Gate 1.1–1.2). Ordinary reach remains **Partial**. The host starts at most one model worker per pass and awaits serially on the shared session. Live multi-worker acceptance is **Gate 1.3**. See [capability ledger](docs/capability-ledger.md) and [concurrency policy surface](docs/concurrency-policy-surface.md).
+The start-to-run **single-root** surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any multi-agent release claim.
+
+Concurrent multi-pending family selection is on the **host product path** (Gate 1.1–1.2). Ordinary reach remains **Partial**. The host starts at most one model worker per pass. The host awaits serially on the shared session. The host interrupts deferred model pendings in the same pass.
+
+Live multi-pending concurrent family acceptance under real Pi remains open (Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY`). Host model-slot limits apply. An automated host substitute exists. The ledger **Live** row is still No.
+
+See [capability ledger](docs/capability-ledger.md). See [concurrency policy surface](docs/concurrency-policy-surface.md). See [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md).
 
 Post-review direction: [next steps after adversarial review](docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md). Host modularization seams: [host extraction plan](docs/host-extraction-plan.md).
 
@@ -401,7 +407,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - broader construction tools for interaction, gate, code, and effect nodes;
 - remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
 - full revision-on-workers and richer worker progress events;
-- live multi-worker concurrent family acceptance (Gate 1.3; host path exists; Live ledger row remains open);
+- live multi-pending concurrent family acceptance under real Pi for Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` (host model-slot limits apply; host path and automated substitute exist; Live ledger row remains open until real Pi dogfood is recorded; see [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md));
 - aggregate / synthesis fan-in and named multi-agent recipes;
 - optional grandchild depth and family-budget visibility hardening;
 - live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute exists; live bar is not closed).

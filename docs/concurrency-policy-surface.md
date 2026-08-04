@@ -19,7 +19,7 @@ The product path must enforce:
 
 Domain helpers for limits and groups already exist. This surface wires those helpers into ordinary product selection, commit, settle, and status text.
 
-This document does not cover live multi-worker Pi acceptance. That work is Gate 1.3.
+This document does not cover live multi-pending concurrent family acceptance under real Pi. That work is Gate 1.3. Host model-slot limits apply on that path.
 
 ## 2. Global limit and per-executor limit
 
@@ -62,7 +62,7 @@ Residual gaps:
 
 - Host-only route overrides that never appear on the node definition or policy attributes are not derived.
 - Invalid `node.executorProfile` shapes are ignored by domain profile resolution (same as model routing).
-- Live multi-worker acceptance of mixed executor kinds remains Gate 1.3.
+- Live multi-pending concurrent family acceptance under real Pi remains Gate 1.3 (host model-slot limits apply; multi-worker start of more than one model per pass is not Gate 1.3 Live).
 
 ## 3. Exclusive and concurrent groups
 
@@ -176,9 +176,9 @@ Host controller entry: `src/extension.ts` uses Seam C helpers for batch commit, 
 
 ## 9. Non-goals
 
-This slice does not include:
+This Gate 1.2 surface document does not close:
 
-1. Gate 1.3 live multi-worker Pi acceptance;
+1. Gate 1.3 live multi-pending concurrent family acceptance under real Pi (case script and automated substitute: `docs/gate1-3-concurrent-family-live-acceptance.md`; host model-slot limits apply; ledger **Live** still open);
 2. Gate 2 synthesis or aggregate fan-in;
 3. persisted separate concurrency occupancy documents beyond family pendings;
 4. partial-failure modes other than `independent-settle`;
@@ -201,12 +201,14 @@ This slice does not include:
 
 - `tests/gate1-2-concurrency-policy-surface.test.ts`
 - `tests/gate1-1-multi-pending-family.test.ts`
+- `tests/gate1-3-concurrent-family-live-acceptance.test.ts` (Gate 1.3 automated substitute; not Live evidence)
 - `tests/m8-s7-global-and-per-executor-concurrency-limits.test.ts`
 - `tests/m8-s8-concurrency-groups-and-fairness.test.ts`
 
 ### 10.3 Related docs
 
 - `docs/session-handoff.md`
+- `docs/gate1-3-concurrent-family-live-acceptance.md`
 - `docs/capability-ledger.md`
 - `docs/goal-family-and-concurrent-execution-plan.md`
 - `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`
