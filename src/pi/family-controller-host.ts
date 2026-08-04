@@ -27,6 +27,7 @@ import type { GoalDispatchableContinuation } from "../domain/goal-continuation.j
 import type { HypagraphState } from "../domain/model.js";
 import type { PersistedGoalFamily } from "../persistence/family-store.js";
 import {
+  FAMILY_PRODUCT_PARTIAL_FAILURE_MODE,
   buildFamilyControllerMemberStates,
   commitFamilyProductConcurrentBatch,
   commitFamilyProductSelection,
@@ -35,6 +36,8 @@ import {
   type FamilyProductConcurrencyPolicy,
   type FamilyProductControllerDecision,
   type FamilyProductDispatchItem,
+  type FamilyProductPartialFailureMode,
+  type ResolvedFamilyProductConcurrencyPolicy,
 } from "./family-product-dispatch.js";
 
 export type FamilyPendingSettleOutcome = "completed" | "failed" | "interrupted";
@@ -79,6 +82,8 @@ export function selectFamilyControllerAction(input: {
  * Commit concurrent batch items into multi-pending family state.
  * Generates stable dispatch IDs when the caller does not supply them.
  * Fails when commit is idle, id counts mismatch, or goal identities do not match.
+ * Prefer resolvedConcurrencyPolicy from the selection decision so select and
+ * commit share one resolved policy object.
  */
 export function commitConcurrentFamilyBatchForHost(input: {
   family: GoalFamilyRuntime;
@@ -86,6 +91,12 @@ export function commitConcurrentFamilyBatchForHost(input: {
   items: FamilyProductDispatchItem[];
   at: string;
   maxBatchSize?: number;
+  concurrencyPolicy?: FamilyProductConcurrencyPolicy;
+  /**
+   * Resolved policy from selection. When present, commit uses this object and
+   * does not re-resolve raw concurrencyPolicy.
+   */
+  resolvedConcurrencyPolicy?: ResolvedFamilyProductConcurrencyPolicy;
   createDispatchId?: (index: number, item: FamilyProductDispatchItem) => string;
 }):
   | {
@@ -117,6 +128,8 @@ export function commitConcurrentFamilyBatchForHost(input: {
     at: string;
     dispatchIds: string[];
     maxBatchSize?: number;
+    concurrencyPolicy?: FamilyProductConcurrencyPolicy;
+    resolvedConcurrencyPolicy?: ResolvedFamilyProductConcurrencyPolicy;
   } = {
     family: input.family,
     memberStates: input.memberStates,
@@ -124,6 +137,12 @@ export function commitConcurrentFamilyBatchForHost(input: {
     dispatchIds,
   };
   if (input.maxBatchSize !== undefined) commitInput.maxBatchSize = input.maxBatchSize;
+  if (input.concurrencyPolicy !== undefined) {
+    commitInput.concurrencyPolicy = input.concurrencyPolicy;
+  }
+  if (input.resolvedConcurrencyPolicy !== undefined) {
+    commitInput.resolvedConcurrencyPolicy = input.resolvedConcurrencyPolicy;
+  }
   const committed = commitFamilyProductConcurrentBatch(commitInput);
   if (!committed.ok) {
     return { ok: false, diagnostics: committed.diagnostics };
@@ -234,6 +253,8 @@ export function markFamilyPendingDispatchedForHost(input: {
 /**
  * Settle one family pending by dispatchId.
  * Clears only that pending. Unrelated pendings remain.
+ * Product partial-failure mode is independent-settle: one of N may fail or
+ * interrupt without auto-failing sibling pendings.
  */
 export function settleFamilyPendingForHost(input: {
   family: GoalFamilyRuntime;
@@ -241,7 +262,26 @@ export function settleFamilyPendingForHost(input: {
   at: string;
   outcome: FamilyPendingSettleOutcome;
   reason?: string;
+  /**
+   * Partial-failure mode. Only independent-settle is supported.
+   * Default is independent-settle.
+   */
+  partialFailureMode?: FamilyProductPartialFailureMode;
 }): GoalFamilyResult {
+  const mode = input.partialFailureMode ?? FAMILY_PRODUCT_PARTIAL_FAILURE_MODE;
+  if (mode !== "independent-settle") {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "family_product_partial_failure_unsupported",
+        message:
+          "Product partialFailureMode must be 'independent-settle'. "
+          + "Other modes are not supported on the product path.",
+        location: "partialFailureMode",
+      }],
+    };
+  }
+
   if (input.outcome === "completed") {
     return completeFamilyAction({
       family: input.family,
@@ -275,7 +315,7 @@ export function prepareFamilyControllerPass(input: {
   concurrencyPolicy?: FamilyProductConcurrencyPolicy;
 }): {
   memberStates: Record<string, HypagraphState>;
-  policy: { concurrent: boolean; maxBatchSize: number };
+  policy: ResolvedFamilyProductConcurrencyPolicy;
   pendingCount: number;
 } {
   const memberStates = buildFamilyControllerMemberStates(input.familyRecord, input.liveState);
@@ -291,4 +331,6 @@ export type {
   FamilyProductConcurrencyPolicy,
   FamilyProductControllerDecision,
   FamilyProductDispatchItem,
+  FamilyProductPartialFailureMode,
+  ResolvedFamilyProductConcurrencyPolicy,
 };

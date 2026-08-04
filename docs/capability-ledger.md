@@ -53,7 +53,7 @@ States below reflect the adversarial review of 2026-08-04 and the in-tree produc
 | Live graph bottom dock and full graph modal | Yes | Yes | Yes | Partial | Product UI on demo branch; demo tour uses it. |
 | Goal family projection and child create domain | Yes | Yes | Partial | No | Domain and host tools exist. Ordinary create-child needs Option A current-session parent. Live root→child→return dogfood not release-accepted. |
 | Sequential multi-member family dispatch | Yes | Yes | Partial | No | Product controller sequential path is wired. Ordinary UX still awkward (Option A, R4). |
-| Concurrent multi-pending family selection | Yes | Yes | Partial | No | Schema 3 multi-pending; product may commit multiple model pendings in a batch. Host marks all startable as dispatched, starts all startable before any settle, then settles each. Host starts at most one model per pass and interrupts extra model pendings. Host await is serial (shared session). Family follow-up settles on agent_end/abandon. Live Pi is Gate 1.3. |
+| Concurrent multi-pending family selection | Yes | Yes | Partial | No | Schema 3 multi-pending; product may commit multiple model pendings in a batch. Gate 1.2 product path enforces default global concurrency (2), independent-settle partial failure, and multi-pending status honesty (see `docs/concurrency-policy-surface.md`). Per-executor limits and concurrency groups are enforced when the caller supplies them on product helpers; the ordinary extension path currently passes default policy only. Host marks all startable as dispatched, starts all startable before any settle, then settles each. Host starts at most one model per pass and interrupts extra model pendings. Host await is serial (shared session). Family follow-up settles on agent_end/abandon. Live Pi is Gate 1.3. |
 | Worktree leases / isolated checkout integration | Yes | Partial | No | No | Domain seams exist. Ordinary product wiring incomplete. |
 | Derived fan-out from collection facts | Yes | No | No | No | Domain + tests. Not ordinary product surface. |
 | Isolated model workers (`isolated-pi`) | Yes | Yes | Yes | Partial | Default for root model tasks when spawn works. |
@@ -81,3 +81,4 @@ States below reflect the adversarial review of 2026-08-04 and the in-tree produc
 - Review synthesis: `docs/scratch/adversarial-review-2026-08-04/00-SYNTHESIS.md`
 - Host extraction plan: `docs/host-extraction-plan.md`
 - Session handoff: `docs/session-handoff.md`
+- Concurrency policy surface (Gate 1.2): `docs/concurrency-policy-surface.md`

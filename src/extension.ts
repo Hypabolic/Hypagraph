@@ -97,7 +97,7 @@ import {
   buildFamilyControllerMemberStates,
   mergeLiveRootIntoFamily,
   replaceFamilyMemberWorkflow,
-  selectFamilyProductControllerAction,
+  type FamilyProductConcurrencyPolicy,
 } from "./pi/family-product-dispatch.js";
 import {
   commitConcurrentFamilyBatchForHost,
@@ -105,6 +105,7 @@ import {
   familySettleOutcomeFromHostDispatch,
   isDeterministicFamilyMemberDecision,
   markFamilyPendingDispatchedForHost,
+  selectFamilyControllerAction,
   settleFamilyPendingForHost,
 } from "./pi/family-controller-host.js";
 import {
@@ -249,7 +250,12 @@ import {
   renderWorkflow,
   workflowSummary,
 } from "./ui/format.js";
-import { appendFamilyStatusBlock, formatFamilyDispatchSurfaceLine } from "./ui/family-surface.js";
+import {
+  appendFamilyStatusBlock,
+  familyDispatchOccupancySummary,
+  formatFamilyDispatchSurfaceLine,
+  listFamilyPendingViews,
+} from "./ui/family-surface.js";
 import { renderHypagoalLifecycleMessage, renderHypagoalStatus } from "./ui/hypagoal-surface.js";
 import {
   waitingLifecycleNote,
@@ -2588,7 +2594,7 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
   const dispatchSelectedMemberAction = async (
     ctx: ExtensionContext,
     selection: Extract<
-      ReturnType<typeof selectFamilyProductControllerAction>,
+      ReturnType<typeof selectFamilyControllerAction>,
       { kind: "dispatch" }
     >,
     options?: { familyDispatchId?: string },
@@ -2932,9 +2938,13 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         }
       }
       if (!state) return;
-      const controller = selectFamilyProductControllerAction({
+      // Ordinary product path: one shared policy object for select and commit.
+      // Defaults only until ordinary config surface lands; Gate 1.2 enforces defaults.
+      const ordinaryFamilyConcurrencyPolicy: FamilyProductConcurrencyPolicy = {};
+      const controller = selectFamilyControllerAction({
         liveState: state,
         familyRecord,
+        concurrencyPolicy: ordinaryFamilyConcurrencyPolicy,
       });
 
       if (controller.kind === "family-idle") {
@@ -3021,6 +3031,9 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           items: controller.items,
           at,
           maxBatchSize: controller.maxBatchSize,
+          // Same raw object as selection; prefer resolved policy from the decision.
+          concurrencyPolicy: ordinaryFamilyConcurrencyPolicy,
+          resolvedConcurrencyPolicy: controller.concurrencyPolicy,
           createDispatchId: (index, item) =>
             `family-concurrent:${controller.family.familySnapshot.familyId}:${item.memberGoalId}:${index}:${randomUUID()}`,
         });
@@ -3128,6 +3141,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
               decision: item.decision,
               family: familyRecord,
               selectionReason: item.selectionReason,
+              concurrencyPolicy: controller.concurrencyPolicy,
             },
             { familyDispatchId: item.dispatchId },
           );
@@ -5721,12 +5735,22 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
             "Cancel: /hypagraph executor cancel",
             "Probe: /hypagraph executor probe [acp|cli]",
           ];
-          if (familyView?.scheduler.pending) {
-            lines.push(formatFamilyDispatchSurfaceLine("pending", familyView.scheduler.pending));
-          } else if (familyView?.scheduler.lastOutcome) {
-            lines.push(formatFamilyDispatchSurfaceLine("last", familyView.scheduler.lastOutcome));
-          } else if (familyView) {
-            lines.push(`Family: ${familyView.familyId}; dispatch idle`);
+          if (familyView) {
+            const familyPendings = listFamilyPendingViews(familyView.scheduler);
+            if (familyPendings.length > 1) {
+              lines.push(
+                `Family: ${familyView.familyId}; ${familyDispatchOccupancySummary(familyView.scheduler)}`,
+              );
+              for (const pending of familyPendings) {
+                lines.push(formatFamilyDispatchSurfaceLine("pending", pending));
+              }
+            } else if (familyPendings.length === 1) {
+              lines.push(formatFamilyDispatchSurfaceLine("pending", familyPendings[0]!));
+            } else if (familyView.scheduler.lastOutcome) {
+              lines.push(formatFamilyDispatchSurfaceLine("last", familyView.scheduler.lastOutcome));
+            } else {
+              lines.push(`Family: ${familyView.familyId}; dispatch idle`);
+            }
           }
           if (familyView?.executor) {
             lines.push(`Executor projection: ${familyView.executor.summary}`);

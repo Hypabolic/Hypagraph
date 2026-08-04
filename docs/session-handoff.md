@@ -19,9 +19,10 @@
 4. `docs/v0.14-release-notes.md` — what this release ships;
 5. `docs/m7-m9-roadmap-run-report.md` — slice map and branch history notes;
 6. `docs/goal-family-and-concurrent-execution-plan.md` — family and executor architecture;
-7. `docs/delegation-and-visualisation.md` — executor transports and UI;
-8. `docs/deterministic-orchestration-plan.md` — aggregate, synthesis, fan-out (partially still open as product recipes);
-9. `docs/gauntlet-built-in-hypagoal.md` — built-in recipe idea (not implemented).
+7. `docs/concurrency-policy-surface.md` — product concurrency limits, groups, and partial-failure (Gate 1.2);
+8. `docs/delegation-and-visualisation.md` — executor transports and UI;
+9. `docs/deterministic-orchestration-plan.md` — aggregate, synthesis, fan-out (partially still open as product recipes);
+10. `docs/gauntlet-built-in-hypagoal.md` — built-in recipe idea (not implemented).
 
 ## 2. Released state
 
@@ -104,7 +105,7 @@ npx vitest run tests/m9-*.test.ts
 Do not weaken these in later work:
 
 1. Canonical state changes only through the controller and reducers.
-2. The domain reducer stays pure.
+2. External effects (files, network, process start) belong to the host and executors. Absolute domain purity is not required. Prefer fixed timestamps and IDs when callers need stable replay. See the purity decision in `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`.
 3. Workflow state remains authoritative for goal completion.
 4. The model has no workflow-completion tool.
 5. One durable event sequence defines one workflow aggregate.
@@ -121,6 +122,14 @@ Do not weaken these in later work:
 16. All persisted state includes a schema version; reject unsupported versions clearly.
 
 House style: ASD-STE100. Product name: **Hypagraph** only.
+
+Capability honesty: use `docs/capability-ledger.md` for domain / host / ordinary / live claims.
+
+Host modularization: use `docs/host-extraction-plan.md` for `src/extension.ts` seams.
+
+Post-review next steps: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`.
+
+Concurrency policy surface (Gate 1.2): `docs/concurrency-policy-surface.md`.
 
 ## 5. Current target after v0.14
 

@@ -92,7 +92,9 @@ When the user chooses Run (or headless auto-continue applies), the graph-aware c
 
 Hypagraph uses one generic action-dispatch model. Every selected action records a selected event, a dispatched event, and one terminal event. A model-lane action stores one state-bound continuation request and sends one Pi follow-up. A deterministic-lane action needs no reasoning, so the controller runs it directly: a ready gate is one reducer command, and a ready check runs through the existing durable check lifecycle. The controller selects again after the deterministic action resolves.
 
-The current product surface (package version 0.14) allows one root workflow and one root goal in the active Pi session for the ordinary create path. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation. The workflow domain also represents goal families, isolated model executors, worktrees, and concurrent scheduling for deeper product paths.
+The current product surface (package version 0.14) allows one root workflow and one root goal in the active Pi session for the ordinary create path. Replacing that root requires explicit confirmation bound to the exact current workflow, goal, revision, sequence, snapshot hash, session generation, and branch generation.
+
+The domain also models goal families, isolated model executors, worktrees, and concurrent selection helpers. Those deeper paths are not all ordinary product paths. Read the [capability ledger](docs/capability-ledger.md) before you treat a kernel feature as a shipped multi-agent desk.
 
 The controller selects from all runnable root components in stable definition order. An event-backed scheduler ordinal rotates selection when multiple components remain runnable. The scheduler ordinal advances for every selected action in every lane, so round-robin fairness does not depend on model usage. A disconnected branch or independent loop does not lose eligibility because another component produced the latest event. Each queued follow-up is bound to the goal, workflow, revision, sequence, snapshot hash, session generation, branch generation, node, and loop where applicable. A stale follow-up cannot change canonical state.
 
@@ -343,9 +345,15 @@ Check artifacts are stored under `.hypagraph/check-artifacts`. Large output stay
 
 ## Current status
 
-Package version is **0.14.0**. The start-to-run product surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any release cut.
+Package version is **0.14.0**.
 
-### Start-to-run product surface (code complete)
+Hypagraph is a strong execution-control **kernel** for coding agents. It is not a complete multi-agent team product yet. Use the four-state [capability ledger](docs/capability-ledger.md) (domain / host / ordinary / live) for honest claims. Do not read domain-only helpers as ordinary product features.
+
+The start-to-run **single-root** surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any multi-agent release claim. Concurrent multi-pending family selection is on the **host product path** (Gate 1.1–1.2). Ordinary reach remains **Partial**. The host starts at most one model worker per pass and awaits serially on the shared session. Live multi-worker acceptance is **Gate 1.3**. See [capability ledger](docs/capability-ledger.md) and [concurrency policy surface](docs/concurrency-policy-surface.md).
+
+Post-review direction: [next steps after adversarial review](docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md). Host modularization seams: [host extraction plan](docs/host-extraction-plan.md).
+
+### Start-to-run product surface (ordinary single-root path)
 
 - arm with the configured trigger word and live composer highlight (same matcher as submit arming);
 - draft constructors and recipes under `.hypagraph/` project store (task, check, require, loop, implement-verify recipe);
@@ -364,7 +372,7 @@ Package version is **0.14.0**. The start-to-run product surface is code-complete
 - `hypagoal_create_child` creates a bounded child Hypagoal from an active parent task after Run;
 - multi-member create-child parent must use `executorProfile.kind: "current-session"` (Option A); workers never create children;
 - child plan-owner tasks default to `isolated-pi`; current-session is refused on non-root members until member delivery ships;
-- family-aware controller selection dispatches work across members (sequential multi-member path);
+- family-aware controller selection dispatches work across members (concurrent multi-pending on the host path when policy allows; sequential when concurrent is off or maxBatchSize is 1);
 - child terminal return applies binding policies on the product path; child success does not complete the parent task;
 - `/hypagraph status` reports family members, bindings, child-wait, budget, focus, worker member goal id, and child definition-artifact write state;
 - `/hypagraph graph member <goalId>` focuses the live graph dock on a family member;
@@ -383,17 +391,20 @@ Package version is **0.14.0**. The start-to-run product surface is code-complete
 - command, report, metric, file, and Git checks with cancellation and restore protection;
 - bounded iteration regions, evaluation contracts, and protected feedback;
 - generic action-dispatch model (deterministic, model, and executor lanes);
-- goal-family projection, bounded child create/return domain helpers, isolated Pi / ACP / CLI executor adapters, worktree integration, and bounded concurrency seams;
+- goal-family projection and bounded child create/return domain helpers (**ordinary multi-member path needs Option A for create-child**; concurrent multi-pending is on the host path with Partial ordinary reach; see ledger);
+- isolated Pi executor path for root model tasks; ACP / CLI adapters and worktree leases are host or domain seams, not full ordinary multi-agent desks;
+- concurrent multi-pending family selection on the host product path with default global concurrency two, independent-settle partial failure, and policy surface docs ([concurrency policy surface](docs/concurrency-policy-surface.md)); host still starts at most one model per pass;
 - `/hypagraph` status, pause, resume, cancel, history, explain, loop, check, graph, trigger, and executor controls.
 
-### Next (not a v0.14 claim)
+### Next (not a v0.14 product claim)
 
 - broader construction tools for interaction, gate, code, and effect nodes;
 - remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
 - full revision-on-workers and richer worker progress events;
-- concurrent multi-pending family dispatch on the product path (sequential multi-member dispatch is shipped);
+- live multi-worker concurrent family acceptance (Gate 1.3; host path exists; Live ledger row remains open);
+- aggregate / synthesis fan-in and named multi-agent recipes;
 - optional grandchild depth and family-budget visibility hardening;
-- live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute is shipped).
+- live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute exists; live bar is not closed).
 
 ## Develop locally
 
@@ -411,7 +422,10 @@ CI runs on Ubuntu, macOS, and Windows with Node.js 22 and 24.
 
 ## Documentation
 
-- [Product and technical specification](docs/product-spec.md)
+- [Capability ledger](docs/capability-ledger.md) (domain / host / ordinary / live)
+- [Next steps after adversarial review](docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md)
+- [Host extraction plan](docs/host-extraction-plan.md)
+- [Product and technical specification](docs/product-spec.md) (baseline is older than v0.14; prefer README + ledger for current claims)
 - [Execution roadmap](docs/execution-roadmap.md)
 - [Deterministic orchestration plan](docs/deterministic-orchestration-plan.md)
 - [Trigger and command surface plan](docs/trigger-and-command-surface-plan.md)

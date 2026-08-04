@@ -88,6 +88,54 @@ const outcomeLine = (outcome: FamilyDispatchOutcomeView): string => {
 };
 
 /**
+ * List all in-flight family pendings from a scheduler view.
+ * Prefers the multi-pending list. Falls back to the compact first pending.
+ * Empty list means no in-flight family dispatch.
+ */
+export function listFamilyPendingViews(
+  scheduler: FamilyGraphViewModel["scheduler"],
+): FamilyPendingDispatchView[] {
+  if (scheduler.pendings !== undefined && scheduler.pendings.length > 0) {
+    return [...scheduler.pendings];
+  }
+  if (scheduler.pending !== undefined) {
+    return [scheduler.pending];
+  }
+  return [];
+}
+
+/**
+ * Compact honest summary of family dispatch occupancy for status lines.
+ * Never reports idle when any pending exists.
+ * When includeActionKind is true, a single pending includes actionKind
+ * (graph chrome). Multi-pending always reports count only.
+ */
+export function familyDispatchOccupancySummary(
+  scheduler: FamilyGraphViewModel["scheduler"],
+  options?: { includeActionKind?: boolean },
+): string {
+  const pendings = listFamilyPendingViews(scheduler);
+  if (pendings.length > 1) {
+    return `dispatch multi-pending x${pendings.length}`;
+  }
+  if (pendings.length === 1) {
+    const only = pendings[0]!;
+    if (options?.includeActionKind === true) {
+      return `dispatch ${only.status} ${only.actionKind}`;
+    }
+    return `dispatch ${only.status}`;
+  }
+  if (scheduler.lastOutcome) {
+    // Graph chrome uses a shorter "last" prefix; widget uses "last dispatch".
+    if (options?.includeActionKind === true) {
+      return `last ${scheduler.lastOutcome.status}`;
+    }
+    return `last dispatch ${scheduler.lastOutcome.status}`;
+  }
+  return "dispatch idle";
+}
+
+/**
  * Format one family dispatch line for executor status and related product surfaces.
  * Includes loop identity when the projection supplies loopId.
  */
@@ -116,15 +164,7 @@ export function formatFamilyDispatchSurfaceLine(
 export function familyWidgetLines(view: FamilyGraphViewModel): string[] {
   const childCount = Math.max(0, view.memberCount - 1);
   const bindingWait = view.bindings.filter((binding) => binding.status === "active").length;
-  const pendingCount = view.scheduler.pendings?.length
-    ?? (view.scheduler.pending ? 1 : 0);
-  const dispatch = pendingCount > 1
-    ? `dispatch pending x${pendingCount}`
-    : view.scheduler.pending
-      ? `dispatch ${view.scheduler.pending.status}`
-      : view.scheduler.lastOutcome
-        ? `last dispatch ${view.scheduler.lastOutcome.status}`
-        : "dispatch idle";
+  const dispatch = familyDispatchOccupancySummary(view.scheduler);
   const executor = view.executor
     ? ` | executor ${view.executor.kindLabel}`
       + (view.executor.activeProcessCount === undefined
@@ -198,8 +238,14 @@ export function renderFamilyStatus(view: FamilyGraphViewModel, width = 100): str
 
   lines.push(`Focused member: ${view.focusedGoalId}`);
   lines.push(`Scheduler ordinal: ${view.scheduler.schedulerOrdinal}`);
-  if (view.scheduler.pending) {
-    lines.push(...wrap("Family dispatch: ", pendingLine(view.scheduler.pending), width));
+  const pendings = listFamilyPendingViews(view.scheduler);
+  if (pendings.length > 1) {
+    lines.push(`Family dispatch: multi-pending x${pendings.length}`);
+    for (const pending of pendings) {
+      lines.push(...wrap("- ", pendingLine(pending), width));
+    }
+  } else if (pendings.length === 1) {
+    lines.push(...wrap("Family dispatch: ", pendingLine(pendings[0]!), width));
   } else if (view.scheduler.lastOutcome) {
     lines.push(...wrap("Family dispatch: ", outcomeLine(view.scheduler.lastOutcome), width));
   } else {
@@ -243,11 +289,7 @@ export function familyGraphSummaryLines(
   const children = view.members.filter((member) => member.depth > 0);
   const expandedChildren = children.filter((member) => member.expanded).length;
   const bindingWait = view.bindings.filter((binding) => binding.status === "active").length;
-  const dispatch = view.scheduler.pending
-    ? `dispatch ${view.scheduler.pending.status} ${view.scheduler.pending.actionKind}`
-    : view.scheduler.lastOutcome
-      ? `last ${view.scheduler.lastOutcome.status}`
-      : "dispatch idle";
+  const dispatch = familyDispatchOccupancySummary(view.scheduler, { includeActionKind: true });
   const executor = view.executor
     ? ` · ${view.executor.kindLabel}`
       + (view.executor.activeProcessCount === undefined
