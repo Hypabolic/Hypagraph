@@ -36,6 +36,7 @@ import {
 } from "../src/domain/goal-family.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
 import type { HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
+import { applyEvent } from "../src/domain/projection.js";
 import { handleCommand } from "../src/domain/reducer.js";
 import {
   AUTO_JOIN_MIN_BINDING_COUNT,
@@ -1357,6 +1358,14 @@ describe("J1 ordinary join default fact without author produce", () => {
         (contract) => contract.name === DEFAULT_JOIN_RESULT_FACT_NAME,
       ),
     ).toBe(false);
+
+    // snapshotHash must match canonical projection of the original stream plus parent events.
+    let projected = setup.parentState;
+    for (const event of applied.parentEvents) {
+      projected = applyEvent(projected, event);
+    }
+    expect(applied.parentState.snapshotHash).toBe(projected.snapshotHash);
+    expect(applied.parentState.definition).toEqual(setup.parentState.definition);
   });
 
   it("does not append duplicate join.passed events on second apply", () => {
@@ -1487,6 +1496,172 @@ describe("J1 ordinary join default fact without author produce", () => {
         (contract) => contract.name === DEFAULT_JOIN_RESULT_FACT_NAME,
       ),
     ).toBe(false);
+
+    // Host-default fail path must also keep snapshotHash canonical.
+    let projected = setup.parentState;
+    for (const event of applied.parentEvents) {
+      projected = applyEvent(projected, event);
+    }
+    expect(applied.parentState.snapshotHash).toBe(projected.snapshotHash);
+  });
+
+  it("publishes join.passed false via product path when a binding failed", () => {
+    // Two completed returns keep the parent running. Patch one binding to failed
+    // so product apply sees a failed join without child failure policy blocking first.
+    const setup = setupOrdinaryTwoChildren("completed");
+    const family = structuredClone(setup.family);
+    const binding2 = family.bindings["binding-2"];
+    if (!binding2?.returnRecord) throw new Error("expected binding-2 return record");
+    family.bindings["binding-2"] = {
+      ...binding2,
+      status: "failed",
+      returnRecord: {
+        ...binding2.returnRecord,
+        outcome: "failed",
+        parentEffect: "blocked",
+        stopReason: "Forced failed outcome for product join fail path.",
+      },
+    };
+
+    const attemptId = setup.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    expect(setup.parentState.runtime.nodes.work?.status).toBe("running");
+
+    const applied = applyProductJoinSynthesis({
+      family,
+      parentState: setup.parentState,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+      commandId: "j1-product-fail",
+    });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok || applied.status !== "applied") {
+      throw new Error(JSON.stringify(applied));
+    }
+    expect(applied.result.status).toBe("failed");
+    expect(applied.factPublished).toBe(true);
+    expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(false);
+    expect(applied.parentState.runtime.nodes.work?.status).toBe("blocked");
+    expect(applied.parentMutated).toBe(true);
+
+    let projected = setup.parentState;
+    for (const event of applied.parentEvents) {
+      projected = applyEvent(projected, event);
+    }
+    expect(applied.parentState.snapshotHash).toBe(projected.snapshotHash);
+  });
+
+  it("skips host-default publish when join.passed is declared as non-boolean", () => {
+    const parentWithStringJoin: HypagraphDefinition = {
+      title: "Non-boolean join produce",
+      goal: "Non-boolean join produce",
+      nodes: [{
+        id: "work",
+        title: "Work",
+        requires: [],
+        acceptance: [],
+        scope: { paths: ["src/**"] },
+        produces: [{ name: DEFAULT_JOIN_RESULT_FACT_NAME, type: "string" }],
+      }],
+      loops: [],
+      policy: { mode: "guided", requireEvidence: false },
+    };
+
+    let rootState = createStartedWorkflow(parentWithStringJoin, "workflow-root-nb", "goal-root-nb");
+    rootState = startTask(rootState, "work");
+    const familyResult = createRootFamily({
+      familyId: "family-j1-nonboolean",
+      rootGoalId: "goal-root-nb",
+      rootWorkflowId: "workflow-root-nb",
+      at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 4,
+        maxGoalsInFamily: 16,
+        maxChildCreationAttemptsPerNode: 4,
+      },
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+
+    const child1 = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("NB child one"),
+      childGoalId: "goal-child-nb-1",
+      childWorkflowId: "workflow-child-nb-1",
+      bindingId: "binding-1",
+      at: later,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child1.ok) throw new Error(JSON.stringify(child1.diagnostics));
+    const return1 = returnChildGoal({
+      family: child1.family,
+      parentState: child1.parentState,
+      childState: terminalCompletedChild(child1.childState),
+      bindingId: "binding-1",
+      at: returnAt,
+      outcome: "completed",
+    });
+    if (!return1.ok) throw new Error(JSON.stringify(return1.diagnostics));
+
+    const child2 = createBoundedChildGoal({
+      family: return1.family,
+      parentState: return1.parentState,
+      parentNodeId: "work",
+      childDefinition: childTask("NB child two"),
+      childGoalId: "goal-child-nb-2",
+      childWorkflowId: "workflow-child-nb-2",
+      bindingId: "binding-2",
+      at: returnAt,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child2.ok) throw new Error(JSON.stringify(child2.diagnostics));
+    const return2 = returnChildGoal({
+      family: child2.family,
+      parentState: child2.parentState,
+      childState: terminalCompletedChild(child2.childState),
+      bindingId: "binding-2",
+      at: joinAt,
+      outcome: "completed",
+    });
+    if (!return2.ok) throw new Error(JSON.stringify(return2.diagnostics));
+
+    const attemptId = return2.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+
+    const policy = createAllSuccessJoinPolicy({ bindingIds: ["binding-1", "binding-2"] });
+    if (!policy.ok) throw new Error(JSON.stringify(policy.diagnostics));
+    const eligibility = isAutoProductJoinEligible({
+      policy: policy.policy,
+      explicit: false,
+      parentState: return2.parentState,
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+    });
+    expect(eligibility.eligible).toBe(false);
+    if (eligibility.eligible) throw new Error("expected ineligible for non-boolean produce");
+    expect(eligibility.reason).toMatch(/non-boolean type/);
+
+    const product = applyProductJoinSynthesis({
+      family: return2.family,
+      parentState: return2.parentState,
+      parentGoalId: "goal-root-nb",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+      commandId: "j1-nonboolean",
+    });
+    expect(product.ok).toBe(true);
+    if (!product.ok) throw new Error(JSON.stringify(product));
+    expect(product.status).toBe("skipped");
+    if (product.status !== "skipped") throw new Error("expected skipped");
+    expect(product.reason).toMatch(/non-boolean type/);
+    expect(return2.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]).toBeUndefined();
   });
 
   it("does not publish custom undeclared resultFactName on domain apply", () => {

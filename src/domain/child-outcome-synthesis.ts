@@ -21,6 +21,7 @@
 
 import type { ChildReturnOutcomeKind, GoalFamilyRuntime } from "./goal-family.js";
 import type { Diagnostic, DomainEvent, HypagraphState } from "./model.js";
+import { applyEvent } from "./projection.js";
 import { handleCommand } from "./reducer.js";
 
 // ---------------------------------------------------------------------------
@@ -759,6 +760,21 @@ export function parentDeclaresJoinResultFact(
 }
 
 /**
+ * True when the parent node declares a produce with this name that is not boolean.
+ * Host-default publish must not append a second boolean contract for that name.
+ */
+export function parentJoinResultFactTypeConflict(
+  parentState: HypagraphState,
+  parentNodeId: string,
+  resultFactName: string,
+): boolean {
+  const definitionNode = parentState.definition.nodes.find((node) => node.id === parentNodeId);
+  return (definitionNode?.produces ?? []).some(
+    (contract) => contract.name === resultFactName && contract.type !== "boolean",
+  );
+}
+
+/**
  * True when host-default publish is allowed for this apply.
  * Only the default join fact name may publish without a produce declaration.
  */
@@ -775,17 +791,15 @@ export function mayPublishHostDefaultJoinFact(input: {
 
 /**
  * Clone parent state with a temporary boolean produce for join fact publish.
- * Does not mutate the input state. Callers must restore the original definition
- * after publish so the synthetic produce does not remain.
+ * Call only when the parent does not declare a boolean produce for this name
+ * and does not declare a non-boolean produce for this name.
+ * Does not mutate the input state.
  */
 function parentStateWithTemporaryJoinProduce(
   state: HypagraphState,
   parentNodeId: string,
   resultFactName: string,
 ): HypagraphState {
-  if (parentDeclaresJoinResultFact(state, parentNodeId, resultFactName)) {
-    return state;
-  }
   return {
     ...state,
     definition: {
@@ -943,7 +957,13 @@ export function applyChildOutcomeSynthesisToParent(
     input.parentNodeId,
     fact.name,
   );
-  const hostDefaultPublish = mayPublishHostDefaultJoinFact({
+  const typeConflict = parentJoinResultFactTypeConflict(
+    input.parentState,
+    input.parentNodeId,
+    fact.name,
+  );
+  // Same-name non-boolean produce is a declare conflict. Do not host-publish.
+  const hostDefaultPublish = !typeConflict && mayPublishHostDefaultJoinFact({
     ...(input.allowHostDefaultJoinFact !== undefined
       ? { allowHostDefaultJoinFact: input.allowHostDefaultJoinFact }
       : {}),
@@ -964,33 +984,59 @@ export function applyChildOutcomeSynthesisToParent(
   let factPublished = false;
 
   if (mayPublishFact && !alreadyApplied) {
-    // Host-default path: temporary produce for publish-facts validation only.
-    // Restore the original definition after apply so it is not mutated.
-    const definitionBeforePublish = nextState.definition;
-    const stateForPublish = factDeclared
-      ? nextState
-      : parentStateWithTemporaryJoinProduce(nextState, input.parentNodeId, fact.name);
-    const published = handleCommand(stateForPublish, {
-      type: "publish-facts",
-      nodeId: input.parentNodeId,
-      attemptId: input.parentAttemptId,
-      facts: [{
-        name: fact.name,
-        type: "boolean",
-        value: fact.value,
-      }],
-      commandId: `${baseCommandId}:fact`,
-      correlationId,
-      at: input.at,
-    });
-    if (!published.ok) {
-      return { ok: false, diagnostics: published.diagnostics };
+    if (factDeclared) {
+      const published = handleCommand(nextState, {
+        type: "publish-facts",
+        nodeId: input.parentNodeId,
+        attemptId: input.parentAttemptId,
+        facts: [{
+          name: fact.name,
+          type: "boolean",
+          value: fact.value,
+        }],
+        commandId: `${baseCommandId}:fact`,
+        correlationId,
+        at: input.at,
+      });
+      if (!published.ok) {
+        return { ok: false, diagnostics: published.diagnostics };
+      }
+      nextState = published.state;
+      parentEvents.push(...published.events);
+      factPublished = published.events.some((event) => event.type === "hypagraph.fact.published");
+    } else {
+      // Host-default path: temporary produce for publish-facts validation only.
+      // Project the emitted events onto the original-definition state so
+      // snapshotHash matches the stored event stream (no synthetic produce).
+      const stateForPublish = parentStateWithTemporaryJoinProduce(
+        nextState,
+        input.parentNodeId,
+        fact.name,
+      );
+      const published = handleCommand(stateForPublish, {
+        type: "publish-facts",
+        nodeId: input.parentNodeId,
+        attemptId: input.parentAttemptId,
+        facts: [{
+          name: fact.name,
+          type: "boolean",
+          value: fact.value,
+        }],
+        commandId: `${baseCommandId}:fact`,
+        correlationId,
+        at: input.at,
+      });
+      if (!published.ok) {
+        return { ok: false, diagnostics: published.diagnostics };
+      }
+      let projected = nextState;
+      for (const event of published.events) {
+        projected = applyEvent(projected, event);
+      }
+      nextState = projected;
+      parentEvents.push(...published.events);
+      factPublished = published.events.some((event) => event.type === "hypagraph.fact.published");
     }
-    nextState = factDeclared
-      ? published.state
-      : { ...published.state, definition: definitionBeforePublish };
-    parentEvents.push(...published.events);
-    factPublished = published.events.some((event) => event.type === "hypagraph.fact.published");
   }
 
   const blockOnFailure = input.blockParentOnFailure !== false;
@@ -1023,8 +1069,8 @@ export function applyChildOutcomeSynthesisToParent(
       diagnostics: [reject(
         "child_outcome_synthesis_no_parent_effect",
         `Failed join for '${input.parentNodeId}' did not change parent state. `
-        + `Declare produces fact '${fact.name}' (boolean), enable host default `
-        + "join fact publish, or enable blockParentOnFailure.",
+        + `Declare produces fact '${fact.name}' with type boolean, or enable `
+        + "blockParentOnFailure.",
         "parentNodeId",
       )],
     };
@@ -1061,6 +1107,10 @@ export function applyChildOutcomeSynthesisToParent(
 /**
  * Evaluate family join and apply terminal result to the parent in one step.
  * Returns pending without mutating parent when the join set is not terminal.
+ *
+ * Domain path is declare-required by default. Pass allowHostDefaultJoinFact
+ * only for tests or hosts that opt into host-default publish of join.passed.
+ * Product ordinary join uses applyProductJoinSynthesis instead.
  */
 export function synthesizeAndApplyChildOutcomes(input: {
   family: GoalFamilyRuntime;
@@ -1072,6 +1122,11 @@ export function synthesizeAndApplyChildOutcomes(input: {
   commandId?: string;
   correlationId?: string;
   blockParentOnFailure?: boolean;
+  /**
+   * When true, allow publish of DEFAULT_JOIN_RESULT_FACT_NAME without a
+   * parent boolean produce. Domain default is false (declare-required).
+   */
+  allowHostDefaultJoinFact?: boolean;
 }):
   | { ok: true; status: "pending"; result: ChildOutcomeSynthesisResult }
   | ChildOutcomeSynthesisApplyResult {
@@ -1093,6 +1148,9 @@ export function synthesizeAndApplyChildOutcomes(input: {
     ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
     ...(input.blockParentOnFailure !== undefined
       ? { blockParentOnFailure: input.blockParentOnFailure }
+      : {}),
+    ...(input.allowHostDefaultJoinFact !== undefined
+      ? { allowHostDefaultJoinFact: input.allowHostDefaultJoinFact }
       : {}),
   });
 }

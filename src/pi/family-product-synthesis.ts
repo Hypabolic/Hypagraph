@@ -21,8 +21,8 @@
  *   expectedBindingCount to the planned size, or the second return can complete
  *   the join early. One-child joins need an explicit policy or expectedBindingCount: 1.
  *
- * Explicit policy path keeps declare-required for the result fact unless the
- * parent already declares it. Explicit does not opt into host-default publish.
+ * Explicit policy path keeps declare-required for the result fact.
+ * Explicit does not opt into host-default publish.
  *
  * Failed-join host publish and block run only while the parent is still
  * running. When a child failure policy already failed or blocked the parent,
@@ -42,6 +42,7 @@ import {
   listBindingsForParentJoin,
   mayPublishHostDefaultJoinFact,
   parentDeclaresJoinResultFact,
+  parentJoinResultFactTypeConflict,
   synthesizeAndApplyChildOutcomes,
   synthesizeChildOutcomesFromFamily,
   validateChildOutcomeSynthesisPolicy,
@@ -140,6 +141,10 @@ export function resolveProductJoinPolicy(input: {
  * Explicit policies skip the multi-binding minimum and only honour expectedBindingCount.
  * Explicit policies keep declare-required for the result fact.
  * Auto path allows DEFAULT_JOIN_RESULT_FACT_NAME without a parent produce.
+ *
+ * When eligible, allowHostDefaultJoinFact is the single resolved publish decision
+ * for the apply path (true only when the parent has no boolean produce and the
+ * auto host-default path is active).
  */
 export function isAutoProductJoinEligible(input: {
   policy: ChildOutcomeSynthesisPolicy;
@@ -147,7 +152,9 @@ export function isAutoProductJoinEligible(input: {
   parentState: HypagraphState;
   parentNodeId: string;
   parentAttemptId: string;
-}): { eligible: true } | { eligible: false; reason: string; pending: boolean } {
+}):
+  | { eligible: true; allowHostDefaultJoinFact: boolean }
+  | { eligible: false; reason: string; pending: boolean } {
   const { policy, explicit, parentState, parentNodeId, parentAttemptId } = input;
 
   const factDeclared = parentDeclaresJoinResultFact(
@@ -155,6 +162,16 @@ export function isAutoProductJoinEligible(input: {
     parentNodeId,
     policy.resultFactName,
   );
+  if (parentJoinResultFactTypeConflict(parentState, parentNodeId, policy.resultFactName)) {
+    return {
+      eligible: false,
+      pending: false,
+      reason:
+        `Parent task '${parentNodeId}' declares produce `
+        + `'${policy.resultFactName}' with a non-boolean type. `
+        + "Join requires a boolean produce, or no produce for the default fact name.",
+    };
+  }
   // Auto path may publish default join.passed without produce (host-only fact).
   // Explicit policies and custom result fact names still require the produce.
   const hostDefaultAllowed = mayPublishHostDefaultJoinFact({
@@ -183,6 +200,9 @@ export function isAutoProductJoinEligible(input: {
     };
   }
 
+  // Single resolved decision: host-default only when produce is absent and allowed.
+  const allowHostDefaultJoinFact = !factDeclared && hostDefaultAllowed;
+
   if (policy.expectedBindingCount !== undefined) {
     if (policy.bindingIds.length < policy.expectedBindingCount) {
       const remaining = policy.expectedBindingCount - policy.bindingIds.length;
@@ -195,7 +215,7 @@ export function isAutoProductJoinEligible(input: {
           + `(${policy.bindingIds.length} of ${policy.expectedBindingCount} present).`,
       };
     }
-    return { eligible: true };
+    return { eligible: true, allowHostDefaultJoinFact };
   }
 
   // Auto path without expectedBindingCount: require at least two bindings so
@@ -216,7 +236,7 @@ export function isAutoProductJoinEligible(input: {
   }
 
   // Explicit one-child policy without expectedBindingCount is allowed.
-  return { eligible: true };
+  return { eligible: true, allowHostDefaultJoinFact };
 }
 
 /**
@@ -282,13 +302,7 @@ export function applyProductJoinSynthesis(
     };
   }
 
-  // Auto path with default fact name may publish without parent produce.
-  const allowHostDefaultJoinFact = mayPublishHostDefaultJoinFact({
-    allowHostDefaultJoinFact: !explicit,
-    resultFactName: policy.resultFactName,
-    publishedFactName: policy.resultFactName,
-  });
-
+  // Use the single eligibility decision for host-default publish.
   const applied = applyChildOutcomeSynthesisToParent({
     parentState: input.parentState,
     policy,
@@ -301,7 +315,9 @@ export function applyProductJoinSynthesis(
     ...(input.blockParentOnFailure !== undefined
       ? { blockParentOnFailure: input.blockParentOnFailure }
       : {}),
-    ...(allowHostDefaultJoinFact ? { allowHostDefaultJoinFact: true } : {}),
+    ...(eligibility.allowHostDefaultJoinFact
+      ? { allowHostDefaultJoinFact: true }
+      : {}),
   });
   if (!applied.ok) return applied;
 
