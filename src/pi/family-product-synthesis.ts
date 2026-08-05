@@ -237,15 +237,15 @@ export function applyProductJoinSynthesis(
   });
   if (!eligibility.eligible) {
     if (eligibility.pending) {
+      const { publishedFact: _omitPublishedFact, ...pendingBase } = evaluated.result;
       return {
         ok: true,
         status: "pending",
         result: {
-          ...evaluated.result,
+          ...pendingBase,
           status: "pending",
           passed: false,
           reason: eligibility.reason,
-          publishedFact: undefined,
         },
         policy,
       };
