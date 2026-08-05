@@ -3,20 +3,26 @@
  *
  * After child returns settle, the host evaluates an all-success join over a
  * declared binding set and applies the result to the parent workflow:
- * - publish join.passed when the parent declares that boolean produce;
+ * - publish join.passed on the auto path (host-default fact; produce optional);
+ * - publish a custom result fact only when the parent declares that produce;
  * - block the parent node when the join fails and the parent is still running.
  *
  * Auto product path (no explicit policy):
  * - Join set is every binding for (parentGoalId, parentNodeId).
  * - Apply only when every binding is terminal, the parent node is running,
- *   the parent declares the result fact produce, the fact is not already on
- *   the current attempt, and either expectedBindingCount is met or the set
- *   has at least AUTO_JOIN_MIN_BINDING_COUNT (2) bindings.
+ *   the fact is not already on the current attempt, and either
+ *   expectedBindingCount is met or the set has at least
+ *   AUTO_JOIN_MIN_BINDING_COUNT (2) bindings.
+ * - Default result fact join.passed does not require a parent produce.
+ * - Custom resultFactName still requires a matching boolean produce.
  * - Without expectedBindingCount, auto multi-child is only safe for a planned
  *   join of exactly two children. After two sequential returns the set size is
  *   two and the join can apply. For three or more sequential children, set
  *   expectedBindingCount to the planned size, or the second return can complete
  *   the join early. One-child joins need an explicit policy or expectedBindingCount: 1.
+ *
+ * Explicit policy path keeps declare-required for the result fact unless the
+ * parent already declares it. Explicit does not opt into host-default publish.
  *
  * Failed-join host publish and block run only while the parent is still
  * running. When a child failure policy already failed or blocked the parent,
@@ -34,6 +40,7 @@ import {
   isJoinSetTerminal,
   joinResultFactAlreadyApplied,
   listBindingsForParentJoin,
+  mayPublishHostDefaultJoinFact,
   parentDeclaresJoinResultFact,
   synthesizeAndApplyChildOutcomes,
   synthesizeChildOutcomesFromFamily,
@@ -129,8 +136,10 @@ export function resolveProductJoinPolicy(input: {
 }
 
 /**
- * Decide whether the auto product path may apply a terminal join.
+ * Decide whether the product path may apply a terminal join.
  * Explicit policies skip the multi-binding minimum and only honour expectedBindingCount.
+ * Explicit policies keep declare-required for the result fact.
+ * Auto path allows DEFAULT_JOIN_RESULT_FACT_NAME without a parent produce.
  */
 export function isAutoProductJoinEligible(input: {
   policy: ChildOutcomeSynthesisPolicy;
@@ -141,13 +150,26 @@ export function isAutoProductJoinEligible(input: {
 }): { eligible: true } | { eligible: false; reason: string; pending: boolean } {
   const { policy, explicit, parentState, parentNodeId, parentAttemptId } = input;
 
-  if (!parentDeclaresJoinResultFact(parentState, parentNodeId, policy.resultFactName)) {
+  const factDeclared = parentDeclaresJoinResultFact(
+    parentState,
+    parentNodeId,
+    policy.resultFactName,
+  );
+  // Auto path may publish default join.passed without produce (host-only fact).
+  // Explicit policies and custom result fact names still require the produce.
+  const hostDefaultAllowed = mayPublishHostDefaultJoinFact({
+    allowHostDefaultJoinFact: !explicit,
+    resultFactName: policy.resultFactName,
+    publishedFactName: policy.resultFactName,
+  });
+  if (!factDeclared && !hostDefaultAllowed) {
     return {
       eligible: false,
       pending: false,
       reason:
         `Parent task '${parentNodeId}' does not declare boolean produce `
-        + `'${policy.resultFactName}'. Product join apply requires that produce.`,
+        + `'${policy.resultFactName}'. Product join apply requires that produce `
+        + "for explicit policies and custom result fact names.",
     };
   }
 
@@ -201,7 +223,8 @@ export function isAutoProductJoinEligible(input: {
  * Evaluate and, when terminal and eligible, apply child-outcome synthesis.
  *
  * Returns pending when any join binding is still active or expected count is not met.
- * Returns skipped when the product path must not apply (no produce, already applied).
+ * Returns skipped when the product path must not apply (already applied, or
+ * produce required and missing for explicit or custom fact names).
  * Does not mutate inputs.
  */
 export function applyProductJoinSynthesis(
@@ -259,6 +282,13 @@ export function applyProductJoinSynthesis(
     };
   }
 
+  // Auto path with default fact name may publish without parent produce.
+  const allowHostDefaultJoinFact = mayPublishHostDefaultJoinFact({
+    allowHostDefaultJoinFact: !explicit,
+    resultFactName: policy.resultFactName,
+    publishedFactName: policy.resultFactName,
+  });
+
   const applied = applyChildOutcomeSynthesisToParent({
     parentState: input.parentState,
     policy,
@@ -271,6 +301,7 @@ export function applyProductJoinSynthesis(
     ...(input.blockParentOnFailure !== undefined
       ? { blockParentOnFailure: input.blockParentOnFailure }
       : {}),
+    ...(allowHostDefaultJoinFact ? { allowHostDefaultJoinFact: true } : {}),
   });
   if (!applied.ok) return applied;
 

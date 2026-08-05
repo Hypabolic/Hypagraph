@@ -734,6 +734,14 @@ export interface ApplyChildOutcomeSynthesisInput {
    * is published. Passed joins leave the parent running.
    */
   blockParentOnFailure?: boolean;
+  /**
+   * Product auto path only. When true, allow publish of DEFAULT_JOIN_RESULT_FACT_NAME
+   * even when the parent node does not declare that boolean produce.
+   * Uses a temporary produce for publish-facts validation. The parent definition
+   * after apply does not keep that produce.
+   * Custom resultFactName values never use this path.
+   */
+  allowHostDefaultJoinFact?: boolean;
 }
 
 /**
@@ -748,6 +756,52 @@ export function parentDeclaresJoinResultFact(
   return (definitionNode?.produces ?? []).some(
     (contract) => contract.name === resultFactName && contract.type === "boolean",
   );
+}
+
+/**
+ * True when host-default publish is allowed for this apply.
+ * Only the default join fact name may publish without a produce declaration.
+ */
+export function mayPublishHostDefaultJoinFact(input: {
+  allowHostDefaultJoinFact?: boolean;
+  resultFactName: string;
+  publishedFactName: string;
+}): boolean {
+  if (input.allowHostDefaultJoinFact !== true) return false;
+  if (input.resultFactName !== DEFAULT_JOIN_RESULT_FACT_NAME) return false;
+  if (input.publishedFactName !== DEFAULT_JOIN_RESULT_FACT_NAME) return false;
+  return true;
+}
+
+/**
+ * Clone parent state with a temporary boolean produce for join fact publish.
+ * Does not mutate the input state. Callers must restore the original definition
+ * after publish so the synthetic produce does not remain.
+ */
+function parentStateWithTemporaryJoinProduce(
+  state: HypagraphState,
+  parentNodeId: string,
+  resultFactName: string,
+): HypagraphState {
+  if (parentDeclaresJoinResultFact(state, parentNodeId, resultFactName)) {
+    return state;
+  }
+  return {
+    ...state,
+    definition: {
+      ...state.definition,
+      nodes: state.definition.nodes.map((node) => {
+        if (node.id !== parentNodeId) return node;
+        return {
+          ...node,
+          produces: [
+            ...(node.produces ?? []),
+            { name: resultFactName, type: "boolean" as const },
+          ],
+        };
+      }),
+    },
+  };
 }
 
 /**
@@ -773,7 +827,9 @@ export function joinResultFactAlreadyApplied(
  * (after child return has resumed the parent).
  *
  * Publishes the boolean result fact when the parent node declares that fact
- * in produces. When the fact is not declared, publication is skipped.
+ * in produces. When allowHostDefaultJoinFact is true, also publishes the
+ * default join.passed fact without a permanent produce declaration.
+ * Custom result fact names still require a matching boolean produce.
  *
  * When the join failed and blockParentOnFailure is true, blocks the parent node.
  * Timestamps and command ids are pure inputs.
@@ -887,6 +943,14 @@ export function applyChildOutcomeSynthesisToParent(
     input.parentNodeId,
     fact.name,
   );
+  const hostDefaultPublish = mayPublishHostDefaultJoinFact({
+    ...(input.allowHostDefaultJoinFact !== undefined
+      ? { allowHostDefaultJoinFact: input.allowHostDefaultJoinFact }
+      : {}),
+    resultFactName: policy.resultFactName,
+    publishedFactName: fact.name,
+  });
+  const mayPublishFact = factDeclared || hostDefaultPublish;
 
   // Idempotent when the join fact is already present for this attempt.
   const alreadyApplied = joinResultFactAlreadyApplied(
@@ -899,8 +963,14 @@ export function applyChildOutcomeSynthesisToParent(
   const parentEvents: DomainEvent[] = [];
   let factPublished = false;
 
-  if (factDeclared && !alreadyApplied) {
-    const published = handleCommand(nextState, {
+  if (mayPublishFact && !alreadyApplied) {
+    // Host-default path: temporary produce for publish-facts validation only.
+    // Restore the original definition after apply so it is not mutated.
+    const definitionBeforePublish = nextState.definition;
+    const stateForPublish = factDeclared
+      ? nextState
+      : parentStateWithTemporaryJoinProduce(nextState, input.parentNodeId, fact.name);
+    const published = handleCommand(stateForPublish, {
       type: "publish-facts",
       nodeId: input.parentNodeId,
       attemptId: input.parentAttemptId,
@@ -916,7 +986,9 @@ export function applyChildOutcomeSynthesisToParent(
     if (!published.ok) {
       return { ok: false, diagnostics: published.diagnostics };
     }
-    nextState = published.state;
+    nextState = factDeclared
+      ? published.state
+      : { ...published.state, definition: definitionBeforePublish };
     parentEvents.push(...published.events);
     factPublished = published.events.some((event) => event.type === "hypagraph.fact.published");
   }
@@ -951,7 +1023,8 @@ export function applyChildOutcomeSynthesisToParent(
       diagnostics: [reject(
         "child_outcome_synthesis_no_parent_effect",
         `Failed join for '${input.parentNodeId}' did not change parent state. `
-        + `Declare produces fact '${fact.name}' (boolean) or enable blockParentOnFailure.`,
+        + `Declare produces fact '${fact.name}' (boolean), enable host default `
+        + "join fact publish, or enable blockParentOnFailure.",
         "parentNodeId",
       )],
     };
@@ -978,7 +1051,7 @@ export function applyChildOutcomeSynthesisToParent(
     record: structuredClone(record),
     factPublished: factPublished || (
       alreadyApplied
-      && factDeclared
+      && mayPublishFact
       && input.parentState.runtime.facts[fact.name]?.value === fact.value
     ),
     parentMutated: parentEvents.length > 0,
