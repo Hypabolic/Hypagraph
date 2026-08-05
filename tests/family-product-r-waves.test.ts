@@ -613,11 +613,54 @@ describe("Family product remediation R3–R5", () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const skill = readFileSync(resolve(process.cwd(), "skills/hypagraph/SKILL.md"), "utf8");
-    expect(skill).toMatch(/Multi-child fan-out and ordinary join/i);
-    expect(skill).toContain("join.passed");
-    expect(skill).toMatch(/Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i);
-    expect(skill).toMatch(/Do not set `expectedBindingCount` for the ordinary path/i);
-    expect(skill).not.toMatch(/must produce join\.passed|must declare join\.passed for (the )?ordinary/i);
+    const multiChildSection = skill.match(
+      /### Multi-child fan-out and ordinary join[\s\S]*?(?=\n### |\n## |$)/,
+    )?.[0] ?? "";
+    expect(multiChildSection.length).toBeGreaterThan(200);
+
+    // Fan-out while waiting; auto join; host-default join.passed.
+    expect(multiChildSection).toMatch(/Multi-child fan-out and ordinary join/i);
+    expect(multiChildSection).toMatch(/waiting_for_child/);
+    expect(multiChildSection).toMatch(
+      /Create siblings while the parent waits|hypagoal_create_child.*more than once/i,
+    );
+    expect(multiChildSection).toMatch(/auto join|evaluates all-success join/i);
+    expect(multiChildSection).toContain("join.passed");
+    expect(multiChildSection).toMatch(
+      /publishes the default fact `join\.passed` = true|join\.passed` = true/i,
+    );
+
+    // One-child minimum; multi-child pass → running.
+    expect(multiChildSection).toMatch(
+      /One child alone does not trigger multi-child auto join/i,
+    );
+    expect(multiChildSection).toMatch(
+      /AUTO_JOIN_MIN_BINDING_COUNT|minimum is two bindings|two bindings/i,
+    );
+    expect(multiChildSection).toMatch(
+      /After multi-child join pass, the parent task is \*\*running\*\* for integration/i,
+    );
+
+    // Fail / quiet-skip; no mandatory produce or expectedBindingCount.
+    expect(multiChildSection).toMatch(/failure policy owns the parent first/i);
+    expect(multiChildSection).toMatch(/quiet-skips|quiet-skip/i);
+    expect(multiChildSection).toMatch(
+      /Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i,
+    );
+    expect(multiChildSection).toMatch(
+      /does not use `expectedBindingCount`|not a `hypagoal_create_child` parameter/i,
+    );
+    expect(multiChildSection).toMatch(
+      /not mandatory for ordinary multi-child join|not required for the default path/i,
+    );
+    expect(skill).not.toMatch(
+      /must produce join\.passed|must declare join\.passed for (the )?ordinary/i,
+    );
+
+    // Live dogfood is not claimed.
+    expect(multiChildSection).toMatch(
+      /Live Pi dogfood for multi-child join is not claimed/i,
+    );
   });
 
   it("R5 mergeLiveRootIntoFamily keeps newer root sequence and child membership", () => {

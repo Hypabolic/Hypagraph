@@ -401,17 +401,68 @@ describe("J3 ordinary join product path", () => {
 
   it("skill documents ordinary multi-child join without mandatory produce or expectedBindingCount", () => {
     const skill = readFileSync(resolve(process.cwd(), "skills/hypagraph/SKILL.md"), "utf8");
-    expect(skill).toMatch(/Multi-child fan-out and ordinary join/i);
-    expect(skill).toMatch(/waiting_for_child/);
-    expect(skill).toMatch(/Create siblings while the parent waits|hypagoal_create_child.*more than once/i);
-    expect(skill).toMatch(/auto-joins|auto join/i);
-    expect(skill).toContain("join.passed");
-    expect(skill).toMatch(/Do not set `expectedBindingCount` for the ordinary path/i);
-    expect(skill).toMatch(/Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i);
-    expect(skill).toMatch(/not mandatory for ordinary multi-child join|not required for the default path/i);
-    expect(skill).toMatch(/One child alone does not trigger multi-child auto join|multi-child minimum is two/i);
+    const multiChildSection = skill.match(
+      /### Multi-child fan-out and ordinary join[\s\S]*?(?=\n### |\n## |$)/,
+    )?.[0] ?? "";
+    expect(multiChildSection.length).toBeGreaterThan(200);
+
+    // Multi-child fan-out while waiting_for_child.
+    expect(multiChildSection).toMatch(/Multi-child fan-out and ordinary join/i);
+    expect(multiChildSection).toMatch(/waiting_for_child/);
+    expect(multiChildSection).toMatch(
+      /Create siblings while the parent waits|hypagoal_create_child.*more than once/i,
+    );
+
+    // Auto join: evaluate when terminal; pass publishes join.passed.
+    expect(multiChildSection).toMatch(/auto join|evaluates all-success join/i);
+    expect(multiChildSection).toContain("join.passed");
+    expect(multiChildSection).toMatch(
+      /every sibling.*is terminal|when every sibling for that parent node is terminal/i,
+    );
+    expect(multiChildSection).toMatch(
+      /publishes the default fact `join\.passed` = true|join\.passed` = true/i,
+    );
+
+    // Multi-child pass leaves parent running (anchor section, not single-child wait text).
+    expect(multiChildSection).toMatch(
+      /After multi-child join pass, the parent task is \*\*running\*\* for integration/i,
+    );
+
+    // Fail / quiet-skip ownership: failure policy first, then residual join-fail.
+    expect(multiChildSection).toMatch(/failure policy owns the parent first/i);
+    expect(multiChildSection).toMatch(/quiet-skips|quiet-skip/i);
+    expect(multiChildSection).toMatch(
+      /publish `join\.passed` = false and block|publish `join\.passed` = false/i,
+    );
+
+    // One-child does not multi-join; product minimum two bindings.
+    expect(multiChildSection).toMatch(
+      /One child alone does not trigger multi-child auto join/i,
+    );
+    expect(multiChildSection).toMatch(
+      /AUTO_JOIN_MIN_BINDING_COUNT|minimum is two bindings|two bindings/i,
+    );
+
+    // No mandatory produce or expectedBindingCount for ordinary path.
+    expect(multiChildSection).toMatch(
+      /does not use `expectedBindingCount`|not a `hypagoal_create_child` parameter/i,
+    );
+    expect(multiChildSection).toMatch(
+      /Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i,
+    );
+    expect(multiChildSection).toMatch(
+      /not mandatory for ordinary multi-child join|not required for the default path/i,
+    );
+    expect(multiChildSection).toMatch(
+      /host or test join-policy field only|Host and test policies may set/i,
+    );
     expect(skill).not.toMatch(
       /must declare produce [`']?join\.passed for (ordinary|multi-child)|must set `expectedBindingCount` for (ordinary|multi-child)/i,
+    );
+
+    // Live dogfood is not claimed.
+    expect(multiChildSection).toMatch(
+      /Live Pi dogfood for multi-child join is not claimed/i,
     );
   });
 });

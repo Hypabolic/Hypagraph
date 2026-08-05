@@ -155,12 +155,12 @@ Use this path when one parent task must wait for two or more child Hypagoals on 
 
 1. Call `hypagoal_create_child` more than once while the parent task is active or already `waiting_for_child` for the same parent node. Create siblings while the parent waits. Do not wait for a full single-child cycle before each create when you need multi-child join.
 2. The parent stays `waiting_for_child` while any sibling binding for that parent node is active.
-3. When every sibling for that parent node is terminal and all completed, the host auto-joins (all-success). The host publishes the default fact `join.passed` = true. Authors do not need a produce declaration for that default fact on the ordinary path.
-4. Do not set `expectedBindingCount` for the ordinary path. Do not declare produce `join.passed` on the parent for ordinary multi-child join. Those steps are not required for the default path.
-5. After join pass, the parent task is **running** for integration. Child success or join success does not complete the parent task.
-6. If any join member is not completed, and child failure policy has not already failed or blocked the parent, join fail publishes `join.passed` = false and blocks the parent (product default). When failure policy already owns the parent, synthesis quiet-skips.
-7. One child alone does not trigger multi-child auto join. The multi-child minimum is two (`AUTO_JOIN_MIN` = 2).
-8. Optional advanced path: if you need a gate or typed consume on the join result, you may declare boolean produce `join.passed` on the parent. You may also set `expectedBindingCount` for advanced callers. These steps are optional. They are not mandatory for ordinary multi-child join.
+3. When every sibling for that parent node is terminal, the host evaluates all-success join (auto join). When every join member completed, the host publishes the default fact `join.passed` = true. Authors do not need a produce declaration for that default fact on the ordinary path. When any join member did not complete, the fail and quiet-skip rules below apply.
+4. Ordinary multi-child join does not use `expectedBindingCount`. That field is a host or test join-policy field only. It is not a `hypagoal_create_child` parameter and not a parent definition field for skill authors. Do not declare produce `join.passed` on the parent for ordinary multi-child join. Produce is not required for the default path and is not mandatory for ordinary multi-child join.
+5. After multi-child join pass, the parent task is **running** for integration. Child success or join success does not complete the parent task.
+6. On a non-completed child return, the declared failure policy owns the parent first. The host terminalises remaining sibling bindings for that parent node when the policy fails or blocks the parent. Synthesis then quiet-skips because the parent is not running. Residual case only: if the parent is still running when the host evaluates join and any join member did not complete, the host may publish `join.passed` = false and block the parent.
+7. One child alone does not trigger multi-child auto join. The product minimum is two bindings (`AUTO_JOIN_MIN_BINDING_COUNT` = 2).
+8. Optional advanced path: if you need a gate or typed consume on the join result, you may declare boolean produce `join.passed` on the parent node. Do not invent an `expectedBindingCount` parameter on `hypagoal_create_child` or on the parent definition. Host and test policies may set `expectedBindingCount`. Skill authors must not set it on the ordinary path.
 
 Ordinary multi-child all-success join is a product path. Live Pi dogfood for multi-child join is not claimed here. Full quorum, ranked, and model synthesis strategies are not shipped.
 
