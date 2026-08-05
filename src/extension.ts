@@ -107,7 +107,9 @@ import {
   familySettleOutcomeFromHostDispatch,
   interruptAllFamilyPendingsForHost,
   isDeterministicFamilyMemberDecision,
-  markFamilyPendingDispatchedForHost,
+  markFamilyPendingDispatchedWithRefreshedMemberState,
+  refreshFamilyProductMemberState,
+  validateMemberStateAgainstFamilyPending,
   resolveFamilyRecordForPendingSweep,
   resolveFamilyRecordForPostOrphanPendingSweep,
   selectFamilyControllerAction,
@@ -3718,14 +3720,19 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
 
         // Mark every startable pending as dispatched before any member host start.
+        // S5: refresh memberState from the family bag at mark time. Do not pass
+        // the selection-time clone. A selection-time clone can make mark accept
+        // a member stream that advanced after select.
         const markedItems: BatchStartItem[] = [];
         for (const item of startableItems) {
           familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
-          const marked = markFamilyPendingDispatchedForHost({
-            family: familyRecord.familySnapshot,
+          const marked = markFamilyPendingDispatchedWithRefreshedMemberState({
+            familyRecord,
             dispatchId: item.dispatchId,
             at: new Date().toISOString(),
-            memberState: item.memberState,
+            memberGoalId: item.memberGoalId,
+            memberWorkflowId: item.memberWorkflowId,
+            liveState: state,
           });
           if (!marked.ok) {
             ctx.ui.notify(
@@ -3748,7 +3755,12 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
             marked.family,
             marked.events,
           );
-          markedItems.push(item);
+          // Keep mark-time isLiveRoot (stable family root identity) for start routing.
+          markedItems.push({
+            ...item,
+            memberState: marked.memberState,
+            isLiveRoot: marked.isLiveRoot,
+          });
         }
 
         type BatchStartOutcome = {
@@ -3763,16 +3775,64 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         );
 
         // Deterministic items share host resources; run serially and settle each.
+        // S5: refresh memberState again at start (family bag may have advanced
+        // after intermediate marks or sibling settles within this pass).
+        // Keep mark-time item.isLiveRoot for routing; do not reclassify from free slots.
+        // Re-validate hash/action against the pending after refresh.
         const startOutcomes: BatchStartOutcome[] = [];
         for (const item of deterministicMarked) {
           familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+          const refreshed = refreshFamilyProductMemberState({
+            familyRecord,
+            memberGoalId: item.memberGoalId,
+            memberWorkflowId: item.memberWorkflowId,
+            liveState: state,
+          });
+          if (!refreshed.ok) {
+            ctx.ui.notify(
+              `Hypagoal could not refresh member '${item.memberGoalId}' for start. `
+              + refreshed.diagnostics.map((d) => d.message).join("; "),
+              "warning",
+            );
+            startOutcomes.push({ item, itemOutcome: "stop" });
+            settleFamilyDispatchById(
+              item.dispatchId,
+              "interrupted",
+              `Could not refresh member '${item.memberGoalId}' at start time.`,
+              ctx,
+            );
+            familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+            continue;
+          }
+          const pendingMatch = validateMemberStateAgainstFamilyPending({
+            family: familyRecord.familySnapshot,
+            dispatchId: item.dispatchId,
+            memberState: refreshed.memberState,
+          });
+          if (!pendingMatch.ok) {
+            ctx.ui.notify(
+              `Hypagoal start validation failed for member '${item.memberGoalId}'. `
+              + pendingMatch.diagnostics.map((d) => d.message).join("; "),
+              "warning",
+            );
+            startOutcomes.push({ item, itemOutcome: "stop" });
+            settleFamilyDispatchById(
+              item.dispatchId,
+              "interrupted",
+              `Start validation failed for member '${item.memberGoalId}'.`,
+              ctx,
+            );
+            familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+            continue;
+          }
           const itemOutcome = await dispatchSelectedMemberAction(
             ctx,
             {
               kind: "dispatch",
               memberGoalId: item.memberGoalId,
               memberWorkflowId: item.memberWorkflowId,
-              memberState: item.memberState,
+              memberState: refreshed.memberState,
+              // Mark-time stable family root identity; not free-slot occupancy.
               isLiveRoot: item.isLiveRoot,
               decision: item.decision,
               family: familyRecord,
@@ -3803,6 +3863,9 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
 
         // Model items: start concurrently. Do not await sibling completion before
         // the next start. Settle each pending when that worker completes (S4).
+        // S5: refresh memberState content from the family bag at start. Keep
+        // mark-time item.isLiveRoot for routing (stable family root identity).
+        // Free slots may hold a sibling during concurrent start; do not reclassify.
         const modelWork = modelMarked.map(async (item) => {
           const recordForStart = loadFamilyRecordForController(ctx) ?? familyRecord;
           if (!recordForStart) {
@@ -3812,13 +3875,65 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
             } satisfies BatchStartOutcome;
           }
           familyRecord = recordForStart;
+          const refreshed = refreshFamilyProductMemberState({
+            familyRecord: recordForStart,
+            memberGoalId: item.memberGoalId,
+            memberWorkflowId: item.memberWorkflowId,
+            liveState: state,
+          });
+          if (!refreshed.ok) {
+            ctx.ui.notify(
+              `Hypagoal could not refresh member '${item.memberGoalId}' for start. `
+              + refreshed.diagnostics.map((d) => d.message).join("; "),
+              "warning",
+            );
+            await withIsolatedFreeSlotLock(async () => {
+              familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord ?? latestFamilyRecord;
+              if (familyRecord?.familySnapshot.pendingDispatches[item.dispatchId]) {
+                settleFamilyDispatchById(
+                  item.dispatchId,
+                  "interrupted",
+                  `Could not refresh member '${item.memberGoalId}' at start time.`,
+                  ctx,
+                );
+              }
+              familyRecord = latestFamilyRecord ?? familyRecord;
+            });
+            return { item, itemOutcome: "stop" as const } satisfies BatchStartOutcome;
+          }
+          const pendingMatch = validateMemberStateAgainstFamilyPending({
+            family: recordForStart.familySnapshot,
+            dispatchId: item.dispatchId,
+            memberState: refreshed.memberState,
+          });
+          if (!pendingMatch.ok) {
+            ctx.ui.notify(
+              `Hypagoal start validation failed for member '${item.memberGoalId}'. `
+              + pendingMatch.diagnostics.map((d) => d.message).join("; "),
+              "warning",
+            );
+            await withIsolatedFreeSlotLock(async () => {
+              familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord ?? latestFamilyRecord;
+              if (familyRecord?.familySnapshot.pendingDispatches[item.dispatchId]) {
+                settleFamilyDispatchById(
+                  item.dispatchId,
+                  "interrupted",
+                  `Start validation failed for member '${item.memberGoalId}'.`,
+                  ctx,
+                );
+              }
+              familyRecord = latestFamilyRecord ?? familyRecord;
+            });
+            return { item, itemOutcome: "stop" as const } satisfies BatchStartOutcome;
+          }
           const itemOutcome = await dispatchSelectedMemberAction(
             ctx,
             {
               kind: "dispatch",
               memberGoalId: item.memberGoalId,
               memberWorkflowId: item.memberWorkflowId,
-              memberState: item.memberState,
+              memberState: refreshed.memberState,
+              // Mark-time stable family root identity; not free-slot occupancy.
               isLiveRoot: item.isLiveRoot,
               decision: item.decision,
               family: recordForStart,
@@ -3945,17 +4060,20 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           sequentialCommit.family,
           sequentialCommit.events,
         );
-        const marked = markFamilyPendingDispatchedForHost({
-          family: familyRecord.familySnapshot,
+        // S5: refresh memberState at mark from the live family bag (not selection-time).
+        const sequentialMarked = markFamilyPendingDispatchedWithRefreshedMemberState({
+          familyRecord,
           dispatchId: sequentialDispatchId,
           at: new Date().toISOString(),
-          memberState: controller.memberState,
+          memberGoalId: controller.memberGoalId,
+          memberWorkflowId: controller.memberWorkflowId,
+          liveState: state,
         });
-        if (!marked.ok) {
+        if (!sequentialMarked.ok) {
           ctx.ui.notify(
             `Hypagoal could not mark family dispatch '${sequentialDispatchId}' as dispatched. `
             + `Member '${controller.memberGoalId}' was not started. `
-            + marked.diagnostics.map((d) => d.message).join("; "),
+            + sequentialMarked.diagnostics.map((d) => d.message).join("; "),
             "warning",
           );
           // Interrupt the committed selected pending so sequential selection is not blocked.
@@ -3969,13 +4087,58 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         }
         familyRecord = persistFamilySnapshotUpdate(
           familyRecord,
-          marked.family,
-          marked.events,
+          sequentialMarked.family,
+          sequentialMarked.events,
         );
+        // S5: refresh again at start in case the family bag advanced after mark.
+        // Keep mark-time isLiveRoot for routing. Re-validate hash/action vs pending.
+        familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
+        const sequentialStart = refreshFamilyProductMemberState({
+          familyRecord,
+          memberGoalId: controller.memberGoalId,
+          memberWorkflowId: controller.memberWorkflowId,
+          liveState: state,
+        });
+        if (!sequentialStart.ok) {
+          ctx.ui.notify(
+            `Hypagoal could not refresh member '${controller.memberGoalId}' for start. `
+            + sequentialStart.diagnostics.map((d) => d.message).join("; "),
+            "warning",
+          );
+          settleFamilyDispatchById(
+            sequentialDispatchId,
+            "interrupted",
+            `Could not refresh member '${controller.memberGoalId}' at start time.`,
+            ctx,
+          );
+          return;
+        }
+        const sequentialPendingMatch = validateMemberStateAgainstFamilyPending({
+          family: familyRecord.familySnapshot,
+          dispatchId: sequentialDispatchId,
+          memberState: sequentialStart.memberState,
+        });
+        if (!sequentialPendingMatch.ok) {
+          ctx.ui.notify(
+            `Hypagoal start validation failed for member '${controller.memberGoalId}'. `
+            + sequentialPendingMatch.diagnostics.map((d) => d.message).join("; "),
+            "warning",
+          );
+          settleFamilyDispatchById(
+            sequentialDispatchId,
+            "interrupted",
+            `Start validation failed for member '${controller.memberGoalId}'.`,
+            ctx,
+          );
+          return;
+        }
         dispatchOutcome = await dispatchSelectedMemberAction(
           ctx,
           {
             ...controller,
+            memberState: sequentialStart.memberState,
+            // Mark-time stable family root identity; not free-slot occupancy.
+            isLiveRoot: sequentialMarked.isLiveRoot,
             family: familyRecord,
           },
           { familyDispatchId: sequentialDispatchId },

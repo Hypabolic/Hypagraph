@@ -517,6 +517,110 @@ export function buildFamilyControllerMemberStates(
 }
 
 /**
+ * Refresh one selected member's state from the current family record at mark/start.
+ *
+ * Selection freezes memberState at select time. Mark and start must re-read the
+ * family bag so intermediate mutations within a pass cannot pass a stale
+ * selection-time hash into markFamilyActionDispatched or host start.
+ *
+ * isLiveRoot is stable family session-root identity (family.rootGoalId and that
+ * member's workflowId). It is not free-slot occupancy. Free slots may briefly
+ * hold a non-root member during concurrent isolated start; that must not flip
+ * routing for the desk root or for a child.
+ *
+ * memberState content:
+ * - Non-root members always use the family bag snapshot.
+ * - The session desk root uses liveState only when free slots currently hold
+ *   that same root identity. When free slots are mid-bind for another member,
+ *   the root still reports isLiveRoot true and attaches the bag snapshot.
+ *
+ * Fails with goal_family_dispatch_stale_selection when the member is missing
+ * or identity does not match the selection.
+ */
+export function refreshFamilyProductMemberState(input: {
+  familyRecord: PersistedGoalFamily;
+  memberGoalId: string;
+  memberWorkflowId: string;
+  /**
+   * Optional free-slot / desk stream. Used only as root content when this
+   * member is the family session root and free slots currently hold that root.
+   * Free-slot occupancy does not set isLiveRoot.
+   */
+  liveState?: HypagraphState | undefined;
+}):
+  | {
+    ok: true;
+    memberState: HypagraphState;
+    /**
+     * True when this member is the family session desk root (stable).
+     * Not free-slot occupancy. Host start must use this for routing, not a
+     * re-derived free-slot identity mid-batch.
+     */
+    isLiveRoot: boolean;
+  }
+  | { ok: false; diagnostics: Diagnostic[] } {
+  const family = input.familyRecord.familySnapshot;
+  const member = family.members[input.memberGoalId];
+  if (!member || member.workflowId !== input.memberWorkflowId) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Member '${input.memberGoalId}' is not present in the family record with `
+          + `workflow '${input.memberWorkflowId}' at mark/start time.`,
+        location: "memberState",
+      }],
+    };
+  }
+
+  // Always read bag content first. Do not overlay free-slot occupancy onto
+  // non-root members (concurrent bind can pollute free slots mid-batch).
+  const stored = input.familyRecord.workflows[input.memberWorkflowId]?.snapshot;
+  if (!stored) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Member '${input.memberGoalId}' has no workflow state in the family record `
+          + "at mark/start time.",
+        location: "memberState",
+      }],
+    };
+  }
+  if (
+    stored.workflowId !== input.memberWorkflowId
+    || stored.goal?.goalId !== input.memberGoalId
+  ) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Refreshed member state for '${input.memberGoalId}' does not match the selected `
+          + "goal or workflow.",
+        location: "memberState",
+      }],
+    };
+  }
+
+  const rootMember = family.members[family.rootGoalId];
+  const isLiveRoot = !!rootMember
+    && input.memberGoalId === family.rootGoalId
+    && input.memberWorkflowId === rootMember.workflowId;
+
+  const live = input.liveState;
+  const liveHoldsThisRoot = isLiveRoot
+    && !!live
+    && live.goal?.goalId === input.memberGoalId
+    && live.workflowId === input.memberWorkflowId;
+  // Prefer live desk root only when free slots currently hold that root stream.
+  const memberState = liveHoldsThisRoot && live ? live : stored;
+  return { ok: true, memberState, isLiveRoot };
+}
+
+/**
  * Select the next product controller action.
  *
  * One-member families and missing family records keep the root-only path.

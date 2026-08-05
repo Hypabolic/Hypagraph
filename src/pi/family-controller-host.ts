@@ -18,12 +18,18 @@ import {
   markFamilyActionDispatched,
 } from "../domain/family-scheduler.js";
 import {
+  getPendingDispatch,
   listPendingDispatches,
   type GoalFamilyEvent,
   type GoalFamilyResult,
   type GoalFamilyRuntime,
 } from "../domain/goal-family.js";
-import type { GoalDispatchableContinuation } from "../domain/goal-continuation.js";
+import {
+  continuationActionMatches,
+  isDispatchableGoalContinuation,
+  selectGoalContinuation,
+  type GoalDispatchableContinuation,
+} from "../domain/goal-continuation.js";
 import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import type { PersistedGoalFamily } from "../persistence/family-store.js";
 import {
@@ -31,6 +37,7 @@ import {
   buildFamilyControllerMemberStates,
   commitFamilyProductConcurrentBatch,
   commitFamilyProductSelection,
+  refreshFamilyProductMemberState,
   resolveFamilyProductConcurrencyPolicy,
   selectFamilyProductControllerAction,
   type FamilyProductConcurrencyPolicy,
@@ -251,6 +258,139 @@ export function markFamilyPendingDispatchedForHost(input: {
 }
 
 /**
+ * Refresh one member state from the family record, then mark the pending dispatched.
+ *
+ * Use at mark time so selection-time memberState clones cannot make mark accept
+ * a member stream that advanced after select/commit.
+ *
+ * Returns the refreshed member state and stable isLiveRoot for callers that
+ * need them. The product path may refresh again at start after intermediate
+ * bag updates; it must not assume mark-time content is final for start attach.
+ */
+export function markFamilyPendingDispatchedWithRefreshedMemberState(input: {
+  familyRecord: PersistedGoalFamily;
+  dispatchId: string;
+  at: string;
+  memberGoalId: string;
+  memberWorkflowId: string;
+  /**
+   * Optional free-slot / desk stream. Content only when this member is the
+   * family session root and free slots currently hold that root.
+   */
+  liveState?: HypagraphState | undefined;
+}):
+  | {
+    ok: true;
+    family: GoalFamilyRuntime;
+    events: GoalFamilyEvent[];
+    memberState: HypagraphState;
+    /** Stable family session-root identity. Not free-slot occupancy. */
+    isLiveRoot: boolean;
+  }
+  | { ok: false; diagnostics: Diagnostic[] } {
+  const refreshed = refreshFamilyProductMemberState({
+    familyRecord: input.familyRecord,
+    memberGoalId: input.memberGoalId,
+    memberWorkflowId: input.memberWorkflowId,
+    liveState: input.liveState,
+  });
+  if (!refreshed.ok) {
+    return { ok: false, diagnostics: refreshed.diagnostics };
+  }
+
+  const marked = markFamilyActionDispatched({
+    family: input.familyRecord.familySnapshot,
+    dispatchId: input.dispatchId,
+    at: input.at,
+    memberState: refreshed.memberState,
+  });
+  if (!marked.ok) {
+    return { ok: false, diagnostics: marked.diagnostics };
+  }
+  return {
+    ok: true,
+    family: marked.family,
+    events: marked.events,
+    memberState: refreshed.memberState,
+    isLiveRoot: refreshed.isLiveRoot,
+  };
+}
+
+/**
+ * Re-check refreshed member state against a family pending selection.
+ *
+ * Use at start after bag refresh. Mark already validated at mark time; this
+ * light check rejects post-mark bag advances (hash or preferred action) before
+ * host start attaches the stream. Works for selected and dispatched pendings.
+ */
+export function validateMemberStateAgainstFamilyPending(input: {
+  family: GoalFamilyRuntime;
+  dispatchId: string;
+  memberState: HypagraphState;
+}): { ok: true } | { ok: false; diagnostics: Diagnostic[] } {
+  const pending = getPendingDispatch(input.family, input.dispatchId);
+  if (!pending) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_missing",
+        message:
+          `Goal family '${input.family.familyId}' has no pending dispatch `
+          + `'${input.dispatchId}' for start validation.`,
+        location: "dispatchId",
+      }],
+    };
+  }
+
+  const state = input.memberState;
+  if (
+    state.workflowId !== pending.selection.workflowId
+    || state.goal?.goalId !== pending.selection.goalId
+  ) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Member state for dispatch '${input.dispatchId}' does not match the selected `
+          + "goal or workflow.",
+        location: "memberState",
+      }],
+    };
+  }
+  if (state.snapshotHash !== pending.selection.selectedSnapshotHash) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Family dispatch '${input.dispatchId}' was selected against snapshot `
+          + `'${pending.selection.selectedSnapshotHash}', but the member snapshot is `
+          + `'${state.snapshotHash}'.`,
+        location: "memberState",
+      }],
+    };
+  }
+  const currentDecision = selectGoalContinuation(state);
+  if (
+    !isDispatchableGoalContinuation(currentDecision)
+    || !continuationActionMatches(currentDecision, pending.selection.action)
+  ) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "goal_family_dispatch_stale_selection",
+        message:
+          `Family dispatch '${input.dispatchId}' is no longer the preferred dispatchable `
+          + "action on the member state.",
+        location: "memberState",
+      }],
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Settle one family pending by dispatchId.
  * Clears only that pending. Unrelated pendings remain.
  * Product partial-failure mode is independent-settle: one of N may fail or
@@ -462,6 +602,10 @@ export function prepareFamilyControllerPass(input: {
     pendingCount: listPendingDispatches(input.familyRecord.familySnapshot).length,
   };
 }
+
+export {
+  refreshFamilyProductMemberState,
+};
 
 export type {
   FamilyProductConcurrencyPolicy,
