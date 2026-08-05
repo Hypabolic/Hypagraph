@@ -908,10 +908,10 @@ describe("S6 host product synthesis path", () => {
     expect(again.skipped.length + again.pending.length).toBeGreaterThanOrEqual(0);
   });
 
-  it("does not re-apply failed join when child failure policy already blocked the parent", () => {
+  it("quiet-skips failed join when child failure policy already blocked the parent", () => {
     // Product path: non-completed child return applies failure policy first.
     // Parent is not running, so host synthesis does not publish join.passed=false.
-    // Child failure policy owns the parent effect.
+    // Child failure policy owns the parent effect. Re-entry stays quiet.
     const setup = setupHostFamily("failed");
     expect(setup.parentState.runtime.nodes.work?.status).toBe("blocked");
     const ready = applyReadyJoinSynthesesAfterReturns({
@@ -922,9 +922,107 @@ describe("S6 host product synthesis path", () => {
     });
     expect(ready.ok).toBe(true);
     expect(ready.applied).toHaveLength(0);
-    expect(
-      ready.diagnostics.some((item) => item.code === "child_outcome_synthesis_parent_not_running"),
-    ).toBe(true);
+    expect(ready.diagnostics).toHaveLength(0);
+    expect(ready.skipped.some((item) => item.parentNodeId === "work")).toBe(true);
+
+    const again = applyReadyJoinSynthesesAfterReturns({
+      family: setup.family,
+      parentState: setup.parentState,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(again.ok).toBe(true);
+    expect(again.applied).toHaveLength(0);
+    expect(again.diagnostics).toHaveLength(0);
+  });
+
+  it("documents that auto join without expectedBindingCount applies after second of three sequential children", () => {
+    // Honest product rule: auto multi without expectedBindingCount is only safe
+    // for a planned join of exactly two. After two of three returns, set size is
+    // two, auto eligibility passes, and join.passed can publish early.
+    // For three or more, callers must set expectedBindingCount.
+    let rootState = createStartedWorkflow(parentWithJoinFact("Three child root"), "workflow-root", "goal-root");
+    rootState = startTask(rootState, "work");
+    const familyResult = createRootFamily({
+      familyId: "family-s6-three",
+      rootGoalId: "goal-root",
+      rootWorkflowId: "workflow-root",
+      at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 4,
+        maxGoalsInFamily: 16,
+        maxChildCreationAttemptsPerNode: 4,
+      },
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+
+    let family = familyResult.family;
+    let parentState = rootState;
+    for (const index of [1, 2] as const) {
+      const child = createBoundedChildGoal({
+        family,
+        parentState,
+        parentNodeId: "work",
+        childDefinition: childTask(`Child ${index}`),
+        childGoalId: `goal-child-${index}`,
+        childWorkflowId: `workflow-child-${index}`,
+        bindingId: `binding-${index}`,
+        at: index === 1 ? later : returnAt,
+        scopePaths: ["src/**"],
+        failurePolicy: "block-parent-node",
+      });
+      if (!child.ok) throw new Error(JSON.stringify(child.diagnostics));
+      const returned = returnChildGoal({
+        family: child.family,
+        parentState: child.parentState,
+        childState: terminalCompletedChild(child.childState),
+        bindingId: `binding-${index}`,
+        at: index === 1 ? returnAt : joinAt,
+        outcome: "completed",
+      });
+      if (!returned.ok) throw new Error(JSON.stringify(returned.diagnostics));
+      family = returned.family;
+      parentState = returned.parentState;
+    }
+
+    expect(listBindingsForParentJoin({
+      family,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+    })).toEqual(["binding-1", "binding-2"]);
+
+    // Auto path (no expectedBindingCount): second-of-three applies early.
+    const autoReady = applyReadyJoinSynthesesAfterReturns({
+      family,
+      parentState,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(autoReady.ok).toBe(true);
+    expect(autoReady.applied).toHaveLength(1);
+    expect(autoReady.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+
+    // With expectedBindingCount 3, the same two-binding set stays pending.
+    const withExpected = createAllSuccessJoinPolicy({
+      bindingIds: ["binding-1", "binding-2"],
+      expectedBindingCount: 3,
+    });
+    if (!withExpected.ok) throw new Error(JSON.stringify(withExpected.diagnostics));
+    const attemptId = parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    const pending = applyProductJoinSynthesis({
+      family,
+      parentState,
+      policy: withExpected.policy,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+    });
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) throw new Error("expected ok");
+    expect(pending.status).toBe("pending");
   });
 
   it("applies join synthesis on the persisted family product path", () => {

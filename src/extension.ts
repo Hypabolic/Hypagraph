@@ -3145,11 +3145,11 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
             level: item.result.status === "passed" ? "info" : "warning",
           });
         }
-        for (const item of synthesized.diagnostics) {
-          if (
-            parentMutated
-            || item.code === "child_outcome_synthesis_parent_not_running"
-          ) {
+        // Notify diagnostics only when this pass mutated parent state.
+        // Quiet re-entry: skipped parent-not-running and other non-mutating
+        // outcomes must not warn on every free-slot controller iteration.
+        if (parentMutated) {
+          for (const item of synthesized.diagnostics) {
             notified.push({
               text: `Child join synthesis note: ${item.code}: ${item.message}`,
               level: "warning",

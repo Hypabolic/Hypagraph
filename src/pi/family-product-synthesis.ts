@@ -11,13 +11,17 @@
  * - Apply only when every binding is terminal, the parent node is running,
  *   the parent declares the result fact produce, the fact is not already on
  *   the current attempt, and either expectedBindingCount is met or the set
- *   has at least two bindings (prevents first sequential child from completing
- *   a planned multi-child join). For a one-child join, pass an explicit policy
- *   or expectedBindingCount: 1.
+ *   has at least AUTO_JOIN_MIN_BINDING_COUNT (2) bindings.
+ * - Without expectedBindingCount, auto multi-child is only safe for a planned
+ *   join of exactly two children. After two sequential returns the set size is
+ *   two and the join can apply. For three or more sequential children, set
+ *   expectedBindingCount to the planned size, or the second return can complete
+ *   the join early. One-child joins need an explicit policy or expectedBindingCount: 1.
  *
  * Failed-join host publish and block run only while the parent is still
  * running. When a child failure policy already failed or blocked the parent,
- * synthesis does not re-apply. Child failure policy owns that path.
+ * synthesis does not re-apply. That case is a quiet skip on re-entry (no
+ * repeated diagnostic). Child failure policy owns that path.
  *
  * These helpers are pure of Pi I/O. Extension commits parent events and
  * family records after the helpers return.
@@ -52,7 +56,11 @@ export {
 };
 export type { ChildOutcomeSynthesisPolicy, ChildOutcomeSynthesisResult };
 
-/** Minimum binding count for auto product join without expectedBindingCount. */
+/**
+ * Minimum binding count for auto product join without expectedBindingCount.
+ * Auto without that field is only safe for a planned join of exactly two
+ * children. For N greater than 2, set expectedBindingCount to N.
+ */
 export const AUTO_JOIN_MIN_BINDING_COUNT = 2 as const;
 
 export interface ProductJoinSynthesisInput {
@@ -170,6 +178,9 @@ export function isAutoProductJoinEligible(input: {
 
   // Auto path without expectedBindingCount: require at least two bindings so
   // the first sequential child return cannot complete a multi-child join.
+  // This rule is only safe for a planned join of exactly two children.
+  // For three or more, set expectedBindingCount (second of three can otherwise
+  // complete the join early when the set size reaches two).
   if (!explicit && policy.bindingIds.length < AUTO_JOIN_MIN_BINDING_COUNT) {
     return {
       eligible: false,
@@ -177,7 +188,8 @@ export function isAutoProductJoinEligible(input: {
       reason:
         `Auto join waits for at least ${AUTO_JOIN_MIN_BINDING_COUNT} terminal bindings `
         + `or an explicit policy with expectedBindingCount. `
-        + `Current set has ${policy.bindingIds.length}.`,
+        + `Current set has ${policy.bindingIds.length}. `
+        + `For more than two planned children, set expectedBindingCount.`,
     };
   }
 
@@ -358,21 +370,20 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
     const parentNode = parentState.runtime.nodes[parentNodeId];
     if (!parentNode?.currentAttemptId || parentNode.status !== "running") {
       // Parent cannot accept synthesis apply (for example child failure policy
-      // already failed or blocked the parent). Child failure policy owns that path.
+      // already failed or blocked the parent). Child failure policy owns that
+      // path. Quiet skip on re-entry: do not emit a diagnostic every pass.
       const evaluated = synthesizeChildOutcomesFromFamily(input.family, policyResult.policy);
-      if (evaluated.ok && evaluated.result.status === "failed") {
-        diagnostics.push({
-          code: "child_outcome_synthesis_parent_not_running",
-          message:
-            `Join for parent node '${parentNodeId}' is terminal but the parent is `
-            + `'${parentNode?.status ?? "missing"}'. `
-            + "Failed-join fact publish is not applied when the parent is not running. "
-            + "Child failure policy already owns the parent effect.",
-          location: "parentNodeId",
-        });
-      } else if (!evaluated.ok) {
+      if (!evaluated.ok) {
         diagnostics.push(...evaluated.diagnostics);
+        continue;
       }
+      skipped.push({
+        parentNodeId,
+        reason:
+          `Join for parent node '${parentNodeId}' is terminal but the parent is `
+          + `'${parentNode?.status ?? "missing"}'. `
+          + "Synthesis apply is skipped. Child failure policy owns the parent effect.",
+      });
       continue;
     }
 
