@@ -288,11 +288,16 @@ export function createBoundedChildGoal(input: CreateBoundedChildGoalInput): Boun
       "parentNodeId",
     );
   }
-  if (!ACTIVE_ROOT_STATUSES.has(parentNodeRuntime.status)) {
+  // Create is allowed while the parent task is active, or while it already waits
+  // for a child on the same open attempt (multi-child wait set / sibling create).
+  const parentCanCreateChild = ACTIVE_ROOT_STATUSES.has(parentNodeRuntime.status)
+    || parentNodeRuntime.status === "waiting_for_child";
+  if (!parentCanCreateChild) {
     return reject(
       "child_goal_parent_not_active",
       `Parent task '${input.parentNodeId}' is '${parentNodeRuntime.status}'. `
-      + "A child goal can be created only from an active parent task attempt.",
+      + "A child goal can be created only from an active parent task attempt "
+      + "or while that attempt waits for a child.",
       "parentNodeId",
     );
   }

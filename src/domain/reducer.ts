@@ -1682,11 +1682,16 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           "nodeId",
         );
       }
-      if (!ACTIVE_ATTEMPT_STATUSES.has(node.status)) {
+      // Allow wait from an active attempt, or re-wait while already waiting_for_child
+      // on the same attempt (sibling create for multi-child wait set).
+      const canWaitForChild = ACTIVE_ATTEMPT_STATUSES.has(node.status)
+        || node.status === "waiting_for_child";
+      if (!canWaitForChild) {
         return reject(
           "child_goal_parent_not_active",
           `Node '${command.nodeId}' cannot wait for a child from status '${node.status}'. `
-          + "The parent task must be in an active attempt state.",
+          + "The parent task must be in an active attempt state "
+          + "or already waiting for a child on the same attempt.",
           "nodeId",
         );
       }
@@ -1772,6 +1777,15 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
           "parentEffect",
         );
       }
+      if (command.remainWaiting === true) {
+        if (command.outcome !== "completed" || command.parentEffect !== "resume") {
+          return reject(
+            "invalid_child_return_remain_waiting",
+            "remainWaiting is valid only for a completed child return with parent effect 'resume'.",
+            "remainWaiting",
+          );
+        }
+      }
       if (command.parentEffect === "return-for-revision") {
         const revision = state.goal?.automaticRevision;
         if (!state.goal || !revision || revision.consumedAttempts >= revision.maximumAttempts) {
@@ -1844,6 +1858,7 @@ export function handleCommand(state: HypagraphState, command: HypagraphCommand):
             outcome: command.outcome,
             parentEffect: command.parentEffect,
             reason,
+            ...(command.remainWaiting === true ? { remainWaiting: true } : {}),
             ...(command.evidence ? { evidence: structuredClone(command.evidence) } : {}),
           },
         });

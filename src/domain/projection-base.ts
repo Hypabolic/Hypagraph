@@ -627,8 +627,9 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
       }
       break;
     case "hypagraph.task.child-returned":
-      // Leave waiting_for_child and resume the same open attempt for integration.
-      // Child completion does not mark the parent task succeeded.
+      // Resume the same open attempt for integration, or keep waiting_for_child
+      // when remainWaiting is true (other sibling bindings for this parent node
+      // are still active). Child completion does not mark the parent task succeeded.
       if (node && event.attemptId && node.currentAttemptId === event.attemptId) {
         if (Array.isArray(event.data.evidence)) {
           const evidence = structuredClone(event.data.evidence as AttemptRuntime["evidence"]);
@@ -636,7 +637,11 @@ export function applyEvent(state: HypagraphState | undefined, event: DomainEvent
           if (attempt) attempt.evidence = evidence;
           node.evidence = evidence;
         }
-        node.status = "running";
+        if (event.data.remainWaiting === true) {
+          node.status = "waiting_for_child";
+        } else {
+          node.status = "running";
+        }
       }
       break;
     case "hypagraph.task.child-return-failed":

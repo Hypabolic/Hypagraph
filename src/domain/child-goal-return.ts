@@ -42,6 +42,37 @@ export {
 
 export type ChildReturnParentCommandEffect = ChildReturnCommandParentEffect;
 
+/**
+ * List active bindings for one parent goal and parent node.
+ * Order is deterministic by binding id (locale-independent).
+ * Optionally exclude one binding id (the returning binding).
+ */
+export function listActiveBindingsForParentNode(input: {
+  family: GoalFamilyRuntime;
+  parentGoalId: string;
+  parentNodeId: string;
+  excludeBindingId?: string;
+}): ChildGoalBinding[] {
+  const matches = Object.values(input.family.bindings).filter((binding) => {
+    if (binding.parentGoalId !== input.parentGoalId) return false;
+    if (binding.parentNodeId !== input.parentNodeId) return false;
+    if (binding.status !== "active") return false;
+    if (
+      input.excludeBindingId !== undefined
+      && binding.bindingId === input.excludeBindingId
+    ) {
+      return false;
+    }
+    return true;
+  });
+  matches.sort((left, right) => {
+    if (left.bindingId < right.bindingId) return -1;
+    if (left.bindingId > right.bindingId) return 1;
+    return 0;
+  });
+  return matches;
+}
+
 export interface ReturnChildGoalInput {
   family: GoalFamilyRuntime;
   /** Parent workflow state that owns the waiting task. */
@@ -92,8 +123,10 @@ const reject = (code: string, message: string, location?: string): ReturnChildGo
  *
  * On success the result includes:
  * - family binding terminal status and return record;
- * - parent workflow leave-wait and parent-effect events;
- * - validated published facts when the child completed.
+ * - parent workflow leave-wait and parent-effect events (or remain-waiting when siblings are active);
+ * - validated published facts when the child completed;
+ * - on non-completed return, family cancel events for remaining active sibling bindings
+ *   on the same parent node (failure policy owns the parent; siblings are not left active).
  *
  * On failure the result includes diagnostics only.
  * Inputs are not mutated. Partial parent or family state is not returned.
@@ -238,6 +271,19 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
     parentCommandEffect = parentEffectForFailurePolicy(binding.failurePolicy);
   }
 
+  // Multi-child wait set: if other bindings for this parent node are still active,
+  // a completed return must keep the parent waiting_for_child. The family input still
+  // holds this binding as active, so exclude it when scanning siblings.
+  // Non-completed returns apply failure policy on the first non-completed return
+  // even when sibling bindings remain active (plan §7.2).
+  const remainWaiting = effectiveOutcome === "completed"
+    && listActiveBindingsForParentNode({
+      family: input.family,
+      parentGoalId: binding.parentGoalId,
+      parentNodeId: binding.parentNodeId,
+      excludeBindingId: binding.bindingId,
+    }).length > 0;
+
   // Reject return-for-revision when automatic revision allowance is exhausted.
   // The durable effect must not claim revision-requested without emitting revision events.
   if (parentCommandEffect === "return-for-revision") {
@@ -304,6 +350,7 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
     correlationId,
     at: input.at,
     reason: stopReason,
+    ...(remainWaiting ? { remainWaiting: true } : {}),
     ...(effectiveOutcome === "completed" && input.facts
       ? { facts: structuredClone(input.facts) }
       : {}),
@@ -316,6 +363,16 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
   // Child completion must not complete the parent task or parent goal automatically.
   if (effectiveOutcome === "completed") {
     const parentNodeAfter = parentReturn.state.runtime.nodes[binding.parentNodeId];
+    if (remainWaiting) {
+      if (parentNodeAfter?.status !== "waiting_for_child") {
+        return reject(
+          "child_return_parent_left_wait_early",
+          "A completed child return must keep the parent waiting_for_child while sibling "
+          + "bindings for the same parent node remain active.",
+          "parentState",
+        );
+      }
+    }
     if (parentNodeAfter?.status === "succeeded") {
       return reject(
         "child_return_parent_completed",
@@ -357,6 +414,7 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
   };
 
   let nextFamily: GoalFamilyRuntime;
+  const familyEvents: GoalFamilyEvent[] = [familyEvent];
   try {
     nextFamily = applyFamilyEvent(input.family, familyEvent);
   } catch (error) {
@@ -365,6 +423,26 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
       ? String((error as { code: unknown }).code)
       : "goal_family_child_return_failed";
     return reject(code, message);
+  }
+
+  // When failure policy settles the parent, terminalise remaining active sibling
+  // bindings for the same parent node so the family has no leftover actives against
+  // a non-waiting parent. Do not emit parent workflow events or re-open the parent.
+  // Plan §7.2: failure policy owns the parent; synthesis quiet-skips.
+  if (effectiveOutcome !== "completed") {
+    const siblingCancel = terminaliseSiblingBindingsAfterParentFailure({
+      family: nextFamily,
+      parentGoalId: binding.parentGoalId,
+      parentNodeId: binding.parentNodeId,
+      excludeBindingId: binding.bindingId,
+      at: input.at,
+      correlationId,
+      causationId,
+      nextSequence: familySequence + 1,
+    });
+    if (!siblingCancel.ok) return siblingCancel;
+    nextFamily = siblingCancel.family;
+    familyEvents.push(...siblingCancel.familyEvents);
   }
 
   const nextBinding = nextFamily.bindings[binding.bindingId];
@@ -378,12 +456,93 @@ export function returnChildGoal(input: ReturnChildGoalInput): ReturnChildGoalRes
   return {
     ok: true,
     family: nextFamily,
-    familyEvents: [familyEvent],
+    familyEvents,
     parentState: parentReturn.state,
     parentEvents: parentReturn.events,
     binding: structuredClone(nextBinding),
     returnRecord: structuredClone(returnRecord),
   };
+}
+
+/** Stop reason stored on sibling bindings cancelled when failure policy settles the parent. */
+export const SIBLING_CANCELLED_BY_PARENT_FAILURE_REASON =
+  "Sibling cancelled because a child failure policy settled the parent wait set.";
+
+/**
+ * Terminalise remaining active sibling bindings after a non-completed return applies
+ * failure policy. Each sibling becomes cancelled with a durable parent effect that
+ * matches its own failure policy. Parent workflow state is not changed.
+ */
+function terminaliseSiblingBindingsAfterParentFailure(input: {
+  family: GoalFamilyRuntime;
+  parentGoalId: string;
+  parentNodeId: string;
+  excludeBindingId: string;
+  at: string;
+  correlationId: string;
+  causationId: string;
+  nextSequence: number;
+}):
+  | { ok: true; family: GoalFamilyRuntime; familyEvents: GoalFamilyEvent[] }
+  | { ok: false; diagnostics: Diagnostic[] } {
+  const siblings = listActiveBindingsForParentNode({
+    family: input.family,
+    parentGoalId: input.parentGoalId,
+    parentNodeId: input.parentNodeId,
+    excludeBindingId: input.excludeBindingId,
+  });
+  if (siblings.length === 0) {
+    return { ok: true, family: input.family, familyEvents: [] };
+  }
+
+  let nextFamily = input.family;
+  const familyEvents: GoalFamilyEvent[] = [];
+  let sequence = input.nextSequence;
+
+  for (const sibling of siblings) {
+    const siblingCommandEffect = parentEffectForFailurePolicy(sibling.failurePolicy);
+    const siblingDurableEffect = durableParentEffect(siblingCommandEffect);
+    const siblingReturnRecord: ChildReturnRecord = {
+      outcome: "cancelled",
+      parentEffect: siblingDurableEffect,
+      returnedAt: input.at,
+      stopReason: SIBLING_CANCELLED_BY_PARENT_FAILURE_REASON,
+    };
+    const siblingEvent: GoalFamilyEvent = {
+      eventId: `family-child-return-sibling-cancel:${input.family.familyId}:${sibling.bindingId}`,
+      familyId: input.family.familyId,
+      sequence,
+      type: "hypagraph.family.child-return-recorded",
+      version: GOAL_FAMILY_EVENT_VERSION,
+      timestamp: input.at,
+      causationId: input.causationId,
+      correlationId: input.correlationId,
+      data: {
+        bindingId: sibling.bindingId,
+        childGoalId: sibling.childGoalId,
+        parentGoalId: sibling.parentGoalId,
+        parentWorkflowId: sibling.parentWorkflowId,
+        parentNodeId: sibling.parentNodeId,
+        parentAttemptId: sibling.parentAttemptId,
+        outcome: "cancelled",
+        parentEffect: siblingDurableEffect,
+        returnRecord: structuredClone(siblingReturnRecord),
+      },
+    };
+    try {
+      nextFamily = applyFamilyEvent(nextFamily, siblingEvent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "goal_family_child_return_failed";
+      return reject(code, message);
+    }
+    familyEvents.push(siblingEvent);
+    sequence += 1;
+  }
+
+  return { ok: true, family: nextFamily, familyEvents };
 }
 
 /**

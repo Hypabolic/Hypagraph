@@ -15,11 +15,16 @@
  *   AUTO_JOIN_MIN_BINDING_COUNT (2) bindings.
  * - Default result fact join.passed does not require a parent produce.
  * - Custom resultFactName still requires a matching boolean produce.
- * - Without expectedBindingCount, auto multi-child is only safe for a planned
- *   join of exactly two children. After two sequential returns the set size is
- *   two and the join can apply. For three or more sequential children, set
- *   expectedBindingCount to the planned size, or the second return can complete
- *   the join early. One-child joins need an explicit policy or expectedBindingCount: 1.
+ * - Multi-child wait set (ordinary path): the parent may create siblings while
+ *   waiting_for_child. Intermediate completed returns keep the parent waiting
+ *   while any sibling binding is active. The last clearing return resumes the
+ *   parent to running. Auto join then sees a full terminal set without a hand
+ *   expectedBindingCount. One-child joins still need an explicit policy or
+ *   expectedBindingCount: 1 (AUTO_JOIN_MIN stays 2).
+ * - Create tally (§4.2.2) is not required for J2: product create and return
+ *   commits are single-threaded on one parent wait set, so natural wait-set
+ *   safety is sufficient. A host tally remains optional if a later race appears.
+ * - Explicit expectedBindingCount remains available for advanced callers and tests.
  *
  * Explicit policy path keeps declare-required for the result fact.
  * Explicit does not opt into host-default publish.
@@ -66,8 +71,9 @@ export type { ChildOutcomeSynthesisPolicy, ChildOutcomeSynthesisResult };
 
 /**
  * Minimum binding count for auto product join without expectedBindingCount.
- * Auto without that field is only safe for a planned join of exactly two
- * children. For N greater than 2, set expectedBindingCount to N.
+ * With the multi-child wait set, ordinary N≥2 joins are safe without a hand
+ * count: the parent stays waiting until every sibling binding is terminal.
+ * One-child auto join still requires an explicit policy or expectedBindingCount: 1.
  */
 export const AUTO_JOIN_MIN_BINDING_COUNT = 2 as const;
 
@@ -219,10 +225,9 @@ export function isAutoProductJoinEligible(input: {
   }
 
   // Auto path without expectedBindingCount: require at least two bindings so
-  // the first sequential child return cannot complete a multi-child join.
-  // This rule is only safe for a planned join of exactly two children.
-  // For three or more, set expectedBindingCount (second of three can otherwise
-  // complete the join early when the set size reaches two).
+  // a single-child return cannot auto-join. Multi-child wait set keeps the
+  // parent waiting until every sibling for the parent node is terminal, so
+  // ordinary N≥2 joins do not apply early without a hand expectedBindingCount.
   if (!explicit && policy.bindingIds.length < AUTO_JOIN_MIN_BINDING_COUNT) {
     return {
       eligible: false,
@@ -230,8 +235,7 @@ export function isAutoProductJoinEligible(input: {
       reason:
         `Auto join waits for at least ${AUTO_JOIN_MIN_BINDING_COUNT} terminal bindings `
         + `or an explicit policy with expectedBindingCount. `
-        + `Current set has ${policy.bindingIds.length}. `
-        + `For more than two planned children, set expectedBindingCount.`,
+        + `Current set has ${policy.bindingIds.length}.`,
     };
   }
 

@@ -273,8 +273,8 @@ export interface InteractionFeedbackDefinition {
 /**
  * Absolute deadline which the request event stores.
  *
- * Evaluate the deadline on wake, resume, and reload with a supplied evaluation
- * time. Never read the wall clock inside the domain reducer.
+ * Prefer a supplied evaluation time on wake, resume, and reload so tests and
+ * replay stay stable. Absolute domain purity is not required; see AGENTS.md.
  */
 export interface InteractionDeadline {
   absolute: string;
@@ -1149,7 +1149,10 @@ export type HypagraphCommand =
   })
   /**
    * Apply a validated child-goal return against a parent task that waits for a child.
-   * Success resumes the parent attempt. Failure policies fail, block, or request revision.
+   * Success resumes the parent attempt unless remainWaiting is true.
+   * When remainWaiting is true, the parent stays waiting_for_child because sibling
+   * bindings for the same parent node are still active.
+   * Failure policies fail, block, or request revision.
    * Child completion does not complete the parent task automatically.
    */
   | (CommandBase & {
@@ -1160,6 +1163,12 @@ export type HypagraphCommand =
     bindingId: string;
     outcome: "completed" | "failed" | "cancelled" | "budget_limited";
     parentEffect: "resume" | "fail-parent-node" | "block-parent-node" | "return-for-revision";
+    /**
+     * When true with completed + resume, keep parent status waiting_for_child.
+     * Use this when other bindings for the same parent node remain active.
+     * Omit or leave false when this return clears the last active wait for the node.
+     */
+    remainWaiting?: boolean;
     facts?: FactInput[];
     evidence?: EvidenceReference[];
     reason?: string;

@@ -4,7 +4,10 @@ import {
   validateChildDefinitionScopes,
 } from "../domain/child-goal-binding.js";
 import type { BoundedChildGoalResult } from "../domain/child-goal-creation.js";
-import type { ReturnChildGoalResult } from "../domain/child-goal-return.js";
+import {
+  SIBLING_CANCELLED_BY_PARENT_FAILURE_REASON,
+  type ReturnChildGoalResult,
+} from "../domain/child-goal-return.js";
 import {
   GOAL_FAMILY_SCHEMA_VERSION,
   GoalFamilyRestoreError,
@@ -424,8 +427,10 @@ export function restorePersistedGoalFamily(value: PersistedGoalFamily): Persiste
 /**
  * Validate that each child binding matches parent wait state and child workflow membership.
  * Active bindings require a matching hypagraph.task.waiting-for-child event and current wait status.
- * Terminal bindings require a matching child-return event and a parent that left waiting_for_child.
- * Each current parent wait requires exactly one matching active binding and child workflow.
+ * Terminal bindings require a matching child-return event, except family-only sibling cancels
+ * after a parent failure policy settles the wait set.
+ * Each current parent wait requires at least one active binding for the parent attempt
+ * (multi-child wait set may have several actives; the latest wait need not still be active).
  * Child workflow budgets must equal binding budgets. Child node scopes must not widen the binding.
  */
 function validateChildBindingWorkflowIntegrity(
@@ -507,13 +512,17 @@ function validateChildBindingWorkflowIntegrity(
       }
       const returnMatch = findMatchingReturnEvent(parentWorkflow, binding);
       if (!returnMatch) {
-        throw new GoalFamilyRestoreError(
-          "goal_family_binding_return_event_missing",
-          `Binding '${binding.bindingId}' has no matching parent child-return event on workflow `
-          + `'${binding.parentWorkflowId}' for node '${binding.parentNodeId}'.`,
-        );
+        // Sibling cancelled by parent failure policy: family-only terminal, no parent return event.
+        if (!isSiblingCancelledByParentFailurePolicy(binding, bindings, parentWorkflow)) {
+          throw new GoalFamilyRestoreError(
+            "goal_family_binding_return_event_missing",
+            `Binding '${binding.bindingId}' has no matching parent child-return event on workflow `
+            + `'${binding.parentWorkflowId}' for node '${binding.parentNodeId}'.`,
+          );
+        }
+      } else {
+        assertTerminalReturnEventMatchesBinding(binding, returnMatch, parentWorkflow);
       }
-      assertTerminalReturnEventMatchesBinding(binding, returnMatch, parentWorkflow);
     }
 
     const childGoalBudget = childWorkflow.snapshot.goal?.budget.limits ?? {};
@@ -548,7 +557,10 @@ function validateChildBindingWorkflowIntegrity(
     }
   }
 
-  // Reverse direction: each current parent wait must have exactly one matching active binding.
+  // Reverse direction: multi-child wait set may have several active bindings on one attempt.
+  // Require at least one active binding for the waiting parent node and attempt.
+  // Do not require the latest wait event binding to still be active (out-of-order returns).
+  // Per-binding forward checks already require a matching wait event for each active binding.
   for (const [workflowId, workflow] of Object.entries(workflows)) {
     const parentGoalId = workflow.snapshot.goal?.goalId;
     if (!parentGoalId) continue;
@@ -561,18 +573,18 @@ function validateChildBindingWorkflowIntegrity(
           `Workflow '${workflowId}' node '${nodeId}' is waiting_for_child without a current attempt.`,
         );
       }
-      const currentWait = findCurrentWaitEvent(workflow, nodeId, attemptId);
-      if (!currentWait) {
+      const anyWait = findCurrentWaitEvent(workflow, nodeId, attemptId);
+      if (!anyWait) {
         throw new GoalFamilyRestoreError(
           "goal_family_wait_event_missing",
           `Workflow '${workflowId}' node '${nodeId}' is waiting_for_child without a wait event.`,
         );
       }
-      const waitChildGoalId = typeof currentWait.event.data.childGoalId === "string"
-        ? currentWait.event.data.childGoalId
+      const waitChildGoalId = typeof anyWait.event.data.childGoalId === "string"
+        ? anyWait.event.data.childGoalId
         : "";
-      const waitBindingId = typeof currentWait.event.data.bindingId === "string"
-        ? currentWait.event.data.bindingId
+      const waitBindingId = typeof anyWait.event.data.bindingId === "string"
+        ? anyWait.event.data.bindingId
         : "";
       if (!waitChildGoalId || !waitBindingId) {
         throw new GoalFamilyRestoreError(
@@ -581,40 +593,27 @@ function validateChildBindingWorkflowIntegrity(
         );
       }
 
-      const matches = bindings.filter((binding) =>
+      const activeForWait = bindings.filter((binding) =>
         binding.status === "active"
         && binding.parentWorkflowId === workflowId
         && binding.parentGoalId === parentGoalId
         && binding.parentNodeId === nodeId
-        && binding.parentAttemptId === attemptId
-        && binding.childGoalId === waitChildGoalId
-        && binding.bindingId === waitBindingId);
-      if (matches.length === 0) {
+        && binding.parentAttemptId === attemptId);
+      if (activeForWait.length === 0) {
         throw new GoalFamilyRestoreError(
           "goal_family_wait_binding_missing",
-          `Workflow '${workflowId}' node '${nodeId}' is waiting_for_child without a matching family binding.`,
+          `Workflow '${workflowId}' node '${nodeId}' is waiting_for_child without an active family binding `
+          + "for the current parent attempt.",
         );
       }
-      if (matches.length > 1) {
-        throw new GoalFamilyRestoreError(
-          "goal_family_wait_binding_ambiguous",
-          `Workflow '${workflowId}' node '${nodeId}' has ${matches.length} matching family bindings `
-          + "for one current wait.",
-        );
-      }
-      const binding = matches[0]!;
-      validateWaitEventCreateCapableParent(
-        workflow,
-        currentWait.index,
-        currentWait.event,
-        binding.bindingId,
-      );
-      if (!family.members[binding.childGoalId] || !workflows[family.members[binding.childGoalId]!.workflowId]) {
-        throw new GoalFamilyRestoreError(
-          "goal_family_wait_child_workflow_missing",
-          `Workflow '${workflowId}' wait on node '${nodeId}' binding '${binding.bindingId}' `
-          + "has no child member workflow.",
-        );
+      for (const binding of activeForWait) {
+        if (!family.members[binding.childGoalId] || !workflows[family.members[binding.childGoalId]!.workflowId]) {
+          throw new GoalFamilyRestoreError(
+            "goal_family_wait_child_workflow_missing",
+            `Workflow '${workflowId}' wait on node '${nodeId}' binding '${binding.bindingId}' `
+            + "has no child member workflow.",
+          );
+        }
       }
     }
   }
@@ -664,6 +663,39 @@ function findMatchingReturnEvent(
     }
   }
   return undefined;
+}
+
+/**
+ * True when a binding was cancelled in the family because a sibling non-completed
+ * return applied failure policy and settled the parent wait set.
+ * Those bindings have no parent child-return event.
+ * Owning-sibling checks key on the binding parent attempt, so a later second wait
+ * on a new attempt may leave parent status waiting_for_child while historical
+ * sibling-cancels remain valid.
+ * Do not treat unrelated cancels as sibling-cancels: require the product stop reason
+ * and an owning same-attempt non-completed binding with a parent return event.
+ */
+function isSiblingCancelledByParentFailurePolicy(
+  binding: ChildGoalBinding,
+  bindings: readonly ChildGoalBinding[],
+  parentWorkflow: PersistedHypagraph,
+): boolean {
+  if (binding.status !== "cancelled") return false;
+  if (binding.returnRecord?.outcome !== "cancelled") return false;
+  if (binding.returnRecord.stopReason !== SIBLING_CANCELLED_BY_PARENT_FAILURE_REASON) {
+    return false;
+  }
+
+  for (const candidate of bindings) {
+    if (candidate.bindingId === binding.bindingId) continue;
+    if (candidate.parentGoalId !== binding.parentGoalId) continue;
+    if (candidate.parentNodeId !== binding.parentNodeId) continue;
+    if (candidate.parentAttemptId !== binding.parentAttemptId) continue;
+    if (candidate.status === "active") continue;
+    if (!candidate.returnRecord || candidate.returnRecord.outcome === "completed") continue;
+    if (findMatchingReturnEvent(parentWorkflow, candidate)) return true;
+  }
+  return false;
 }
 
 /**
@@ -737,16 +769,20 @@ function assertTerminalReturnEventMatchesBinding(
       `Binding '${binding.bindingId}' parent node '${binding.parentNodeId}' is missing after the return event.`,
     );
   }
+  const remainWaiting = returnMatch.event.data?.remainWaiting === true;
   assertImmediatePostReturnNodeStatus(
     binding.bindingId,
     returnRecord.parentEffect,
     postReturnNode,
     binding,
+    remainWaiting,
   );
 }
 
 /**
  * Require parent node status immediately after the child-return event to match the durable effect.
+ * When remainWaiting is true on a completed resume, the parent stays waiting_for_child
+ * because sibling bindings for the same parent node are still active.
  * This does not constrain later parent progress on the final snapshot.
  */
 function assertImmediatePostReturnNodeStatus(
@@ -754,8 +790,9 @@ function assertImmediatePostReturnNodeStatus(
   parentEffect: ChildReturnParentEffect,
   parentNode: NonNullable<HypagraphState["runtime"]["nodes"][string]>,
   binding: ChildGoalBinding,
+  remainWaiting: boolean,
 ): void {
-  if (parentNode.status === "waiting_for_child") {
+  if (parentNode.status === "waiting_for_child" && !remainWaiting) {
     throw new GoalFamilyRestoreError(
       "goal_family_binding_parent_still_waiting",
       `Terminal binding '${bindingId}' requires parent node '${binding.parentNodeId}' `
@@ -765,6 +802,24 @@ function assertImmediatePostReturnNodeStatus(
 
   switch (parentEffect) {
     case "resumed":
+      if (remainWaiting) {
+        if (parentNode.status !== "waiting_for_child") {
+          throw new GoalFamilyRestoreError(
+            "goal_family_binding_parent_status_mismatch",
+            `Returned binding '${bindingId}' with remainWaiting requires parent node `
+            + `'${binding.parentNodeId}' status 'waiting_for_child' immediately after return, `
+            + `but found '${parentNode.status}'.`,
+          );
+        }
+        if (parentNode.currentAttemptId !== binding.parentAttemptId) {
+          throw new GoalFamilyRestoreError(
+            "goal_family_binding_parent_attempt_mismatch",
+            `Returned binding '${bindingId}' requires parent attempt '${binding.parentAttemptId}' `
+            + `immediately after return, but found '${parentNode.currentAttemptId ?? "none"}'.`,
+          );
+        }
+        break;
+      }
       if (parentNode.status !== "running") {
         throw new GoalFamilyRestoreError(
           "goal_family_binding_parent_status_mismatch",
@@ -920,11 +975,15 @@ function validateWaitEventCreateCapableParent(
     );
   }
   const runtime = preState.runtime.nodes[nodeId];
-  if (!runtime || !ACTIVE_ROOT_STATUSES.has(runtime.status)) {
+  // Sibling create while already waiting is create-capable (multi-child wait set).
+  if (
+    !runtime
+    || !(ACTIVE_ROOT_STATUSES.has(runtime.status) || runtime.status === "waiting_for_child")
+  ) {
     throw new GoalFamilyRestoreError(
       "goal_family_wait_parent_not_active",
       `Binding '${bindingId}' wait event requires parent node '${nodeId}' to be in an active `
-      + `create-capable state. Found '${runtime?.status ?? "missing"}'.`,
+      + `create-capable state or already waiting for a child. Found '${runtime?.status ?? "missing"}'.`,
     );
   }
   if (!runtime.currentAttemptId || runtime.currentAttemptId !== waitEvent.attemptId) {
