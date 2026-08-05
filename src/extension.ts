@@ -103,8 +103,11 @@ import {
   commitConcurrentFamilyBatchForHost,
   commitSequentialFamilySelectionForHost,
   familySettleOutcomeFromHostDispatch,
+  interruptAllFamilyPendingsForHost,
   isDeterministicFamilyMemberDecision,
   markFamilyPendingDispatchedForHost,
+  resolveFamilyRecordForPendingSweep,
+  resolveFamilyRecordForPostOrphanPendingSweep,
   selectFamilyControllerAction,
   settleFamilyPendingForHost,
 } from "./pi/family-controller-host.js";
@@ -414,7 +417,7 @@ const presentInteractionSelect = async (
 
 /** The `/hypagraph` usage text. Help and the unknown-subcommand error share it. */
 const hypagraphUsage = (): string => [
-  "Usage: /hypagraph [help | status | pause | resume | cancel | ask | history | explain | loop | check | graph | executor | trigger | demo]",
+  "Usage: /hypagraph [help | status | pause | resume | cancel | ask | history | explain | loop | check | graph | executor | trigger | demo | reclaim-pending]",
   "  status                                     Show the goal status.",
   "  pause [reason] | resume | cancel [reason]  Control the active goal.",
   "  ask [<nodeId>]                             Present an open question again.",
@@ -426,6 +429,7 @@ const hypagraphUsage = (): string => [
   "  graph [open | close | toggle | full | focus | member <goalId>]",
   "                                             Live graph: widget (compact), dock (open), full modal (ctrl+shift+g).",
   "  executor [status | probe | cancel]         Isolated Pi host status, probe, or cancel.",
+  "  reclaim-pending [<dispatchId>...]          Interrupt stranded family pendings (all or named).",
   "  trigger set <word> | trigger off | trigger Show or change Hypagoal arming.",
   "                                             The trigger word highlights in the composer while you type.",
   "  demo [list | <id>]                         Start a built-in graph (or showcase tour of all graphs).",
@@ -812,6 +816,11 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       activeIsolatedRootAttempt.settled = true;
     }
 
+    // Clear the matching family pending so orphan cancel frees occupancy (S2).
+    if (tracked.familyDispatchId) {
+      settleFamilyDispatchById(tracked.familyDispatchId, "interrupted", reason);
+    }
+
     notify?.(
       `Hypagraph cancelled isolated task '${tracked.nodeId}' on member '${tracked.goalId}'.`,
       "warning",
@@ -1132,6 +1141,17 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     if (familyProjection?.migrated) {
       appendOneMemberFamilyRecord(pi, familyProjection.family);
     }
+    // Prefer branch-local family for restore and branch-change settle/sweep (S2).
+    // Drop host memory from the previous branch so a stale family is not swept
+    // onto the current branch session.
+    if (branchChanged) {
+      latestFamilyRecord = undefined;
+    }
+    const branchSessionFamily = familyProjection?.family
+      ?? restoreLatestFamilySession(branch);
+    if (branchSessionFamily) {
+      rememberFamilyRecord(branchSessionFamily);
+    }
     if (state) {
       const recoveryStore = eventStore.lease();
       const recovery = await recoverInterruptedChecks({
@@ -1187,14 +1207,24 @@ ${formatDiagnostics(closed.diagnostics)}`, "warning");
       }
       // Cancel the tracked member attempt when an isolated worker was torn down.
       // Uses goalId/workflowId so child workers settle into the family record (R3).
+      // familyDispatchId on the attempt also clears the matching family pending (S2).
       if (orphanedRootAttempt) {
         const orphanReason = branchChanged
           ? "The Pi branch changed before the isolated model worker completed."
           : "The Pi session reloaded before the isolated model worker completed.";
         const orphanCorrelation = `isolated-root-orphan:${branchChanged ? "branch" : "restore"}:${randomUUID()}`;
-        const familyForCancel = familyProjection?.family
-          ?? restoreLatestFamilySession(branch)
-          ?? latestFamilyRecord;
+        // Same branch-local precedence as pending sweep (S2 Issue 1).
+        const familyForCancel = resolveFamilyRecordForPendingSweep({
+          ...(familyProjection?.family === undefined
+            ? {}
+            : { familyProjection: familyProjection.family }),
+          ...(branchSessionFamily === undefined
+            ? {}
+            : { branchSessionFamily }),
+          ...(latestFamilyRecord === undefined
+            ? {}
+            : { hostLatestFamily: latestFamilyRecord }),
+        });
         if (familyForCancel) rememberFamilyRecord(familyForCancel);
         await settleTrackedIsolatedAttempt({
           tracked: orphanedRootAttempt,
@@ -1204,6 +1234,52 @@ ${formatDiagnostics(closed.diagnostics)}`, "warning");
           ...(familyForCancel === undefined ? {} : { family: familyForCancel }),
           notify: (message, level) => ctx.ui.notify(message, level),
         });
+      }
+      // Sweep stranded family pendings on reload and branch change (S2).
+      // Mirrors interruptPendingActionDispatchAndCommit for multi-pending occupancy.
+      // After orphan settle, prefer post-orphan host/session family. Do not reuse
+      // pre-orphan familyProjection / branchSessionFamily captures: orphan settle
+      // may have updated workflows and cleared familyDispatchId (S2 Issue 9).
+      const reloadedBranchFamilyAfterOrphan = restoreLatestFamilySession(branch);
+      const familyForPendingSweep = resolveFamilyRecordForPostOrphanPendingSweep({
+        ...(latestFamilyRecord === undefined
+          ? {}
+          : { postOrphanHostFamily: latestFamilyRecord }),
+        ...(reloadedBranchFamilyAfterOrphan === undefined
+          ? {}
+          : { reloadedBranchFamily: reloadedBranchFamilyAfterOrphan }),
+      });
+      if (familyForPendingSweep) {
+        const pendingSweepReason = branchChanged
+          ? "The Pi branch changed before family pending dispatches completed."
+          : "The Pi session reloaded before family pending dispatches completed.";
+        const swept = interruptAllFamilyPendingsForHost({
+          family: familyForPendingSweep.familySnapshot,
+          at: new Date().toISOString(),
+          reason: pendingSweepReason,
+        });
+        if (swept.ok && swept.interruptedDispatchIds.length > 0) {
+          persistFamilySnapshotUpdate(
+            familyForPendingSweep,
+            swept.family,
+            swept.events,
+          );
+          const closedCount = swept.interruptedDispatchIds.length;
+          const closedLabel = closedCount === 1
+            ? "1 interrupted family pending dispatch"
+            : `${closedCount} interrupted family pending dispatches`;
+          ctx.ui.notify(
+            `Hypagraph closed ${closedLabel}: `
+            + `${swept.interruptedDispatchIds.join(", ")}.`,
+            "warning",
+          );
+        } else if (!swept.ok) {
+          ctx.ui.notify(
+            `Hypagraph could not close interrupted family pending dispatches.\n`
+            + formatDiagnostics(swept.diagnostics),
+            "warning",
+          );
+        }
       }
     }
     const pendingRevision = state?.goal?.pendingContinuation?.action.kind === "request-revision"
@@ -2085,6 +2161,7 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       ReturnType<typeof routeRootModelLaneAction>,
       { kind: "isolated-worker" }
     >,
+    options?: { familyDispatchId?: string },
   ): Promise<boolean> => {
     if (!state?.goal) return false;
     if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
@@ -2127,6 +2204,9 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       rootObjective: state.definition.goal,
       startedAt: at,
       timeoutMs: DEFAULT_ISOLATED_ROOT_TIMEOUT_MS,
+      ...(options?.familyDispatchId !== undefined
+        ? { familyDispatchId: options.familyDispatchId }
+        : {}),
     });
     if (!prepared.ok) {
       ctx.ui.notify(
@@ -2828,7 +2908,7 @@ ${formatDiagnostics(dispatched.diagnostics)}`, "warning");
       legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
     });
     if (routing.kind === "isolated-worker") {
-      const continued = await dispatchIsolatedRootModelTask(ctx, routing);
+      const continued = await dispatchIsolatedRootModelTask(ctx, routing, options);
       return continued ? "continue" : "stop";
     }
 
@@ -5560,6 +5640,26 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
               `Family desk: ${familyView.familyId} coordinates members; each Hypagoal is plan owner of its graph`,
             );
           }
+          if (familyView) {
+            const strandedPendings = listFamilyPendingViews(familyView.scheduler);
+            const hasUnsettledIsolatedWorker = Boolean(
+              activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled,
+            );
+            // Suppress reclaim hint while any host-tracked model work is in flight
+            // (isolated worker or current-session / delivered continuation).
+            const hasHostTrackedModelWork = hasUnsettledIsolatedWorker
+              || pendingContinuation !== undefined
+              || deliveredContinuation !== undefined;
+            if (strandedPendings.length > 0 && !hasHostTrackedModelWork) {
+              const pendingLabel = strandedPendings.length === 1
+                ? "1 pending dispatch occupies capacity"
+                : `${strandedPendings.length} pending dispatches occupy capacity`;
+              extras.push(
+                `Family pending reclaim: ${pendingLabel}. `
+                + "Use /hypagraph reclaim-pending to interrupt them.",
+              );
+            }
+          }
           const body = extras.length === 0
             ? rootStatus
             : `${rootStatus}\n${extras.join("\n")}`;
@@ -5567,6 +5667,65 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
             appendFamilyStatusBlock(body, familyView, 100, { showOneMember: true }),
             "info",
           );
+        }
+      } else if (words[0]?.toLowerCase() === "reclaim-pending") {
+        // Operator path to free stranded family pendings that block occupancy (S2).
+        if (!state?.goal) {
+          ctx.ui.notify("There is no active Hypagoal to reclaim family pendings for.", "warning");
+        } else {
+          const familyRecord = loadFamilyRecordForController(ctx) ?? latestFamilyRecord;
+          if (!familyRecord) {
+            ctx.ui.notify(
+              "There is no family record to reclaim pending dispatches from.",
+              "warning",
+            );
+          } else {
+            const namedIds = words.slice(1).filter((id) => id.length > 0);
+            const reclaimed = interruptAllFamilyPendingsForHost({
+              family: familyRecord.familySnapshot,
+              at: new Date().toISOString(),
+              reason: namedIds.length > 0
+                ? "The operator reclaimed named family pending dispatches."
+                : "The operator reclaimed stranded family pending dispatches.",
+              ...(namedIds.length > 0 ? { dispatchIds: namedIds } : {}),
+            });
+            if (!reclaimed.ok) {
+              ctx.ui.notify(
+                `Hypagraph could not reclaim family pending dispatches.\n`
+                + formatDiagnostics(reclaimed.diagnostics),
+                "warning",
+              );
+            } else if (reclaimed.interruptedDispatchIds.length === 0) {
+              ctx.ui.notify(
+                namedIds.length > 0
+                  ? "No matching family pending dispatches were found to reclaim."
+                  : "There are no family pending dispatches to reclaim.",
+                "info",
+              );
+            } else {
+              persistFamilySnapshotUpdate(
+                familyRecord,
+                reclaimed.family,
+                reclaimed.events,
+              );
+              paintUi(ctx);
+              const reclaimedCount = reclaimed.interruptedDispatchIds.length;
+              const reclaimedLabel = reclaimedCount === 1
+                ? "1 family pending dispatch"
+                : `${reclaimedCount} family pending dispatches`;
+              const reclaimedList = reclaimed.interruptedDispatchIds.join(", ");
+              let reclaimMessage =
+                `Hypagraph reclaimed ${reclaimedLabel}: ${reclaimedList}.`;
+              if (namedIds.length > 0) {
+                const reclaimedSet = new Set(reclaimed.interruptedDispatchIds);
+                const unknownIds = namedIds.filter((id) => !reclaimedSet.has(id));
+                if (unknownIds.length > 0) {
+                  reclaimMessage += ` Unknown dispatch ids: ${unknownIds.join(", ")}.`;
+                }
+              }
+              ctx.ui.notify(reclaimMessage, "warning");
+            }
+          }
         }
       } else if (words[0]?.toLowerCase() === "pause") {
         ensureNoActiveExecution();

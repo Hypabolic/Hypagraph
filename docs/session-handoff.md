@@ -133,6 +133,8 @@ Create-child authority (2026-08-05): create-child does **not** require a current
 
 Concurrency policy surface (Gate 1.2): `docs/concurrency-policy-surface.md`.
 
+Family pending restore (S2): on session reload and branch change, the host sweeps every family `pendingDispatches` entry as `interrupted`. `ActiveIsolatedRootAttempt` may carry `familyDispatchId` so orphan cancel clears the matching family pending. Operator reclaim: `/hypagraph reclaim-pending` (optional named dispatch ids).
+
 ## 5. Current target after v0.14
 
 ### 5.1 Exit path to v1.0

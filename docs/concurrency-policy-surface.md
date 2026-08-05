@@ -119,8 +119,12 @@ Product mode is `independent-settle` only.
 
 1. After restore, multi-pending state is valid under schema version 3.
 2. Unsupported schema versions must reject with a clear error.
-3. The host must not claim idle when pendings exist.
-4. Status can report multi-member in-flight state.
+3. On session reload and branch change, the host sweeps every family pending (`selected` or `dispatched`) as `interrupted`. This mirrors workflow-level `interruptPendingActionDispatch` so stranded pendings do not consume occupancy forever.
+4. Each active isolated attempt may carry `familyDispatchId`. Orphan cancel of that attempt also settles the matching family pending as `interrupted`.
+5. Operator reclaim: `/hypagraph reclaim-pending` interrupts all stranded family pendings. `/hypagraph reclaim-pending <dispatchId>...` interrupts only the named ids. Status reports a reclaim hint when pendings exist and no host-tracked model work is active: no unsettled isolated worker, and no `pendingContinuation` or `deliveredContinuation`.
+6. The host must not claim idle when pendings exist.
+7. Status can report multi-member in-flight state.
+8. After a successful restore sweep or reclaim, multi-pending occupancy is free for a new selection.
 
 ## 6. Occupancy model
 
@@ -152,6 +156,7 @@ What counts as active:
 | Domain groups | `src/domain/concurrency-groups.ts` | group capacity and fairness |
 | Commit | `src/pi/family-product-dispatch.ts`, `src/pi/family-controller-host.ts` | same policy fields as selection |
 | Settle | `src/pi/family-controller-host.ts` | `settleFamilyPendingForHost` (one dispatch) |
+| Restore / reclaim | `src/pi/family-controller-host.ts`, `src/extension.ts` | `interruptAllFamilyPendingsForHost`; restore sweep; `/hypagraph reclaim-pending` |
 | Status | `src/ui/family-surface.ts`, `src/graph/family-projection.ts` | multi-pending honesty |
 
 Host controller entry: `src/extension.ts` uses Seam C helpers for batch commit, mark, and settle.
@@ -189,13 +194,16 @@ This Gate 1.2 surface document does not close:
 ### 10.1 Source
 
 - `src/pi/family-product-dispatch.ts`
-- `src/pi/family-controller-host.ts`
+- `src/pi/family-controller-host.ts` (`interruptAllFamilyPendingsForHost`)
+- `src/pi/isolated-root-dispatch.ts` (`ActiveIsolatedRootAttempt.familyDispatchId`)
+- `src/extension.ts` (restore sweep; `/hypagraph reclaim-pending`)
 - `src/domain/concurrency-limits.ts`
 - `src/domain/concurrency-groups.ts`
 - `src/domain/family-concurrent-dispatch.ts`
 - `src/domain/family-scheduler.ts`
 - `src/graph/family-projection.ts`
 - `src/ui/family-surface.ts`
+- `tests/s2-family-pending-restore-sweep.test.ts`
 
 ### 10.2 Tests
 

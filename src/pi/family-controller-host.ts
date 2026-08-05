@@ -24,7 +24,7 @@ import {
   type GoalFamilyRuntime,
 } from "../domain/goal-family.js";
 import type { GoalDispatchableContinuation } from "../domain/goal-continuation.js";
-import type { HypagraphState } from "../domain/model.js";
+import type { Diagnostic, HypagraphState } from "../domain/model.js";
 import type { PersistedGoalFamily } from "../persistence/family-store.js";
 import {
   FAMILY_PRODUCT_PARTIAL_FAILURE_MODE,
@@ -304,6 +304,142 @@ export function settleFamilyPendingForHost(input: {
     at: input.at,
     ...(input.reason !== undefined ? { reason: input.reason } : {}),
   });
+}
+
+export type InterruptAllFamilyPendingsResult =
+  | {
+    ok: true;
+    family: GoalFamilyRuntime;
+    events: GoalFamilyEvent[];
+    /** Dispatch ids settled as interrupted, in stable pending order. */
+    interruptedDispatchIds: string[];
+  }
+  | { ok: false; diagnostics: Diagnostic[] };
+
+/**
+ * Resolve the family record for restore or branch-change work **before**
+ * orphan settle updates the host family.
+ *
+ * Prefer branch-local sources over host memory. On branch change, host memory
+ * may still hold the previous branch family. Sweeping that record would write
+ * the wrong family onto the current branch session and leave the real branch
+ * multi-pending occupancy untouched.
+ *
+ * Order (first defined wins):
+ * 1. familyProjection — restoreOrMigrate result for the current branch
+ * 2. branchSessionFamily — restoreLatestFamilySession for the current branch
+ * 3. hostLatestFamily — in-memory cache (only as last resort)
+ *
+ * After orphan settle, do **not** reuse this order with pre-orphan captures.
+ * Use resolveFamilyRecordForPostOrphanPendingSweep instead so the host-updated
+ * family (member cancel + familyDispatchId settle) is not overwritten.
+ */
+export function resolveFamilyRecordForPendingSweep<T>(input: {
+  familyProjection?: T;
+  branchSessionFamily?: T;
+  hostLatestFamily?: T;
+}): T | undefined {
+  return input.familyProjection
+    ?? input.branchSessionFamily
+    ?? input.hostLatestFamily;
+}
+
+/**
+ * Resolve the family record for pending sweep **after** orphan settle.
+ *
+ * Orphan settle may persist a cancelled member workflow and clear one family
+ * pending via familyDispatchId. Those updates land on the host latest family.
+ * Pre-orphan projection / branch session captures must not win here: sweeping
+ * a stale snapshot would rewrite workflows and re-interrupt already-cleared
+ * pendings from the wrong base.
+ *
+ * Order (first defined wins):
+ * 1. postOrphanHostFamily — latestFamilyRecord after orphan settle
+ * 2. reloadedBranchFamily — fresh restoreLatestFamilySession for the branch
+ *
+ * Callers must not pass pre-orphan familyProjection or branchSessionFamily
+ * captures into this helper.
+ */
+export function resolveFamilyRecordForPostOrphanPendingSweep<T>(input: {
+  postOrphanHostFamily?: T;
+  reloadedBranchFamily?: T;
+}): T | undefined {
+  return input.postOrphanHostFamily
+    ?? input.reloadedBranchFamily;
+}
+
+/**
+ * Interrupt every family pending (selected or dispatched).
+ *
+ * Used on session restore, branch change, and operator reclaim so stranded
+ * pendings do not consume occupancy forever. Settles each pending with
+ * independent-settle. Order follows listPendingDispatches (stable).
+ * Does not mutate the input family. Schema remains version 3.
+ *
+ * When dispatchIds is set, only those ids are reclaimed. Missing ids are
+ * skipped. When dispatchIds is omitted, every pending is reclaimed.
+ *
+ * Persist behaviour is all-or-nothing for the host caller: if settle fails
+ * mid-loop after one or more pure settles, this helper returns
+ * `{ ok: false, diagnostics }` and does not return the partial family.
+ * Restore and reclaim only persist on full success, so occupancy stays
+ * blocked until a later successful sweep. Domain interrupt of a present
+ * pending is reliable; a mid-loop failure is rare.
+ */
+export function interruptAllFamilyPendingsForHost(input: {
+  family: GoalFamilyRuntime;
+  at: string;
+  reason: string;
+  /**
+   * Optional subset of dispatch ids to reclaim.
+   * When omitted, reclaim every pending.
+   */
+  dispatchIds?: readonly string[];
+}): InterruptAllFamilyPendingsResult {
+  const allPendings = listPendingDispatches(input.family);
+  const targetIds = input.dispatchIds === undefined
+    ? undefined
+    : new Set(input.dispatchIds.filter((id) => typeof id === "string" && id.length > 0));
+  const pendings = targetIds === undefined
+    ? allPendings
+    : allPendings.filter((pending) => targetIds.has(pending.dispatchId));
+
+  if (pendings.length === 0) {
+    return {
+      ok: true,
+      family: input.family,
+      events: [],
+      interruptedDispatchIds: [],
+    };
+  }
+
+  let family = input.family;
+  const events: GoalFamilyEvent[] = [];
+  const interruptedDispatchIds: string[] = [];
+
+  for (const pending of pendings) {
+    const settled = settleFamilyPendingForHost({
+      family,
+      dispatchId: pending.dispatchId,
+      at: input.at,
+      outcome: "interrupted",
+      reason: input.reason,
+    });
+    if (!settled.ok) {
+      // All-or-nothing: drop partial family so the host does not persist half a sweep.
+      return { ok: false, diagnostics: settled.diagnostics };
+    }
+    family = settled.family;
+    events.push(...settled.events);
+    interruptedDispatchIds.push(pending.dispatchId);
+  }
+
+  return {
+    ok: true,
+    family,
+    events,
+    interruptedDispatchIds,
+  };
 }
 
 /**

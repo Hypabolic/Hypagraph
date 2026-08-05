@@ -53,6 +53,11 @@ export interface ActiveIsolatedRootAttempt {
    * When different from the live root workflow, persist cancel into the family record.
    */
   workflowId: string;
+  /**
+   * Family pending dispatch id when this attempt belongs to a family pending.
+   * Orphan cancel and restore use this id to clear the matching family pending.
+   */
+  familyDispatchId?: string;
   profile: ExecutorProfileRef;
   actionKind: "start-ready-task" | "continue-active-task";
   sessionGeneration: number;
@@ -165,6 +170,11 @@ export interface PrepareIsolatedRootAttemptInput {
   timeoutMs?: number;
   /** Optional host abort controller. Created when omitted. */
   abortController?: AbortController;
+  /**
+   * Family pending dispatch id when this attempt belongs to a family pending.
+   * Copied onto the active attempt for orphan settle and restore reclaim.
+   */
+  familyDispatchId?: string;
 }
 
 export type PrepareIsolatedRootAttemptResult =
@@ -300,6 +310,9 @@ export function prepareIsolatedRootAttempt(
       abortController: input.abortController ?? new AbortController(),
       startedAt: input.startedAt,
       timeoutMs: input.timeoutMs ?? DEFAULT_ISOLATED_ROOT_TIMEOUT_MS,
+      ...(input.familyDispatchId !== undefined
+        ? { familyDispatchId: input.familyDispatchId }
+        : {}),
     },
   };
 }
