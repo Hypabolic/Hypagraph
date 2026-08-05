@@ -252,6 +252,9 @@ describe("S4 worker pool and concurrent fan-out", () => {
     expect(extensionSource).toMatch(/Full residual merge \+ append \+ remember under free-slot lock/);
     // Isolated path routes without outer free-slot bind spanning the await.
     expect(extensionSource).toMatch(/Isolated worker path: route against MemberContext without an outer free-slot/);
+    // Non-isolated bind holds free-slot lock across awaits (current-session + isolated race).
+    expect(extensionSource).toMatch(/Hold free-slot lock for the entire non-isolated bind/);
+    expect(extensionSource).toMatch(/Free-slot identity guard: after await, free slots must still be this member/);
     // No leave-selected-without-start residual path.
     expect(extensionSource).not.toMatch(/deferredSelectedModelItems/);
     // Single-slot variable must not remain.
@@ -698,5 +701,75 @@ describe("S4 worker pool and concurrent fan-out", () => {
     expect(bag.root).toBe("alive");
     expect(bag["child-a-return"]).toBe("applied-a");
     expect(bag["child-b-return"]).toBe("applied-b");
+  });
+
+  it("current-session free-slot bind under lock cannot interleave with isolated rebind", async () => {
+    // Host race that F2 hit: current-session awaits applyCommands without the free-slot
+    // lock while isolated start rebinds free slots to a child events array; resume then
+    // pushes root continuation onto the child stream. Protocol: hold lock for the whole
+    // non-isolated bind, including awaits.
+    type Stream = { workflowId: string; facts: string[] };
+    let freeSlots: Stream = { workflowId: "workflow-root", facts: ["root"] };
+    const child: Stream = { workflowId: "workflow-child", facts: ["child-ready"] };
+    let chain: Promise<void> = Promise.resolve();
+    const withLock = async <T>(fn: () => Promise<T>): Promise<T> => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const previous = chain;
+      chain = previous.then(() => gate);
+      await previous;
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    };
+
+    const currentSessionUnderLock = async (): Promise<Stream> => {
+      return withLock(async () => {
+        const saved = freeSlots;
+        freeSlots = { workflowId: "workflow-root", facts: [...saved.facts] };
+        try {
+          // Simulate applyCommandsAndCommit await while still owning free slots.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          // After await, free slots must still be root (isolated cannot rebind).
+          expect(freeSlots.workflowId).toBe("workflow-root");
+          freeSlots.facts.push("root-continuation");
+          return { ...freeSlots, facts: [...freeSlots.facts] };
+        } finally {
+          freeSlots = saved;
+        }
+      });
+    };
+
+    const isolatedStartUnderLock = async (): Promise<Stream> => {
+      return withLock(async () => {
+        const saved = freeSlots;
+        freeSlots = { ...child, facts: [...child.facts] };
+        try {
+          freeSlots.facts.push("child-started");
+          return { ...freeSlots, facts: [...freeSlots.facts] };
+        } finally {
+          freeSlots = saved;
+        }
+      });
+    };
+
+    const [rootDone, childDone] = await Promise.all([
+      currentSessionUnderLock(),
+      isolatedStartUnderLock(),
+    ]);
+
+    expect(rootDone.workflowId).toBe("workflow-root");
+    expect(rootDone.facts).toContain("root-continuation");
+    expect(rootDone.facts).not.toContain("child-started");
+    expect(childDone.workflowId).toBe("workflow-child");
+    expect(childDone.facts).toEqual(["child-ready", "child-started"]);
+    expect(childDone.facts).not.toContain("root-continuation");
+    // Desk free slots restored to root without foreign facts.
+    expect(freeSlots.workflowId).toBe("workflow-root");
+    expect(freeSlots.facts).toEqual(["root"]);
   });
 });

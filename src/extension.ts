@@ -3256,8 +3256,11 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
    * Shared by root and non-root member paths.
    *
    * Isolated model workers do not hold free slots across the process await
-   * (S4 free-slot protocol). Deterministic and current-session paths still
-   * bind for their full duration.
+   * (S4 free-slot protocol). Deterministic and current-session paths bind for
+   * their full duration and must hold the free-slot lock for that whole bind,
+   * including awaits. Without the lock, a concurrent isolated start can rebind
+   * free slots during applyCommandsAndCommit and push root events onto a child
+   * event stream.
    */
   const dispatchDecisionOnLiveState = async (
     ctx: ExtensionContext,
@@ -3285,170 +3288,184 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       return continued ? "continue" : "stop";
     }
 
-    const liveBinding = bindMemberLiveSlots(member);
-    try {
-      if (isReadyCheckDecision(decision)) {
-        const continued = await dispatchDeterministicCheck(ctx, decision);
-        return continued ? "continue" : "stop";
-      }
-      if (isReadyCodeDecision(decision)) {
-        const continued = await dispatchDeterministicCode(ctx, decision);
-        return continued ? "continue" : "stop";
-      }
-      if (isDeterministicEffectDecision(decision)) {
-        const continued = await dispatchDeterministicEffect(ctx, decision);
-        return continued ? "continue" : "stop";
-      }
-      if (isReadyGateDecision(decision)) {
-        const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
-        const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state!, {
-          dispatchId,
-          decision,
-          at: new Date().toISOString(),
-        });
-        if (!dispatched.ok) {
-          ctx.ui.notify(`Hypagoal deterministic gate was not dispatched.
-${formatDiagnostics(dispatched.diagnostics)}`, "warning");
-          return "stop";
+    // Hold free-slot lock for the entire non-isolated bind (S4 ownership).
+    // Concurrent isolated start/settle must wait until this bind releases.
+    return await withIsolatedFreeSlotLock(async () => {
+      const liveBinding = bindMemberLiveSlots(member);
+      try {
+        if (isReadyCheckDecision(decision)) {
+          const continued = await dispatchDeterministicCheck(ctx, decision);
+          return continued ? "continue" : "stop";
         }
-        state = dispatched.state;
-        events.push(...dispatched.events);
-        paintUi(ctx);
-        if (dispatched.outcome === "failed") {
-          ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
-${formatDiagnostics(dispatched.diagnostics)}`, "warning");
-          return "stop";
+        if (isReadyCodeDecision(decision)) {
+          const continued = await dispatchDeterministicCode(ctx, decision);
+          return continued ? "continue" : "stop";
         }
-        return "continue";
-      }
-
-      // Ready interaction: request and present without a model turn.
-      // Demos and product graphs must not charge token budget to open a dock.
-      if (decision.kind === "request-ready-interaction") {
-        const nodeId = decision.nodeId;
-        const runtime = state!.runtime.nodes[nodeId];
-        if (!runtime || runtime.status !== "ready") {
-          ctx.ui.notify(
-            `Hypagoal interaction '${nodeId}' is not ready for presentation.`,
-            "warning",
-          );
-          return "stop";
+        if (isDeterministicEffectDecision(decision)) {
+          const continued = await dispatchDeterministicEffect(ctx, decision);
+          return continued ? "continue" : "stop";
         }
-        if (!interactionPresentationIsAllowed(state!, nodeId)) {
-          ctx.ui.notify(
-            `Interaction '${nodeId}' was not presented. The graph has other runnable work.`,
-            "warning",
-          );
-          return "stop";
-        }
-        try {
-          await runCommands([{
-            type: "request-interaction",
-            nodeId,
-            attemptId: randomUUID(),
-            commandId: randomUUID(),
-            correlationId: randomUUID(),
+        if (isReadyGateDecision(decision)) {
+          const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
+          const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state!, {
+            dispatchId,
+            decision,
             at: new Date().toISOString(),
-          }]);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          ctx.ui.notify(
-            `Hypagoal could not request interaction '${nodeId}'. ${detail}`,
-            "warning",
-          );
-          return "stop";
+          });
+          if (!dispatched.ok) {
+            ctx.ui.notify(`Hypagoal deterministic gate was not dispatched.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+            return "stop";
+          }
+          state = dispatched.state;
+          events.push(...dispatched.events);
+          paintUi(ctx);
+          if (dispatched.outcome === "failed") {
+            ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+            return "stop";
+          }
+          return "continue";
         }
-        const awaiting = awaitingInteractions(state!).find((item) => item.nodeId === nodeId);
-        if (!awaiting) {
-          ctx.ui.notify(
-            `Hypagoal requested interaction '${nodeId}', but it is not awaiting a response.`,
-            "warning",
-          );
-          return "stop";
-        }
-        const outcome = await presentAwaitingInteraction(ctx, awaiting);
-        paintUi(ctx);
-        if (outcome === "answered") return "continue";
-        if (outcome === "presentation-failed") {
-          const observation = interactionPresentationObservation(state!, nodeId, awaiting.attemptId);
-          const detail = observation?.error
-            ? `${observation.status}: ${observation.error}`
-            : (observation?.status ?? "failed");
-          ctx.ui.notify(
-            `Interaction '${nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
-            "warning",
-          );
-          return "stop";
-        }
-        if (outcome === "unavailable") {
-          ctx.ui.notify(
-            waitingUnavailableNote(state!)
-              ?? `This host has no dialog capability. Interaction '${nodeId}' still waits for an answer.`,
-            "warning",
-          );
-          return "stop";
-        }
-        ctx.ui.notify(
-          waitingLifecycleNote(state!)
-            ?? `Waiting for a user response on node '${nodeId}'. Use /hypagraph ask to present the dialog again.`,
-          "info",
-        );
-        return "stop";
-      }
 
-      // Current-session / orchestrator follow-up (not isolated-worker).
-      // Free slots are bound for this path only.
-      const routing = routeRootModelLaneAction(decision, state!, {
-        legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
-      });
-      // isolated-worker was handled above without outer bind.
-      if (routing.kind === "isolated-worker") {
-        // Should not reach: already routed on member.state. Fail closed.
-        return "stop";
-      }
+        // Ready interaction: request and present without a model turn.
+        // Demos and product graphs must not charge token budget to open a dock.
+        if (decision.kind === "request-ready-interaction") {
+          const nodeId = decision.nodeId;
+          const runtime = state!.runtime.nodes[nodeId];
+          if (!runtime || runtime.status !== "ready") {
+            ctx.ui.notify(
+              `Hypagoal interaction '${nodeId}' is not ready for presentation.`,
+              "warning",
+            );
+            return "stop";
+          }
+          if (!interactionPresentationIsAllowed(state!, nodeId)) {
+            ctx.ui.notify(
+              `Interaction '${nodeId}' was not presented. The graph has other runnable work.`,
+              "warning",
+            );
+            return "stop";
+          }
+          try {
+            await runCommands([{
+              type: "request-interaction",
+              nodeId,
+              attemptId: randomUUID(),
+              commandId: randomUUID(),
+              correlationId: randomUUID(),
+              at: new Date().toISOString(),
+            }]);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            ctx.ui.notify(
+              `Hypagoal could not request interaction '${nodeId}'. ${detail}`,
+              "warning",
+            );
+            return "stop";
+          }
+          const awaiting = awaitingInteractions(state!).find((item) => item.nodeId === nodeId);
+          if (!awaiting) {
+            ctx.ui.notify(
+              `Hypagoal requested interaction '${nodeId}', but it is not awaiting a response.`,
+              "warning",
+            );
+            return "stop";
+          }
+          const outcome = await presentAwaitingInteraction(ctx, awaiting);
+          paintUi(ctx);
+          if (outcome === "answered") return "continue";
+          if (outcome === "presentation-failed") {
+            const observation = interactionPresentationObservation(state!, nodeId, awaiting.attemptId);
+            const detail = observation?.error
+              ? `${observation.status}: ${observation.error}`
+              : (observation?.status ?? "failed");
+            ctx.ui.notify(
+              `Interaction '${nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
+              "warning",
+            );
+            return "stop";
+          }
+          if (outcome === "unavailable") {
+            ctx.ui.notify(
+              waitingUnavailableNote(state!)
+                ?? `This host has no dialog capability. Interaction '${nodeId}' still waits for an answer.`,
+              "warning",
+            );
+            return "stop";
+          }
+          ctx.ui.notify(
+            waitingLifecycleNote(state!)
+              ?? `Waiting for a user response on node '${nodeId}'. Use /hypagraph ask to present the dialog again.`,
+            "info",
+          );
+          return "stop";
+        }
 
-      const operationId = `hypagoal-continuation:${randomUUID()}`;
-      const request = await applyCommandsAndCommit(eventStore.lease(), state!, [{
-        type: "request-goal-continuation",
-        goalId: decision.goalId,
-        workflowId: decision.workflowId,
-        expectedRevision: decision.revision,
-        expectedSequence: decision.sequence,
-        expectedSnapshotHash: decision.snapshotHash,
-        expectedContinuationOrdinal: decision.continuationOrdinal,
-        sessionGeneration,
-        branchGeneration,
-        action: decision.kind === "request-revision"
-          ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
-          : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
-        commandId: operationId,
-        correlationId: operationId,
-        at: new Date().toISOString(),
-      }]);
-      if (!request.ok) {
-        ctx.ui.notify(`Hypagoal continuation was not queued.
+        // Current-session / orchestrator follow-up (not isolated-worker).
+        // Free slots are bound for this path only under the free-slot lock.
+        const routing = routeRootModelLaneAction(decision, state!, {
+          legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
+        });
+        // isolated-worker was handled above without outer bind.
+        if (routing.kind === "isolated-worker") {
+          // Should not reach: already routed on member.state. Fail closed.
+          return "stop";
+        }
+
+        const operationId = `hypagoal-continuation:${randomUUID()}`;
+        const request = await applyCommandsAndCommit(eventStore.lease(), state!, [{
+          type: "request-goal-continuation",
+          goalId: decision.goalId,
+          workflowId: decision.workflowId,
+          expectedRevision: decision.revision,
+          expectedSequence: decision.sequence,
+          expectedSnapshotHash: decision.snapshotHash,
+          expectedContinuationOrdinal: decision.continuationOrdinal,
+          sessionGeneration,
+          branchGeneration,
+          action: decision.kind === "request-revision"
+            ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
+            : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
+          commandId: operationId,
+          correlationId: operationId,
+          at: new Date().toISOString(),
+        }]);
+        if (!request.ok) {
+          ctx.ui.notify(`Hypagoal continuation was not queued.
 ${formatDiagnostics(request.diagnostics)}`, "warning");
-        return "stop";
+          return "stop";
+        }
+        // Free-slot identity guard: after await, free slots must still be this member.
+        if (!state || state.workflowId !== member.workflowId) {
+          ctx.ui.notify(
+            `Hypagoal free-slot ownership was lost during current-session dispatch for `
+            + `'${member.workflowId}'. Continuation was not applied to free slots.`,
+            "warning",
+          );
+          return "stop";
+        }
+        state = request.value.state;
+        events.push(...request.value.events);
+        syncMemberFromLiveSlots(member, { state, events });
+        paintUi(ctx);
+        if (state.goal?.status === "budget_limited") {
+          ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
+          return "stop";
+        }
+        pendingContinuation = createPendingGoalContinuation(
+          decision,
+          state,
+          { sessionGeneration, branchGeneration },
+          operationId,
+          options?.familyDispatchId,
+        );
+        pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
+        return "model-follow-up";
+      } finally {
+        liveBinding.release();
       }
-      state = request.value.state;
-      events.push(...request.value.events);
-      paintUi(ctx);
-      if (state.goal?.status === "budget_limited") {
-        ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
-        return "stop";
-      }
-      pendingContinuation = createPendingGoalContinuation(
-        decision,
-        state,
-        { sessionGeneration, branchGeneration },
-        operationId,
-        options?.familyDispatchId,
-      );
-      pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
-      return "model-follow-up";
-    } finally {
-      liveBinding.release();
-    }
+    });
   };
 
   const handleNonDispatchableDecision = async (
