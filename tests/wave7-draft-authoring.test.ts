@@ -106,11 +106,32 @@ describe("Wave 7 draft authoring tools", () => {
       "hypagraph_require",
       "hypagraph_loop",
       "hypagraph_recipe_implement_verify_loop",
+      "hypagraph_recipe_implement_parallel_review",
       "hypagoal_start",
       "hypagraph_validate",
     ]) {
       expect(tools.has(name)).toBe(true);
     }
+  });
+
+  it("applies implement/parallel-review flagship recipe via tool", async () => {
+    const { call } = await harness();
+    const begin = await call("hypagraph_draft_begin", {
+      objective: "Implement and parallel-review a small change",
+      title: "Flagship multi-agent",
+    });
+    const draftId = (begin.details as { hypagraphDraft: { draftId: string } }).hypagraphDraft.draftId;
+    const recipe = await call("hypagraph_recipe_implement_parallel_review", { draftId });
+    const text = textOf(recipe);
+    expect(text).toMatch(/flagship recipe applied|parallel-review/i);
+    expect(text).toMatch(/general/);
+    expect(text).toMatch(/review\.general\.passed|role=general/);
+    const details = recipe.details as {
+      hypagraphDraft: { ok: boolean; recipe?: string; reviewRoles?: string[] };
+    };
+    expect(details.hypagraphDraft.ok).toBe(true);
+    expect(details.hypagraphDraft.recipe).toBe("implement_parallel_review");
+    expect(details.hypagraphDraft.reviewRoles).toEqual(["general", "tests", "security"]);
   });
 
   it("begin, recipe, validate, and commit-by-draft-id without free-form definition", async () => {

@@ -133,6 +133,34 @@ export const implementVerifyRecipeSchema = Type.Object({
 });
 export type ImplementVerifyRecipeInput = Static<typeof implementVerifyRecipeSchema>;
 
+/** Flagship implement → parallel review → integrate recipe (ordinary multi-child join). */
+export const implementParallelReviewRecipeSchema = Type.Object({
+  draftId: Type.String({ minLength: 1 }),
+  implementId: Type.Optional(Type.String()),
+  reviewPanelId: Type.Optional(Type.String()),
+  integrateId: Type.Optional(Type.String()),
+  verifyId: Type.Optional(Type.String()),
+  implementTitle: Type.Optional(Type.String()),
+  reviewPanelTitle: Type.Optional(Type.String()),
+  integrateTitle: Type.Optional(Type.String()),
+  verifyTitle: Type.Optional(Type.String()),
+  implementAcceptance: Type.Optional(Type.Array(Type.String())),
+  reviewPanelAcceptance: Type.Optional(Type.Array(Type.String())),
+  integrateAcceptance: Type.Optional(Type.Array(Type.String())),
+  verifyAcceptance: Type.Optional(Type.Array(Type.String())),
+  /** Review roles. Default: general, tests, security. Minimum two. */
+  reviewRoles: Type.Optional(Type.Array(Type.Union([
+    Type.Literal("general"),
+    Type.Literal("tests"),
+    Type.Literal("security"),
+    Type.Literal("plan"),
+  ]))),
+  includeVerifyTask: Type.Optional(Type.Boolean()),
+  successFactName: Type.Optional(Type.String()),
+  scopePaths: Type.Optional(Type.Array(Type.String())),
+});
+export type ImplementParallelReviewRecipeToolInput = Static<typeof implementParallelReviewRecipeSchema>;
+
 export function formatDiagnostics(diagnostics: readonly Diagnostic[]): string {
   return diagnostics.map((item) => {
     const location = item.location ? ` at ${item.location}` : "";

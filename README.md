@@ -362,7 +362,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 ### Start-to-run product surface (ordinary single-root path)
 
 - arm with the configured trigger word and live composer highlight (same matcher as submit arming);
-- draft constructors and recipes under `.hypagraph/` project store (task, check, require, loop, implement-verify recipe);
+- draft constructors and recipes under `.hypagraph/` project store (task, check, require, loop, implement-verify recipe, implement/parallel-review flagship recipe);
 - free-form definition remains supported for interaction, gate, code, and effect nodes (constructors do not yet build those kinds);
 - atomic root `/hypagoal` creation and `hypagoal_start` (prefer `draftId` when constructors cover the graph);
 - post-create Mermaid bottom dock with **Run**, **Question**, and **Cancel** (Esc = Question);
@@ -408,7 +408,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
 - full revision-on-workers and richer worker progress events;
 - live multi-pending concurrent family acceptance under real Pi for Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` (raised Live bar in [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md); host path and automated substitute exist; Live ledger row remains **No** until real Pi dogfood is recorded under `docs/dogfood-evidence/gate1-3-live/`);
-- full quorum / ranked / model synthesis and named multi-agent recipes (Ordinary all-success multi-child join is on the product path; Live dogfood still open);
+- full quorum / ranked / model synthesis strategies and Live multi-agent dogfood (Ordinary all-success multi-child join and the implement/parallel-review flagship recipe are on the product path);
 - optional grandchild depth and family-budget visibility hardening;
 - live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute exists; live bar is not closed).
 

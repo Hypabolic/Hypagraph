@@ -245,6 +245,7 @@ import {
   addTaskSchema,
   draftBeginSchema,
   draftIdSchema,
+  implementParallelReviewRecipeSchema,
   implementVerifyRecipeSchema,
   loopSchema as draftLoopToolSchema,
   renderDraftSummary,
@@ -265,7 +266,12 @@ import {
   declareLoopOnDraft,
   requireOnDraft,
 } from "./domain/draft-constructors.js";
-import { applyImplementVerifyLoopRecipe } from "./domain/draft-recipes.js";
+import {
+  applyImplementParallelReviewRecipe,
+  applyImplementVerifyLoopRecipe,
+  buildParallelReviewChildTemplates,
+  DEFAULT_PARALLEL_REVIEW_ROLES,
+} from "./domain/draft-recipes.js";
 import { HypagraphProjectStore, ProjectStoreError } from "./project-store/index.js";
 import {
   HYPAGOAL_ARMED_STATUS_KEY,
@@ -4769,7 +4775,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       "Prefer hypagoal_start with draftId after hypagraph_draft_validate when constructors cover the graph.",
       "Use free-form definition for interaction, gate, code, and effect nodes, and for tests or import.",
       "hypagoal_start accepts authoring advisories separately from canonical workflow fields and never accepts terminal goal state.",
-      "Do not hand-author feedbackEdges. Use hypagraph_loop or hypagraph_recipe_implement_verify_loop.",
+      "Do not hand-author feedbackEdges. Use hypagraph_loop, hypagraph_recipe_implement_verify_loop, or hypagraph_recipe_implement_parallel_review.",
       "If hypagoal_start rejects the draft or definition, repair with tools and call hypagoal_start again with the same creationRequest.",
       "Call hypagoal_start as the final action of a Hypagoal authoring turn. It creates durable state but does not continue execution.",
     ],
@@ -5837,7 +5843,8 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
     description: "Expand an implement and verify loop onto an open draft. The recipe uses the loop tool so feedback edges are never hand-authored.",
     promptSnippet: "Apply implement/verify loop recipe to a draft",
     promptGuidelines: [
-      "Prefer this recipe for implement then verify loops.",
+      "Prefer this recipe for single-agent implement then verify loops.",
+      "For multi-agent parallel review after implement, prefer hypagraph_recipe_implement_parallel_review.",
       "Do not supply feedbackEdges. The recipe owns them through hypagraph_loop.",
     ],
     parameters: implementVerifyRecipeSchema,
@@ -5893,6 +5900,107 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
             summary: rendered.summary,
             validationOk: validation.ok,
             diagnostics: structuredClone(validation.diagnostics),
+          },
+        },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "hypagraph_recipe_implement_parallel_review",
+    label: "Implement/parallel-review flagship recipe",
+    description:
+      "Expand the flagship multi-agent recipe onto an open draft: implement → review-panel (N parallel review children + ordinary join) → integrate → optional verify. "
+      + "Inspired by implement-skill implementer then multi-reviewer quorum. Runtime create-child fan-out is documented on review-panel acceptance.",
+    promptSnippet: "Apply implement/parallel-review flagship recipe to a draft",
+    promptGuidelines: [
+      "Prefer this recipe when work needs implement then parallel multi-agent review with ordinary multi-child join.",
+      "After Run, implement runs as a task (default isolated-pi). When review-panel is active, create one child Hypagoal per review role (default: general, tests, security).",
+      "Create all review children before waiting for full single-child cycles when you need multi-child join. Ordinary join publishes default join.passed.",
+      "Do not declare produce join.passed or expectedBindingCount on the ordinary path.",
+      "Use buildParallelReviewChildTemplates guidance in the tool result notes for child objectives and output facts.",
+      "For single-agent implement/verify loops without multi-child review, prefer hypagraph_recipe_implement_verify_loop.",
+    ],
+    parameters: implementParallelReviewRecipeSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const loaded = await loadOpenDraft(ctx.cwd, params.draftId);
+      if (!loaded.ok) {
+        return {
+          content: [{ type: "text" as const, text: renderDraftToolResult({ ok: false, diagnostics: [{ code: loaded.code, message: loaded.message }] }).text }],
+          details: { hypagraphDraft: { ok: false, diagnostics: [{ code: loaded.code, message: loaded.message }] } },
+        };
+      }
+      const updatedAt = new Date().toISOString();
+      const roles = params.reviewRoles && params.reviewRoles.length > 0
+        ? params.reviewRoles
+        : [...DEFAULT_PARALLEL_REVIEW_ROLES];
+      const result = applyImplementParallelReviewRecipe(loaded.draft, {
+        ...(params.implementId === undefined ? {} : { implementId: params.implementId }),
+        ...(params.reviewPanelId === undefined ? {} : { reviewPanelId: params.reviewPanelId }),
+        ...(params.integrateId === undefined ? {} : { integrateId: params.integrateId }),
+        ...(params.verifyId === undefined ? {} : { verifyId: params.verifyId }),
+        ...(params.implementTitle === undefined ? {} : { implementTitle: params.implementTitle }),
+        ...(params.reviewPanelTitle === undefined ? {} : { reviewPanelTitle: params.reviewPanelTitle }),
+        ...(params.integrateTitle === undefined ? {} : { integrateTitle: params.integrateTitle }),
+        ...(params.verifyTitle === undefined ? {} : { verifyTitle: params.verifyTitle }),
+        ...(params.implementAcceptance === undefined ? {} : { implementAcceptance: params.implementAcceptance }),
+        ...(params.reviewPanelAcceptance === undefined ? {} : { reviewPanelAcceptance: params.reviewPanelAcceptance }),
+        ...(params.integrateAcceptance === undefined ? {} : { integrateAcceptance: params.integrateAcceptance }),
+        ...(params.verifyAcceptance === undefined ? {} : { verifyAcceptance: params.verifyAcceptance }),
+        reviewRoles: roles,
+        ...(params.includeVerifyTask === undefined ? {} : { includeVerifyTask: params.includeVerifyTask }),
+        ...(params.successFactName === undefined
+          ? {}
+          : { successFact: { name: params.successFactName, type: "boolean" as const, required: true } }),
+        ...(params.scopePaths === undefined ? {} : { scopePaths: params.scopePaths }),
+        ...(params.verifyId !== undefined || params.includeVerifyTask === true
+          ? { includeVerifyTask: true }
+          : {}),
+      }, updatedAt);
+      if (!result.ok) {
+        const rendered = renderDraftToolResult({ ok: false, diagnostics: result.diagnostics });
+        return {
+          content: [{ type: "text" as const, text: rendered.text }],
+          details: { hypagraphDraft: { ok: false, draftId: params.draftId, diagnostics: structuredClone(result.diagnostics) } },
+        };
+      }
+      await loaded.store.writeDraft(result.draft);
+      await loaded.store.appendDraftHistory(params.draftId, {
+        code: "recipe_implement_parallel_review",
+        message: "Applied implement/parallel-review flagship recipe.",
+      });
+      const validation = validateDraftProjection(result.draft);
+      const templates = buildParallelReviewChildTemplates(roles);
+      const templateLines = templates.map(
+        (t) =>
+          `- role=${t.role} taskId=${t.taskId} fact=${t.outputFactName}: ${t.objectiveHint}`,
+      );
+      const rendered = renderDraftToolResult({
+        ok: true,
+        draft: result.draft,
+        notes: result.notes,
+        validation,
+        headline:
+          "Implement/parallel-review flagship recipe applied. "
+          + "On review-panel, create one child per role; ordinary multi-child join applies.",
+      });
+      const text =
+        rendered.text
+        + "\n\nParallel review child templates (use at create-child):\n"
+        + templateLines.join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: {
+          hypagraphDraft: {
+            ok: true,
+            draftId: params.draftId,
+            status: result.draft.status,
+            summary: rendered.summary,
+            validationOk: validation.ok,
+            diagnostics: structuredClone(validation.diagnostics),
+            recipe: "implement_parallel_review",
+            reviewRoles: [...roles],
+            childTemplates: templates,
           },
         },
       };

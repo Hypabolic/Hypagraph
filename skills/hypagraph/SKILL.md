@@ -164,20 +164,39 @@ Use this path when one parent task must wait for two or more child Hypagoals on 
 
 Ordinary multi-child all-success join is a product path. Live Pi dogfood for multi-child join is not claimed here. Full quorum, ranked, and model synthesis strategies are not shipped.
 
-### Flagship family recipe (root + one child)
+### Flagship recipe: implement → parallel review → ordinary join (preferred multi-agent)
 
-Root free-form shape:
+Inspired by the implement skill: one implementer, then a multi-reviewer quorum, then integrate fixes.
 
-1. `delegate` — task that will call `hypagoal_create_child`. Default isolated-pi is fine. Optional `executorProfile` for current-session if you want that work in main chat. Declare `produces` for returned facts; optional narrow `scope`.
-2. `integrate` — task, `requires: ["delegate"]`, consumes returned facts and finishes parent work. May also use current-session when integration runs on the family desk.
-3. Optional `release-check` — check after integrate.
+**Prefer the construction recipe** when the graph is only task/check:
 
-Child free-form shape:
+1. `hypagraph_draft_begin` with the objective.
+2. `hypagraph_recipe_implement_parallel_review` with `draftId` (default roles: `general`, `tests`, `security`).
+3. Optional: `includeVerifyTask: true` for a final verify task after integrate.
+4. `hypagraph_draft_validate`, then `hypagoal_start` with `draftId`.
 
-1. `implement-auth` — task with **default** `isolated-pi` (omit `executorProfile`, or set isolated-pi explicitly). Do not use current-session on the child.
-2. Optional check that publishes required output facts.
+Root graph the recipe expands:
 
-Binding example fields: `parentNodeId: "delegate"`, `outputFacts: [{ name: "auth.ready", type: "boolean", required: true }]`, `failurePolicy: "block-parent-node"`, `scopePaths` equal or narrower than the parent task scope.
+1. `implement` — task (default isolated-pi). Does the change or prepares the work for review.
+2. `review-panel` — task, `requires: ["implement"]`. While active, create **one child Hypagoal per review role**. Ordinary multi-child join applies. Do **not** declare produce `join.passed`.
+3. `integrate` — task, `requires: ["review-panel"]`. Address blocking findings; finalize. Does not complete the Hypagoal.
+4. Optional `verify` — task or check after integrate.
+
+Runtime on `review-panel` (family desk):
+
+1. For each role, build a child draft (or free-form definition) with one review task that produces `review.<role>.passed` (boolean). Use tool notes / `buildParallelReviewChildDefinition` patterns.
+2. Call `hypagoal_create_child` with `parentNodeId: "review-panel"` for every role **before** waiting for full single-child cycles when you need multi-child join.
+3. Set `outputFacts` to the role fact (for example `review.general.passed`). Prefer `failurePolicy: "block-parent-node"`.
+4. Child tasks stay **isolated-pi**. Do not use current-session on children.
+5. When every sibling is terminal, ordinary join publishes default `join.passed`. Parent leaves wait for integrate.
+
+Single-child family (legacy shape) remains valid when multi-agent review is not needed:
+
+1. `delegate` — task that calls `hypagoal_create_child` once.
+2. `integrate` — `requires: ["delegate"]`.
+3. Child: one implement task (isolated-pi) with required output facts.
+
+For single-agent implement-then-verify loops without multi-child review, prefer `hypagraph_recipe_implement_verify_loop`.
 
 ### Goal → graph → run checklist
 
@@ -217,15 +236,16 @@ Ordered path: **goal contract → subgoal encoding → inspect → construct or 
 3. Inspect enough repository state to understand the requested result, relevant files, existing checks, conventions, and material risks.
 4. Prefer construction tools and recipes. Do not hand-author `feedbackEdges`.
 5. Call `hypagraph_draft_begin` with the objective and exact `creationRequest` when present.
-6. Prefer `hypagraph_recipe_implement_verify_loop` when the work is implement then verify in a loop.
-7. Otherwise use `hypagraph_add_task`, `hypagraph_add_check`, `hypagraph_require`, and `hypagraph_loop`.
-8. `hypagraph_loop` owns feedback edges. It sets `entry.requires` to include `evaluateAfter`.
-9. Call `hypagraph_draft_validate`.
-10. Call `hypagoal_start` with `draftId` when constructors cover the graph. Use free-form `definition` when the graph needs node kinds constructors do not yet build.
-11. Keep simple work simple. One bounded task and one check can be sufficient.
-12. Preserve explicit intent. Do not invent product scope, silently widen writable paths, or convert every sentence into a node.
-13. Ask a question only when product intent, safety, destructive choice, external authority, or a material trade-off cannot be inferred safely. Do not ask the user to design nodes or edges.
-14. After create succeeds in interactive TUI, wait for the user decision. Do not start repository work until the user chooses **Run** on the post-create dock.
+6. Prefer `hypagraph_recipe_implement_parallel_review` when the work needs implement then **parallel multi-agent review** with ordinary multi-child join (flagship multi-agent path).
+7. Prefer `hypagraph_recipe_implement_verify_loop` when the work is single-agent implement then verify in a loop (no multi-child review).
+8. Otherwise use `hypagraph_add_task`, `hypagraph_add_check`, `hypagraph_require`, and `hypagraph_loop`.
+9. `hypagraph_loop` owns feedback edges. It sets `entry.requires` to include `evaluateAfter`.
+10. Call `hypagraph_draft_validate`.
+11. Call `hypagoal_start` with `draftId` when constructors cover the graph. Use free-form `definition` when the graph needs node kinds constructors do not yet build.
+12. Keep simple work simple. One bounded task and one check can be sufficient.
+13. Preserve explicit intent. Do not invent product scope, silently widen writable paths, or convert every sentence into a node.
+14. Ask a question only when product intent, safety, destructive choice, external authority, or a material trade-off cannot be inferred safely. Do not ask the user to design nodes or edges.
+15. After create succeeds in interactive TUI, wait for the user decision. Do not start repository work until the user chooses **Run** on the post-create dock.
 
 ### Construction tools versus free-form definition
 
@@ -235,7 +255,8 @@ Construction tools currently cover:
 - check nodes (`hypagraph_add_check`);
 - dependencies (`hypagraph_require`);
 - bounded loops (`hypagraph_loop`);
-- the implement-then-verify recipe (`hypagraph_recipe_implement_verify_loop`).
+- the implement-then-verify recipe (`hypagraph_recipe_implement_verify_loop`);
+- the flagship implement/parallel-review recipe (`hypagraph_recipe_implement_parallel_review`).
 
 Construction tools do **not** yet cover interaction, gate, code, or effect nodes.
 
@@ -610,7 +631,7 @@ Do not ask a model to judge structural strategy difference unless a deterministi
 
 ## Loop rules
 
-A deliberate cycle must be a declared bounded iteration region. Prefer `hypagraph_loop` or `hypagraph_recipe_implement_verify_loop`. Do not hand-author `feedbackEdges` on the normal path.
+A deliberate cycle must be a declared bounded iteration region. Prefer `hypagraph_loop` or `hypagraph_recipe_implement_verify_loop`. For multi-agent parallel review after implement, prefer `hypagraph_recipe_implement_parallel_review` (ordinary multi-child join, not a loop feedback edge). Do not hand-author `feedbackEdges` on the normal path.
 
 The loop tool owns:
 

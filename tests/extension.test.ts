@@ -28,6 +28,7 @@ describe("Pi extension registration", () => {
       "hypagraph_require",
       "hypagraph_loop",
       "hypagraph_recipe_implement_verify_loop",
+      "hypagraph_recipe_implement_parallel_review",
       "hypagraph_read",
       "hypagraph_run_check",
       "hypagraph_cancel_check",
