@@ -10,49 +10,47 @@ Store artifacts from a real multi-child concurrent family run under Pi.
 
 Do not mark the capability ledger **Live** for concurrent multi-pending family selection until this directory holds a recorded pass for the case ID above against operator-observable Live checks (§5.1 of the acceptance doc).
 
+The Live bar after S4 requires two concurrent model workers in a real Pi session. It also requires multi-pending occupancy of two, a mid-flight window, and independent settle of both.
+
+A two-id concurrent batch notify alone is not enough. See the definition in `docs/gate1-3-concurrent-family-live-acceptance.md` §1.
+
 ## Capture list (after a live run)
 
 Record at least:
 
 | File | Content |
 | --- | --- |
-| `summary.json` | Final phase, member goal ids, pass or fail against §5.1 |
+| `summary.json` | Final phase, member goal ids, case ID, pass or fail against §5.1 |
 | `operator-notes.md` | Operator steps taken, model id, extension path, pass or fail against §5.1 Live checks |
-| `notify-snippets.txt` | Concurrent batch notify that names at least two member goal ids; model start notify for exactly one model in that pass |
-| `status-snippets.txt` | After the pass: deferred not left pending (no stranded multi-pending); status not false idle; `lastOutcome` honesty if pendings are already zero |
+| `notify-snippets.txt` | Concurrent batch notify that names at least two member goal ids; model start evidence for two concurrent model workers in that pass |
+| `status-snippets.txt` | Multi-pending occupancy of two while both are unsettled; mid-flight window notes; post-settle status honesty (`lastOutcome` if pendings are zero) |
 
-Do **not** require:
+Optional: session export or event history if the operator wants helper-level proof of independent settle.
 
-- multi-pending count x2 status lines for a pure model batch;
-- a deferred-interrupt notify or message;
-- post-pass “startable remains pending” or mid-flight single-pending status (isolated await can settle the startable inside the pass).
+## Expected pure-model observation (raised Live bar)
 
-Optional: session export or event history if the operator wants helper-level proof of interrupt settle. That is not required for Live.
-
-## Expected pure-model observation
-
-For two concurrent-eligible model children, expect:
+For two concurrent-eligible model children under default `globalConcurrency` 2, expect:
 
 1. concurrent batch notify that names two member goal ids;
-2. exactly one model start notify (or equivalent) in that pass;
-3. after the pass, deferred member is not left pending; occupancy is not stranded multi-pending;
-4. after the pass (and after settle if it finished inside the pass), status is not false idle (`lastOutcome` honesty is enough).
+2. two model starts in that pass;
+3. multi-pending occupancy of two while both remain unsettled;
+4. a mid-flight window where two workers are in flight;
+5. independent settle of each pending without clobber of the sibling;
+6. after both settle, status is not false idle.
 
-Do not require:
+Do not treat as a Live pass:
 
-- two simultaneous live model workers;
-- `/hypagraph status` multi-pending count while two pure-model pendings remain;
-- operator observation that family state settled the deferred pending as interrupted;
-- mid-flight status while a startable pending remains after the pass returns.
-
-Optional mixed path (deterministic + model): the operator can also capture simultaneous multi-pending status and dual startable settle.
+1. a two-id concurrent batch notify with only one model start;
+2. pre-S4 host behaviour that starts at most one model worker per pass;
+3. automated substitute results alone;
+4. host-level CI proof alone (§5.2).
 
 ## Current state
 
 No live artifacts are present. The automated substitute for CI is:
 
 ```bash
-npx vitest run tests/gate1-3-concurrent-family-live-acceptance.test.ts
+npx vitest run tests/gate1-3-concurrent-family-live-acceptance.test.ts tests/s4-worker-pool-concurrent-fanout.test.ts
 ```
 
-That test does not earn ledger **Live**. Multi-pending status count, mid-flight single-pending status, and deferred settle as interrupted in family state are proven in the substitute, not as pure-model Live UI must-observes.
+That test does not earn ledger **Live**. Live remains **No** until real Pi dogfood for `CASE-G1-3-CONCURRENT-FAMILY` is recorded here against §5.1.

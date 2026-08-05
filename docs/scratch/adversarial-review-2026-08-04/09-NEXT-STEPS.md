@@ -110,7 +110,7 @@ No human calendar scales. Order is by dependency and exit gate only.
 | --- | --- | --- | --- | --- |
 | 1.1 | Wire concurrent selection into the ordinary product path | Medium: host and domain glue | Multi-pending family starts concurrent children without checks-only special case | Done |
 | 1.2 | Concurrency policy surface (limits, exclusive vs concurrent, failure modes) | Medium | Documented and tested policy (`docs/concurrency-policy-surface.md`) | Done |
-| 1.3 | Live acceptance: multi-child concurrent run under real Pi | Integration | Ledger row is **Live** | Partial: case script + automated host substitute present (`docs/gate1-3-concurrent-family-live-acceptance.md`, `tests/gate1-3-concurrent-family-live-acceptance.test.ts`, evidence stub `docs/dogfood-evidence/gate1-3-live/`). Live Pi dogfood not run. Ledger **Live** still open. |
+| 1.3 | Live acceptance: multi-child concurrent run under real Pi | Integration | Ledger row is **Live** | Not complete: case script + automated host substitute present (`docs/gate1-3-concurrent-family-live-acceptance.md`, `tests/gate1-3-concurrent-family-live-acceptance.test.ts`, `tests/s4-worker-pool-concurrent-fanout.test.ts`, evidence stub `docs/dogfood-evidence/gate1-3-live/`). Raised Live bar after S4 is in the acceptance §5.1 (two concurrent model workers in a real Pi session; a two-id concurrent batch notify alone is not enough). Live Pi dogfood not run. Ledger **Live** still **No**. |
 
 **Gate 1 exit status:** not complete. Exit requires ledger **Live** for concurrent multi-pending family selection (case `CASE-G1-3-CONCURRENT-FAMILY`).
 
@@ -198,7 +198,7 @@ Until then: strong kernel and partial multi-agent product. Not a full company be
 
 ## 6. Next implementable unit after Gate 0
 
-1. **Gate 1.3 live Pi dogfood** — run `CASE-G1-3-CONCURRENT-FAMILY` under real Pi, record evidence under `docs/dogfood-evidence/gate1-3-live/`, then set ledger **Live** only if the pass criteria hold. Automated substitute already exists; do not claim Gate 1 complete until Live is earned.
+1. **Gate 1.3 live Pi dogfood** — run `CASE-G1-3-CONCURRENT-FAMILY` under real Pi against the raised Live bar in acceptance §5.1. Record evidence under `docs/dogfood-evidence/gate1-3-live/`. Set ledger **Live** only if §5.1 pass criteria hold. Automated substitute already exists and does not earn Live; do not claim Gate 1 complete until Live is earned.
 2. Or start **Gate 2.1** synthesis domain if concurrent host path is enough for sequential join experiments (Gate 2 still depends on Gate 1 for concurrent fan-out claims).
 
 ## 7. Related durable docs

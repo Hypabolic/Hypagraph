@@ -1,45 +1,46 @@
 # Gate 1.3 — Concurrent family live acceptance
 
 - Case ID: `CASE-G1-3-CONCURRENT-FAMILY`
-- Date: 2026-08-04
+- Date: 2026-08-05
 - Gate: Gate 1.3 (live multi-child concurrent family)
 - Status: **automated substitute passed; live Pi dogfood not run**
 - Writing standard: ASD-STE100 Simplified Technical English
 
 ## 1. Purpose
 
-Prove multi-child concurrent family dispatch under the ordinary product path.
+Prove multi-child concurrent family dispatch under the ordinary product path after S4 worker pool capacity.
+
+**Definition — two-id concurrent batch notify:** a host notify (or equivalent surface) that names at least two member goal ids in one concurrent dispatch batch. That notify alone is not a Live pass.
 
 The case must show:
 
 1. a multi-member family with at least two concurrent-eligible members (prefer two sibling children under one root);
-2. product selection that returns a concurrent dispatch batch when policy allows;
+2. product selection that returns a concurrent dispatch batch with two model members when policy allows;
 3. host commit of multiple pendings (Seam C);
-4. operator-visible batch selection of two member ids (notify or equivalent);
-5. honest handling of host model capacity (exactly one model start in that pass);
-6. after the pass, no stranded multi-pending occupancy (deferred member not left pending);
-7. after settle, status is not false-idle (`lastOutcome` honesty is enough).
+4. two live model workers under policy in a real Pi session;
+5. multi-pending occupancy of two while both workers are unsettled;
+6. a mid-flight window where the operator can observe two workers in flight;
+7. independent settle of each of those two pendings without clobber of the sibling;
+8. after settle, status is not false-idle (`lastOutcome` honesty is enough).
 
-On the default isolated model path, the host awaits the startable worker and can settle the startable pending before the controller pass returns. The operator may see zero family pendings after the pass. Mid-flight “startable remains pending” status is not a pure-model Live must-observe. That window is a §5.2 substitute check. See §5.1 and §5.3.
+Live is not earned by a two-id concurrent batch notify alone.
 
-Simultaneous multi-pending **status count** is not a pure-model Live requirement. It is a §5.2 substitute check, or an optional mixed-path Live observation.
-
-Silent deferred settle as interrupted in family state is not a pure-model Live must-observe. That settle is a §5.2 substitute check.
-
-Independent settle of two **simultaneous live model workers** is not a Live requirement for a pure model batch. The current host does not start two model workers in one pass.
+Live is not earned by an automated substitute alone.
 
 ## 2. Honesty statement
 
 | Layer | Result for this slice |
 | --- | --- |
 | Domain | Proven earlier (Gate 1.1) |
-| Host | Proven earlier and by automated substitute (Seam C helpers) |
-| Ordinary | Still **Partial** (Option A create-child, R4, UX awkwardness) |
+| Host | Proven by S4 worker pool path and automated substitute (batch path + pool) |
+| Ordinary | Still **Partial** (create-child UX, R4, density) |
 | Live | Still **No** |
 
 This environment did not run a real interactive Pi TUI session for this case.
 
-Ledger **Live** requires a real Pi session dogfood (or an equivalent live acceptance run) with recorded artifacts and this case ID. The automated host and product substitute is the CI gate. That substitute does **not** earn **Live** by itself.
+No artifacts under `docs/dogfood-evidence/gate1-3-live/` record a live pass.
+
+Ledger **Live** requires a real Pi session dogfood with recorded artifacts and this case ID against §5.1. The automated host and product substitute is the CI gate. That substitute does not earn **Live**.
 
 See `docs/capability-ledger.md` row **Concurrent multi-pending family selection**.
 
@@ -50,28 +51,25 @@ See `docs/capability-ledger.md` row **Concurrent multi-pending family selection*
 3. Pi CLI available with a model that can run the local extension.
 4. Local extension path: `./extensions/hypagraph.ts` (or the package extension entry in use).
 5. Clean workspace or a dedicated dogfood directory under `docs/dogfood-evidence/gate1-3-live/`.
-6. Operator can create a multi-member family with two concurrent-eligible sibling children (Option A current-session parent for create-child).
+6. Operator can create a multi-member family with two concurrent-eligible sibling children.
+7. Product concurrency policy allows capacity of at least two (`globalConcurrency` default 2).
 
 ## 4. Operator steps (live Pi)
 
 When a live TUI or RPC Pi session is available, run:
 
 1. Confirm executor status is healthy (`/hypagraph executor status`).
-2. Create a root Hypagoal that can own children (current-session parent for Option A create-child).
+2. Create a root Hypagoal that can own children.
 3. Run the root so the parent task is active.
-4. Create **two sibling child** members with independent model work (isolated workers preferred).
-5. Let the family controller select work with concurrent product policy enabled (default: concurrent on, `maxBatchSize` 2, global concurrency 2).
-6. Observe the host batch notify (or equivalent). It must name at least two member goal ids in one concurrent batch.
-7. Do **not** require `/hypagraph status` to show multi-pending count x2 for a pure model batch.
-8. Observe host model capacity: exactly one model start notify (or equivalent start signal) for that pass.
-9. Do **not** require a deferred-interrupt notify. The host can settle deferred models without a user-visible interrupt message.
-10. After the pass returns, run status. Confirm occupancy is not stranded multi-pending for the deferred member (deferred not left pending). Confirm status is not false idle. On the default isolated path, the startable may already be settled inside the pass; `lastOutcome` honesty is enough. Do not require a mid-flight single-pending window.
-11. Record evidence under `docs/dogfood-evidence/gate1-3-live/` (see §6).
-
-Optional mixed batch (not required for pure-model Live if §5.1 is met):
-
-- If the family has a deterministic action and a model action ready together, the host can start both in one pass.
-- Then the operator can observe simultaneous multi-pending status and independent settle of those two live startable items.
+4. Create two sibling child members with independent model work (isolated workers preferred).
+5. Let the family controller select work with concurrent product policy enabled (default: concurrent on, `maxBatchSize` 2, `globalConcurrency` 2).
+6. Observe the host concurrent batch notify (or equivalent). It must name at least two member goal ids in one concurrent batch.
+7. Observe two model starts in that pass. Do not treat a single model start as a pass.
+8. While both workers remain unsettled, observe multi-pending occupancy of two (status multi-pending x2, worker occupancy, or equivalent).
+9. Confirm a mid-flight window where two workers are in flight at the same time.
+10. Confirm each pending settles independently. One completion must not clear or clobber the sibling pending.
+11. After both settle, run status. Confirm status is not false idle. `lastOutcome` honesty is enough when pendings are zero.
+12. Record evidence under `docs/dogfood-evidence/gate1-3-live/` (see §6).
 
 Record pass or fail against §5.1 after the live run. Do not use §5.2 alone for Live.
 
@@ -83,49 +81,51 @@ Use these checks for a real Pi run. Record artifacts for each observed check.
 
 | Check | Must observe |
 | --- | --- |
-| Multi-pending batch | Product path selects and commits at least two concurrent-eligible members in one batch when capacity allows |
+| Multi-pending batch | Product path selects and commits at least two concurrent-eligible model members in one batch when capacity allows |
 | Concurrent selection notify | Host surfaces a concurrent batch notify (or equivalent) that names at least two member goal ids |
-| Model capacity | Exactly one model start notify (or equivalent) in that pass |
-| No stranded deferred occupancy | After the pass, the deferred member is not left pending; occupancy is not stranded multi-pending |
-| Post-pass status honesty | After the pass (and after settle if settle finished inside the pass), status is not false idle; `lastOutcome` honesty is enough |
+| Two model workers | Two live model workers start under policy in a real Pi session. One model start is not enough. Host-level proof belongs in §5.2 and does not satisfy this check |
+| Multi-pending occupancy of two | Status or equivalent shows multi-pending occupancy of two while both remain unsettled |
+| Mid-flight window | Operator can observe two workers in flight at the same time |
+| Independent settle | Each of the two pendings settles without clobber of the sibling |
+| Post-settle status honesty | After both settle, status is not false idle; `lastOutcome` honesty is enough |
 
 Live pass needs §5.1 plus artifacts under §6.
 
-Live pass for a pure model batch does **not** require:
-
-1. two simultaneous live model workers;
-2. `/hypagraph status` multi-pending count x2;
-3. a deferred-interrupt notify or operator observation that family state settled the deferred pending as interrupted;
-4. post-pass “startable remains pending” or mid-flight status while a startable pending remains (isolated await can settle the startable before the pass returns).
-
-Multi-pending status count and mid-flight single-pending status are §5.2 substitute checks. Simultaneous multi-pending status is optional for Live only on the mixed deterministic + model path.
+Live pass for a pure model batch requires two concurrent model workers under S4 pool capacity. Pre-S4 one-seat language is not the product bar.
 
 ### 5.2 Automated substitute checks (CI only)
 
-These checks prove Seam C host and product helpers. An operator cannot observe them from the TUI alone. They do **not** earn ledger **Live**.
+These checks prove product selection, Seam C host helpers, pool helpers, free-slot protocol behaviour (via S4 helpers), and source-level tripwires on `src/extension.ts`. They do not earn ledger **Live**.
+
+Source greps assert identifiers and shape only. They do not prove runtime batch behaviour alone. Behavioural proof of free-slot concurrent await is in `tests/s4-worker-pool-concurrent-fanout.test.ts` and is reused here through `traceConcurrentIsolatedFreeSlotProtocol`.
 
 | Check | Must prove in CI |
 | --- | --- |
 | Family shape | Root plus two sibling children; root not concurrent-ready so the batch is multi-child |
-| Product selection | `selectFamilyProductControllerAction` returns `dispatch-batch` with two child model items |
+| Product selection | `selectFamilyProductControllerAction` returns `dispatch-batch` with two child model items when capacity allows |
 | Host Seam C commit | `commitConcurrentFamilyBatchForHost` commits two pendings |
 | Mark before settle | `markFamilyPendingDispatchedForHost` marks each startable with `memberState` before settle |
-| Deferred settle as interrupted | `settleFamilyPendingForHost` with outcome `interrupted` clears one pending and leaves an unrelated pending |
-| Independent settle (helpers) | `settleFamilyPendingForHost` settles one pending and leaves the other under `independent-settle` |
-| Multi-pending status count | Projection and status report multi-pending count honesty (not idle) while two pendings exist (helper timing; not pure-model Live) |
-| Mid-flight single-pending status | After one of two pendings settles, status is not false idle while the sibling remains (helper timing; not pure-model Live on isolated await) |
+| Extension source tripwires | `src/extension.ts` still contains `Promise.all(modelWork)`, resolved global concurrency capacity, and no historical `modelSlots = 1` one-seat partition string |
+| Free-seat admit double | Test-local free-seat arithmetic (documented double of host filter) admits two model members under empty pool and `globalConcurrency` 2, using real `isDeterministicFamilyMemberDecision` |
+| Worker pool map occupancy | Host worker pool Map admits two concurrent entries under `globalConcurrency` 2 |
+| Multi-pending occupancy of two | Projection and status report multi-pending count honesty while two pendings exist |
+| Mid-flight free-slot protocol | `traceConcurrentIsolatedFreeSlotProtocol` proves two concurrent awaits with free slots unbound during await (real protocol helper; not Map-only) |
+| Independent family settle | `settleFamilyPendingForHost` settles one pending and leaves the sibling |
+| Interrupted independent settle | `settleFamilyPendingForHost` with outcome `interrupted` clears one pending and leaves the sibling; this is not pre-S4 one-seat capacity defer |
 | Global concurrency binding | Three concurrent-eligible members with `globalConcurrency` 2 admit two; a free third member cannot admit while occupancy is full |
 
-### 5.3 Known host limits (not automatic fail criteria)
+Related suite: `tests/s4-worker-pool-concurrent-fanout.test.ts`.
 
-1. The host starts at most one model worker per pass.
-2. The host settles deferred model pendings as interrupted in the same pass when model capacity is full. That settle is silent (no dedicated interrupt notify).
-3. Commit, batch notify, partition, and deferred settle run in one synchronous stretch. The operator cannot run status while two pure-model pendings remain.
-4. On the default isolated model path, the host awaits the startable worker to completion and settles the startable family pending before the controller pass returns. After the pass the operator can see zero family pendings.
-5. The host await is serial on the shared session.
-6. Independent settle of two simultaneous **live model workers** is not available on the current host for a pure model batch.
+### 5.3 Host behaviour after S4
 
-These limits must stay visible in public claims. They do not cancel concurrent batch selection or the capacity signals in §5.1.
+1. Host model pool capacity is N under resolved `globalConcurrency` (default 2).
+2. The extension batch path starts admitted model members concurrently and settles each pending on that worker completion.
+3. The host does not use `modelSlots = 1` as the product bar.
+4. Free-slot protocol for isolated workers binds free slots only for start/register and settle. Process await does not hold free slots.
+5. Concurrent settle merges member stream and pending under one lock so sibling bags are not clobbered.
+6. Historical pre-S4 limits (one model worker per pass; deferred interrupt for one seat) are not the product bar.
+
+Public claims must show these facts. These facts do not earn ledger Live. Live needs §5.1 artifacts.
 
 ## 6. Evidence location
 
@@ -143,16 +143,17 @@ This directory is a stub until a real Pi run records files. Do not mark ledger *
 
 ### Purpose
 
-Prove the multi-pending **product** path end to end at host and product-helper level without a real Pi TUI.
+Prove the multi-pending product path at host, pool, free-slot protocol, and extension source-tripwire level without a real Pi TUI.
 
-### Test file
+### Test files
 
-`tests/gate1-3-concurrent-family-live-acceptance.test.ts`
+- `tests/gate1-3-concurrent-family-live-acceptance.test.ts` (Gate 1.3 substitute)
+- `tests/s4-worker-pool-concurrent-fanout.test.ts` (S4 pool and concurrent fan-out regressions)
 
 ### Command
 
 ```bash
-npx vitest run tests/gate1-3-concurrent-family-live-acceptance.test.ts
+npx vitest run tests/gate1-3-concurrent-family-live-acceptance.test.ts tests/s4-worker-pool-concurrent-fanout.test.ts
 ```
 
 Related regression suite:
@@ -161,28 +162,35 @@ Related regression suite:
 npx vitest run \
   tests/gate1-1-multi-pending-family.test.ts \
   tests/gate1-2-concurrency-policy-surface.test.ts \
-  tests/gate1-3-concurrent-family-live-acceptance.test.ts
+  tests/gate1-3-concurrent-family-live-acceptance.test.ts \
+  tests/s4-worker-pool-concurrent-fanout.test.ts
 ```
 
 ### What the substitute covers
 
 1. Root with two sibling children; root paused so two children are concurrent-eligible.
-2. `selectFamilyProductControllerAction` returns `dispatch-batch` with two child items under concurrent policy.
+2. `selectFamilyProductControllerAction` returns `dispatch-batch` with two child model items under concurrent policy.
 3. `commitConcurrentFamilyBatchForHost` commits two pendings.
 4. `markFamilyPendingDispatchedForHost` marks each startable with `memberState` before settle.
-5. `settleFamilyPendingForHost` settles each pending independently at the helper layer (including `interrupted`).
-6. Status and projection surfaces report multi-pending count honesty (not idle) while pendings exist.
-7. Three concurrent-eligible members with `globalConcurrency` 2 make the global limit binding (admit two; block third while occupancy is full).
+5. Free-seat admit double with real `isDeterministicFamilyMemberDecision`.
+6. Worker pool Map occupancy of two under capacity.
+7. Free-slot protocol mid-flight concurrent awaits via `traceConcurrentIsolatedFreeSlotProtocol`.
+8. Independent settle of each pending without clobber of the sibling (family helper).
+9. Interrupted independent settle (not one-seat capacity defer).
+10. Status and projection multi-pending count honesty while pendings exist.
+11. Three concurrent-eligible members with `globalConcurrency` 2 make the global limit binding.
+12. Extension source tripwires for S4 batch shape.
 
 ### What the substitute does not cover
 
 1. Real Pi process spawn.
-2. Real isolated-pi worker sessions.
+2. Real isolated-pi worker sessions under interactive TUI.
 3. Interactive TUI docks and operator UX.
 4. Live operator evidence for Gate 1.3 (§5.1).
 5. Ledger **Live** acceptance.
+6. Runtime proof that `Promise.all(modelWork)` always receives two model entries (source tripwire only).
 
-Note: deferred settle as interrupted in family state is covered at the helper layer in §5.2 and in the gate1-3 interrupted test case. The host path in `src/extension.ts` applies that settle without a dedicated UI notify.
+Automated substitute does not earn Live.
 
 ## 8. Related documents
 
@@ -191,4 +199,5 @@ Note: deferred settle as interrupted in family state is covered at the helper la
 - Family product dogfood honesty pattern: `docs/scratch/family-product-dogfood.md`
 - Gate 1.1 tests: `tests/gate1-1-multi-pending-family.test.ts`
 - Gate 1.2 tests: `tests/gate1-2-concurrency-policy-surface.test.ts`
+- S4 worker pool tests: `tests/s4-worker-pool-concurrent-fanout.test.ts`
 - Next steps: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`

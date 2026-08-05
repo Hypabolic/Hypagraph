@@ -19,10 +19,11 @@
 4. `docs/v0.14-release-notes.md` — what this release ships;
 5. `docs/m7-m9-roadmap-run-report.md` — slice map and branch history notes;
 6. `docs/goal-family-and-concurrent-execution-plan.md` — family and executor architecture;
-7. `docs/concurrency-policy-surface.md` — product concurrency limits, groups, and partial-failure (Gate 1.2);
-8. `docs/delegation-and-visualisation.md` — executor transports and UI;
-9. `docs/deterministic-orchestration-plan.md` — aggregate, synthesis, fan-out (partially still open as product recipes);
-10. `docs/gauntlet-built-in-hypagoal.md` — built-in recipe idea (not implemented).
+7. `docs/concurrency-policy-surface.md` — product concurrency limits, groups, and partial-failure (Gate 1.2); host pool capacity is N under `globalConcurrency` (default 2) after S4;
+8. `docs/gate1-3-concurrent-family-live-acceptance.md` — Gate 1.3 Live bar (two concurrent model workers; Live still **No** without Pi dogfood);
+9. `docs/delegation-and-visualisation.md` — executor transports and UI;
+10. `docs/deterministic-orchestration-plan.md` — aggregate, synthesis, fan-out (partially still open as product recipes);
+11. `docs/gauntlet-built-in-hypagoal.md` — built-in recipe idea (not implemented).
 
 ## 2. Released state
 
@@ -153,7 +154,7 @@ Roadmap exit: hardened agent-independent execution kernel. Use section 2 of `doc
 ### 5.3 Suggested first next steps
 
 1. Update product docs and skill text for family, worktree, and external executors if gaps remain.
-2. Dogfood one multi-executor or concurrent worktree path end to end.
+2. Dogfood Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` under real Pi. Record evidence under `docs/dogfood-evidence/gate1-3-live/`. See `docs/gate1-3-concurrent-family-live-acceptance.md`.
 3. Implement orchestration aggregate if review-quorum recipes are next.
 4. Author the recipe library and a minimal Gauntlet recipe when aggregate + executors are ready.
 
@@ -168,6 +169,10 @@ Roadmap exit: hardened agent-independent execution kernel. Use section 2 of `doc
 | Roadmap workflow | `.grok/workflows/m7-to-m9-roadmap.rhai` |
 | Gauntlet idea | `docs/gauntlet-built-in-hypagoal.md` |
 | M6.3 notes | `docs/v0.10-release-notes.md` |
+| Gate 1.3 concurrent family live acceptance | `docs/gate1-3-concurrent-family-live-acceptance.md` |
+| Gate 1.3 live evidence (empty until dogfood) | `docs/dogfood-evidence/gate1-3-live/` |
+| Capability ledger | `docs/capability-ledger.md` |
+| Concurrency policy surface | `docs/concurrency-policy-surface.md` |
 
 ## 7. Working tree expectation
 

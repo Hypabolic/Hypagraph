@@ -21,12 +21,16 @@ Use this ledger for README claims, release notes, and review. Do not treat a dom
 | **Ordinary** | A normal user can reach the path without fixtures, demo-only code, or special engineer steps. |
 | **Live** | Accepted under a real Pi session dogfood or an equivalent live acceptance case recorded with a case ID. |
 
+**Live transport policy:** A recorded Pi RPC-driver dogfood and a recorded interactive Pi TUI dogfood both satisfy **Live** when both a case ID and an evidence path exist. Automated CI substitutes do not satisfy **Live**.
+
 Rules:
 
 1. A claim of “shipped” for a user feature requires at least **Ordinary**.
 2. A claim of release-accepted multi-agent behaviour requires **Live**.
 3. **Domain** alone is not a product claim.
 4. Update this file when a path moves state.
+5. The **Live** column is binary: **Yes** or **No** only. Ordinary may still be Partial.
+6. Every **Live=Yes** row must name a case ID and an evidence path. If either is missing, set **Live=No**.
 
 ## 3. Host versus domain boundary
 
@@ -45,26 +49,30 @@ States below reflect the adversarial review of 2026-08-04 and the in-tree produc
 
 | Capability | Domain | Host | Ordinary | Live | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Root Hypagoal create (`/hypagoal`, `hypagoal_start`) | Yes | Yes | Yes | Partial | Ordinary path is real. Full live multi-session dogfood remains a release bar. |
-| Post-create Run / Question / Cancel dock | Yes | Yes | Yes | Partial | Interactive TUI path exists. |
-| Single-root task + check + gate execution | Yes | Yes | Yes | Yes | Core durable path; strongest product surface. |
-| Deterministic checks (command, report, file, Git) | Yes | Yes | Yes | Yes | Host runners + durable lifecycle. |
-| Bounded loops and trusted evaluation | Yes | Yes | Yes | Partial | Kernel strong; protected production isolation still planned for some eval modes. |
-| Live graph bottom dock and full graph modal | Yes | Yes | Yes | Partial | Product UI on demo branch; demo tour uses it. |
+| Root Hypagoal create (`/hypagoal`, `hypagoal_start`) | Yes | Yes | Yes | No | Ordinary path is real. Create appears inside broader dogfood runs, but no dedicated case ID for create as Live. Full multi-session create dogfood remains a release bar. |
+| Post-create Run / Question / Cancel dock | Yes | Yes | Yes | No | Interactive TUI path exists. No dedicated live case ID for the dock alone. |
+| Single-root task + command check execution | Yes | Yes | Yes | Yes | Core durable path for one task and one command check. Case ID `CASE-M6B-RESULT-TXT`. Evidence: `docs/dogfood-evidence/m6b-live/`. This case has no gate node. |
+| Single-root gate execution | Yes | Yes | Yes | Yes | Gate nodes `route` and `publish-gate` under recorded Pi RPC dogfood. Case ID `CASE-M6B-LOOP-REVISION`. Evidence: `docs/dogfood-evidence/m6b-live-loop-revision/`. |
+| Deterministic command checks | Yes | Yes | Yes | Yes | Command check path only. Case ID `CASE-M6B-RESULT-TXT`. Evidence: `docs/dogfood-evidence/m6b-live/`. Report, file, and Git checks remain Domain/Host/Ordinary without Live case IDs. |
+| Deterministic checks (report, file, Git) | Yes | Yes | Yes | No | Host runners exist. No Live case ID for report, file, or Git check kinds. |
+| Bounded loops | Yes | Yes | Yes | Yes | Loop `lint-repair` under recorded Pi RPC dogfood. Case ID `CASE-M6B-LOOP-REVISION`. Evidence: `docs/dogfood-evidence/m6b-live-loop-revision/`. |
+| Trusted evaluation contracts (protected evaluator, trust modes, integrity) | Yes | Yes | Yes | No | Domain and host path exist. Product tests and M5A dogfood write-up cover contracts (`docs/m5a-dogfood.md`). No Live case ID for protected evaluator isolation. Protected production isolation still planned for some eval modes. |
+| Live graph bottom dock and full graph modal | Yes | Yes | Yes | No | Product UI on demo branch; demo tour uses it. No dedicated live case ID for the dock alone. |
 | Goal family projection and child create domain | Yes | Yes | Partial | No | Domain and host tools exist. Create-child is allowed for isolated-pi or current-session parents from the family desk. Live root→child→return dogfood not release-accepted. |
 | Sequential multi-member family dispatch | Yes | Yes | Partial | No | Product controller sequential path is wired. Ordinary UX still awkward (R4 non-root current-session ban; family authoring density). |
-| Concurrent multi-pending family selection | Yes | Yes | Partial | No | Schema 3 multi-pending; product can commit multiple model pendings in a batch. Gate 1.1–1.2 host path enforces default global concurrency (2), independent-settle partial failure, and multi-pending status honesty (see `docs/concurrency-policy-surface.md`). Per-executor limits and concurrency groups are enforced when the caller supplies them on product helpers; the ordinary extension path currently passes default policy only. S4 worker pool: keyed map of active isolated attempts; capacity is resolved `globalConcurrency` (default 2); batch path starts admitted model members concurrently and settles each pending on that worker's completion (no `modelSlots = 1`, no deferred-interrupt for a single seat). Isolated workers hold free slots only for start/register and settle (protocol in `isolated-free-slot-protocol.ts`); process await does not hold free slots. Host commits only free-seat model members (no selected-without-start residual). Concurrent settle merges member stream and pending under one lock so sibling bags are not clobbered. Status reports multi-worker occupancy. Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY`: live acceptance script and evidence stub in `docs/gate1-3-concurrent-family-live-acceptance.md` and `docs/dogfood-evidence/gate1-3-live/`; automated host substitutes `tests/gate1-3-concurrent-family-live-acceptance.test.ts` and `tests/s4-worker-pool-concurrent-fanout.test.ts`. Live Pi dogfood is not recorded; **Live** remains open. |
+| Concurrent multi-pending family selection | Yes | Yes | Partial | No | Schema 3 multi-pending; product can commit multiple model pendings in a batch. Gate 1.1–1.2 host path enforces default global concurrency (2), independent-settle partial failure, and multi-pending status honesty (see `docs/concurrency-policy-surface.md`). Per-executor limits and concurrency groups are enforced when the caller supplies them on product helpers; the ordinary extension path currently passes default policy only. S4 worker pool: keyed map of active isolated attempts; capacity is resolved `globalConcurrency` (default 2); batch path starts admitted model members concurrently and settles each pending on that worker's completion (no `modelSlots = 1`, no deferred-interrupt for a single seat). Isolated workers hold free slots only for start/register and settle (protocol in `isolated-free-slot-protocol.ts`); process await does not hold free slots. Host commits only free-seat model members (no selected-without-start residual). Concurrent settle merges member stream and pending under one lock so sibling bags are not clobbered. Status reports multi-worker occupancy. Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY`: raised Live bar requires two live model workers in a real Pi session, multi-pending occupancy of two, mid-flight window, and independent settle of both. A two-id concurrent batch notify alone is not enough (see acceptance §1). Acceptance: `docs/gate1-3-concurrent-family-live-acceptance.md`; evidence stub `docs/dogfood-evidence/gate1-3-live/` (empty). Automated substitutes `tests/gate1-3-concurrent-family-live-acceptance.test.ts` and `tests/s4-worker-pool-concurrent-fanout.test.ts` do not earn Live. Live Pi dogfood is not recorded; **Live** remains **No**. |
+| Optional grandchild / family depth | Yes | Partial | No | No | Domain depth bounds exist. Product create-child may create nested members within depth limits. Full ordinary grandchild desk and live dogfood not accepted. See F6 in `docs/goal-family-product-surface-plan.md`. |
 | Worktree leases / isolated checkout integration | Yes | Partial | No | No | Domain seams exist. Ordinary product wiring incomplete. |
 | Derived fan-out from collection facts | Yes | No | No | No | Domain + tests. Not ordinary product surface. |
-| Isolated model workers (`isolated-pi`) | Yes | Yes | Yes | Partial | Default for root model tasks when spawn works. |
+| Isolated model workers (`isolated-pi`) | Yes | Yes | Yes | No | Default for root model tasks when spawn works. No dedicated live case ID for isolated multi-worker proof. |
 | ACP / CLI external executors | Yes | Yes | No | No | Adapters exist; engineer surface, not first-run product. |
 | Aggregate / quorum / synthesis nodes | Yes | Yes | No | No | S6 all-success child-outcome join: domain module `child-outcome-synthesis.ts` (schema v1 policy/result; optional `expectedBindingCount`; pure evaluate; parent apply publishes `join.passed` when the parent declares that boolean produce). Host helpers in `family-product-synthesis.ts`; extension runs ready join synthesis after child returns and on restore re-entry (ordinary family product path). Empty join set passes under all-success. Auto product join requires the result produce, skips when the fact is already on the attempt, and requires at least two terminal bindings unless `expectedBindingCount` or an explicit policy is set. Auto without `expectedBindingCount` is only safe for a planned join of exactly two children; sequential three-or-more must set `expectedBindingCount` or the second return can complete the join early. Failed-join host publish/block runs only while the parent is still running; when a child failure policy already failed or blocked the parent, that policy owns the parent effect and synthesis quiet-skips on re-entry (no repeated warning). Full aggregate node kinds, model synthesis node, and recipe library are not shipped. Live acceptance not recorded. |
 | Named recipe library (beyond one implement-verify tool) | Partial | Partial | No | No | One minimal recipe tool. Library and launch-with-args incomplete. |
 | Gauntlet / blind multi-critic panel | Partial | No | No | No | Design docs only. |
-| In-Pi showcase demo tour | N/A | Yes | Yes | Partial | Deterministic fixtures only. Not multi-agent proof. |
-| Session restore and pause / resume | Yes | Yes | Yes | Partial | Kernel path strong; family live restore dogfood incomplete. |
-| Event history, explain, replay surfaces | Yes | Yes | Yes | Partial | Commands exist; live dogfood depth varies. |
-| Project store drafts and constructors | Yes | Yes | Partial | Partial | Task/check/require/loop constructors. Interaction, gate, code, effect free-form only. |
+| In-Pi showcase demo tour | N/A | Yes | Yes | No | Deterministic fixtures only. Not multi-agent proof. No live multi-agent case ID. |
+| Session restore and pause / resume | Yes | Yes | Yes | No | Kernel path strong; family live restore dogfood incomplete. No dedicated restore case ID as Live. |
+| Event history, explain, replay surfaces | Yes | Yes | Yes | No | Commands exist; live dogfood depth varies. No dedicated case ID for full surface Live. |
+| Project store drafts and constructors | Yes | Yes | Partial | No | Task/check/require/loop constructors. Interaction, gate, code, effect free-form only. No dedicated live case ID. |
 
 ## 5. Public claim policy
 
@@ -74,6 +82,7 @@ States below reflect the adversarial review of 2026-08-04 and the in-tree produc
 | Accurate | “Kernel supports goal families. Ordinary multi-child concurrent desks are not live.” |
 | Forbidden | “Parallel nested graphs are shipped” when only domain concurrent selection exists. |
 | Forbidden | “Production-ready multi-agent product” without Ordinary + Live rows for width and synthesis. |
+| Forbidden | Mark ledger **Live=Yes** for concurrent family without real Pi dogfood under `docs/dogfood-evidence/gate1-3-live/` against the raised §5.1 bar. |
 
 ## 6. Related documents
 

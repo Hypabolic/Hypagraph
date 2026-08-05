@@ -349,11 +349,11 @@ Package version is **0.14.0**.
 
 Hypagraph is a strong execution-control **kernel** for coding agents. It is not a complete multi-agent team product yet. Use the four-state [capability ledger](docs/capability-ledger.md) (domain / host / ordinary / live) for honest claims. Do not read domain-only helpers as ordinary product features.
 
-The start-to-run **single-root** surface is code-complete for the ordinary path. Live TUI dogfood remains the acceptance bar before any multi-agent release claim.
+The start-to-run **single-root** surface is code-complete for the ordinary path. Recorded Pi RPC dogfood and recorded Pi TUI dogfood both satisfy ledger **Live** when a case ID and an evidence path both exist (see [capability ledger](docs/capability-ledger.md) §2). Automated CI substitutes do not satisfy Live. Multi-agent release claims still need Live rows for concurrent family and related paths.
 
-Concurrent multi-pending family selection is on the **host product path** (Gate 1.1–1.2). Ordinary reach remains **Partial**. The host starts at most one model worker per pass. The host awaits serially on the shared session. The host interrupts deferred model pendings in the same pass.
+Concurrent multi-pending family selection is on the **host product path** (Gate 1.1–1.2). Ordinary reach remains **Partial**. After S4, host model worker pool capacity is N under resolved `globalConcurrency` (default 2). The batch path starts admitted model members concurrently. Each pending settles when that worker completes.
 
-Live multi-pending concurrent family acceptance under real Pi remains open (Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY`). Host model-slot limits apply. An automated host substitute exists. The ledger **Live** row is still No.
+Live multi-pending concurrent family acceptance under real Pi remains open (Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY`). The raised Live bar requires two concurrent model workers in a real Pi session. It also requires multi-pending occupancy of two, a mid-flight window, and independent settle. A two-id concurrent batch notify alone is not enough (see [Gate 1.3 acceptance](docs/gate1-3-concurrent-family-live-acceptance.md) §1). An automated host substitute exists and does not earn Live. The ledger **Live** row is still **No**.
 
 See [capability ledger](docs/capability-ledger.md). See [concurrency policy surface](docs/concurrency-policy-surface.md). See [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md).
 
@@ -399,7 +399,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - generic action-dispatch model (deterministic, model, and executor lanes);
 - goal-family projection and bounded child create/return domain helpers (**create-child no longer requires current-session**; concurrent multi-pending is on the host path with Partial ordinary reach; see ledger);
 - isolated Pi executor path for root model tasks; ACP / CLI adapters and worktree leases are host or domain seams, not full ordinary multi-agent desks;
-- concurrent multi-pending family selection on the host product path with default global concurrency two, independent-settle partial failure, and policy surface docs ([concurrency policy surface](docs/concurrency-policy-surface.md)); host still starts at most one model per pass;
+- concurrent multi-pending family selection on the host product path with default global concurrency two, independent-settle partial failure, and policy surface docs ([concurrency policy surface](docs/concurrency-policy-surface.md)); host pool capacity is N under resolved `globalConcurrency` (default 2);
 - `/hypagraph` status, pause, resume, cancel, history, explain, loop, check, graph, trigger, and executor controls.
 
 ### Next (not a v0.14 product claim)
@@ -407,7 +407,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - broader construction tools for interaction, gate, code, and effect nodes;
 - remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
 - full revision-on-workers and richer worker progress events;
-- live multi-pending concurrent family acceptance under real Pi for Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` (host model-slot limits apply; host path and automated substitute exist; Live ledger row remains open until real Pi dogfood is recorded; see [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md));
+- live multi-pending concurrent family acceptance under real Pi for Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` (raised Live bar in [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md); host path and automated substitute exist; Live ledger row remains **No** until real Pi dogfood is recorded under `docs/dogfood-evidence/gate1-3-live/`);
 - aggregate / synthesis fan-in and named multi-agent recipes;
 - optional grandchild depth and family-budget visibility hardening;
 - live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute exists; live bar is not closed).

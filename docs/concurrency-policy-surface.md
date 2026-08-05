@@ -19,7 +19,7 @@ The product path must enforce:
 
 Domain helpers for limits and groups already exist. This surface wires those helpers into ordinary product selection, commit, settle, and status text.
 
-This document does not cover live multi-pending concurrent family acceptance under real Pi. That work is Gate 1.3. After S4, the host model worker pool capacity is the resolved product `globalConcurrency` (default 2). Live multi-worker evidence under real Pi remains open.
+This document does not cover live multi-pending concurrent family acceptance under real Pi. That work is Gate 1.3. After S4, the host model worker pool capacity is the resolved product `globalConcurrency` (default 2). The raised Live bar requires two concurrent model workers in a real Pi session. A two-id concurrent batch notify alone is not enough (see Gate 1.3 acceptance §1). Live multi-worker evidence under real Pi remains open.
 
 ## 2. Global limit and per-executor limit
 
@@ -62,7 +62,7 @@ Residual gaps:
 
 - Host-only route overrides that never appear on the node definition or policy attributes are not derived.
 - Invalid `node.executorProfile` shapes are ignored by domain profile resolution (same as model routing).
-- Live multi-pending concurrent family acceptance under real Pi remains Gate 1.3. Host capacity after S4 is N under resolved `globalConcurrency` with concurrent model start and settle-on-complete. Ledger **Live** stays open until real Pi dogfood is recorded.
+- Live multi-pending concurrent family acceptance under real Pi remains Gate 1.3. Host capacity after S4 is N under resolved `globalConcurrency` with concurrent model start and settle-on-complete. Raised Live bar is in `docs/gate1-3-concurrent-family-live-acceptance.md` §5.1. Ledger **Live** stays **No** until real Pi dogfood is recorded under `docs/dogfood-evidence/gate1-3-live/`.
 
 ## 3. Exclusive and concurrent groups
 
@@ -230,7 +230,7 @@ Family bag writes for concurrent isolated settle (S4 Issues 6–7, 9–10):
 
 This Gate 1.2 surface document does not close:
 
-1. Gate 1.3 live multi-pending concurrent family acceptance under real Pi (case script and automated substitute: `docs/gate1-3-concurrent-family-live-acceptance.md`; host pool capacity is N under policy after S4; ledger **Live** still open until real Pi dogfood);
+1. Gate 1.3 live multi-pending concurrent family acceptance under real Pi (case script and automated substitute: `docs/gate1-3-concurrent-family-live-acceptance.md`; host pool capacity is N under policy after S4; ledger **Live** still **No** until real Pi dogfood);
 2. Gate 2 synthesis or aggregate fan-in;
 3. persisted separate concurrency occupancy documents beyond family pendings;
 4. partial-failure modes other than `independent-settle`;

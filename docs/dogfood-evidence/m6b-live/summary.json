@@ -1,4 +1,5 @@
 {
+  "caseId": "CASE-M6B-RESULT-TXT",
   "objective": "Create result.txt with the exact text m6b-dogfood and verify that file with a deterministic command check.",
   "workspace": "/tmp/hypagraph-m6b-live-dogfood/workspace",
   "sessionDir": "/tmp/hypagraph-m6b-live-dogfood/session",

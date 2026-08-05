@@ -1,14 +1,20 @@
 /**
  * Gate 1.3: automated substitute for multi-child concurrent family live acceptance.
  *
- * Proves the multi-pending product path at host/product helper level (Seam C).
+ * Proves the multi-pending product path at host/product helper level (Seam C),
+ * worker-pool Map occupancy, free-seat admit double, free-slot protocol mid-flight
+ * (via S4 helper), and extension source tripwires.
+ *
  * Does not earn ledger Live without a real Pi dogfood for CASE-G1-3-CONCURRENT-FAMILY.
  *
  * Family shape: root plus two sibling children. Root is paused so the concurrent
  * batch is multi-child (two children), not root+one-child only.
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_GLOBAL_CONCURRENCY } from "../src/domain/concurrency-limits.js";
 import {
   GOAL_FAMILY_SCHEMA_VERSION,
   addFamilyMember,
@@ -19,9 +25,11 @@ import {
 } from "../src/domain/goal-family.js";
 import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
 import type { HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
+import { DEFAULT_MODEL_EXECUTOR_PROFILE } from "../src/domain/model-executor-profile.js";
 import { projectFamilyGraphView } from "../src/graph/family-projection.js";
 import {
   commitConcurrentFamilyBatchForHost,
+  isDeterministicFamilyMemberDecision,
   markFamilyPendingDispatchedForHost,
   prepareFamilyControllerPass,
   settleFamilyPendingForHost,
@@ -30,6 +38,17 @@ import {
   resolveFamilyProductConcurrencyPolicy,
   selectFamilyProductControllerAction,
 } from "../src/pi/family-product-dispatch.js";
+import { traceConcurrentIsolatedFreeSlotProtocol } from "../src/pi/isolated-free-slot-protocol.js";
+import {
+  canAdmitIsolatedWorker,
+  countUnsettledIsolatedWorkers,
+  createIsolatedWorkerPool,
+  deleteIsolatedWorkerForAttempt,
+  findIsolatedWorkerByFamilyDispatchId,
+  listUnsettledIsolatedWorkers,
+  registerIsolatedWorker,
+  type ActiveIsolatedRootAttempt,
+} from "../src/pi/isolated-root-dispatch.js";
 import type { PersistedGoalFamily } from "../src/persistence/family-store.js";
 import {
   familyDispatchOccupancySummary,
@@ -43,6 +62,7 @@ const later = "2026-08-04T16:05:00.000Z";
 const dispatchedAt = "2026-08-04T16:06:00.000Z";
 const settleFirstAt = "2026-08-04T16:10:00.000Z";
 const settleSecondAt = "2026-08-04T16:15:00.000Z";
+const repoRoot = resolve(import.meta.dirname, "..");
 
 const singleTask = (title: string): HypagraphDefinition => ({
   title,
@@ -207,7 +227,130 @@ const markAllDispatched = (
   return next;
 };
 
+const makePoolAttempt = (input: {
+  attemptId: string;
+  familyDispatchId: string;
+  nodeId: string;
+  goalId: string;
+  workflowId: string;
+}): ActiveIsolatedRootAttempt => ({
+  operationId: `op-${input.attemptId}`,
+  nodeId: input.nodeId,
+  attemptId: input.attemptId,
+  goalId: input.goalId,
+  workflowId: input.workflowId,
+  familyDispatchId: input.familyDispatchId,
+  profile: DEFAULT_MODEL_EXECUTOR_PROFILE,
+  actionKind: "start-ready-task",
+  sessionGeneration: 0,
+  branchGeneration: 0,
+  settled: false,
+  abortController: new AbortController(),
+  startedAt: at,
+  timeoutMs: 60_000,
+});
+
+/**
+ * Test double of the host free-seat filter (extension itemsToCommit arithmetic).
+ * Not an exported product helper. Keep aligned with S4 host admit rules:
+ * free seats = globalConcurrency - unsettled; deterministic items always startable;
+ * model items consume free seats.
+ *
+ * Uses real isDeterministicFamilyMemberDecision so the deterministic branch stays live.
+ */
+const partitionBatchForStartFreeSeatDouble = <
+  T extends { decision: Parameters<typeof isDeterministicFamilyMemberDecision>[0] },
+>(
+  items: readonly T[],
+  poolUnsettled: number,
+  globalConcurrency: number,
+): { startable: T[]; deferred: T[] } => {
+  let modelSeatsFree = Math.max(0, globalConcurrency - poolUnsettled);
+  const startable: T[] = [];
+  const deferred: T[] = [];
+  for (const item of items) {
+    if (isDeterministicFamilyMemberDecision(item.decision)) {
+      startable.push(item);
+      continue;
+    }
+    if (modelSeatsFree > 0) {
+      startable.push(item);
+      modelSeatsFree -= 1;
+    } else {
+      deferred.push(item);
+    }
+  }
+  return { startable, deferred };
+};
+
+const identityBase = {
+  goalId: "goal-x",
+  workflowId: "wf-x",
+  revision: 1,
+  sequence: 1,
+  snapshotHash: "hash-x",
+  continuationOrdinal: 1,
+};
+
 describe("gate1-3 concurrent family live acceptance substitute", () => {
+  it("free-seat double: mixed batch with partial occupancy defers second model", () => {
+    // Exercises deterministic branch and deferred model branch of the free-seat double.
+    // globalConcurrency 2, poolUnsettled 1 → one free model seat.
+    const items = [
+      {
+        memberGoalId: "goal-det",
+        decision: {
+          ...identityBase,
+          goalId: "goal-det",
+          kind: "run-ready-check" as const,
+          nodeId: "check-1",
+        },
+      },
+      {
+        memberGoalId: "goal-model-a",
+        decision: {
+          ...identityBase,
+          goalId: "goal-model-a",
+          kind: "start-ready-task" as const,
+          nodeId: "work-a",
+        },
+      },
+      {
+        memberGoalId: "goal-model-b",
+        decision: {
+          ...identityBase,
+          goalId: "goal-model-b",
+          kind: "start-ready-task" as const,
+          nodeId: "work-b",
+        },
+      },
+    ];
+    expect(isDeterministicFamilyMemberDecision(items[0]!.decision)).toBe(true);
+    expect(isDeterministicFamilyMemberDecision(items[1]!.decision)).toBe(false);
+    expect(isDeterministicFamilyMemberDecision(items[2]!.decision)).toBe(false);
+
+    const partitioned = partitionBatchForStartFreeSeatDouble(items, 1, 2);
+    expect(partitioned.startable.map((i) => i.memberGoalId)).toEqual([
+      "goal-det",
+      "goal-model-a",
+    ]);
+    expect(partitioned.deferred.map((i) => i.memberGoalId)).toEqual(["goal-model-b"]);
+  });
+
+  it("extension source tripwires for S4 batch shape (not runtime proof alone)", () => {
+    // Tripwires only. Behavioural free-slot mid-flight is in s4 suite and reused below.
+    const extensionSource = readFileSync(resolve(repoRoot, "src/extension.ts"), "utf8");
+    expect(extensionSource).not.toMatch(/modelSlots\s*=\s*modelCapacityFree\s*\?\s*1\s*:\s*0/);
+    expect(extensionSource).not.toMatch(/Host model capacity is one isolated attempt/);
+    expect(extensionSource).not.toMatch(/let activeIsolatedRootAttempt/);
+    expect(extensionSource).toMatch(/resolvedGlobalConcurrency/);
+    expect(extensionSource).toMatch(/Promise\.all\(modelWork\)/);
+    expect(extensionSource).toMatch(/countUnsettledIsolatedWorkers/);
+    expect(extensionSource).toMatch(/registerIsolatedWorker/);
+    expect(extensionSource).toMatch(/applyMemberStreamAndPendingSettle/);
+    expect(DEFAULT_GLOBAL_CONCURRENCY).toBe(2);
+  });
+
   it("runs multi-child product path: two siblings, select batch, host commit, mark with memberState, settle each, status honesty", () => {
     const { family, rootState, memberStates } = createTwoChildReadyFamily("family-g1-3-live-sub");
     expect(family.schemaVersion).toBe(GOAL_FAMILY_SCHEMA_VERSION);
@@ -250,6 +393,20 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
     expect(selection.items.every((item) => item.memberGoalId !== "goal-root")).toBe(true);
     expect(selection.concurrencyPolicy.globalConcurrency).toBe(2);
     expect(selection.concurrencyPolicy.partialFailureMode).toBe("independent-settle");
+    // Real product predicate: pure model batch items are not deterministic.
+    expect(
+      selection.items.every((item) => !isDeterministicFamilyMemberDecision(item.decision)),
+    ).toBe(true);
+
+    // Free-seat admit double (not exported host helper). Empty pool admits both models.
+    const pool = createIsolatedWorkerPool();
+    const partitioned = partitionBatchForStartFreeSeatDouble(
+      selection.items,
+      countUnsettledIsolatedWorkers(pool),
+      selection.concurrencyPolicy.globalConcurrency,
+    );
+    expect(partitioned.startable).toHaveLength(2);
+    expect(partitioned.deferred).toHaveLength(0);
 
     const committed = commitConcurrentFamilyBatchForHost({
       family,
@@ -296,8 +453,31 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
       listPendingDispatches(familyAfterMark).every((p) => p.status === "dispatched"),
     ).toBe(true);
 
+    // Worker pool Map occupancy of two (data-structure layer under capacity).
+    for (const item of committed.items) {
+      registerIsolatedWorker(pool, makePoolAttempt({
+        attemptId: `attempt-${item.memberGoalId}`,
+        familyDispatchId: item.dispatchId,
+        nodeId: "work",
+        goalId: item.memberGoalId,
+        workflowId: item.memberWorkflowId,
+      }));
+    }
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(2);
+    expect(listUnsettledIsolatedWorkers(pool).map((w) => w.goalId).sort()).toEqual([
+      "goal-child-a",
+      "goal-child-b",
+    ]);
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(false);
+
     const firstId = committed.items[0]!.dispatchId;
     const secondId = committed.items[1]!.dispatchId;
+
+    // Independent family settle of first pending leaves second (real Seam C helper).
+    // Pool Map free is data-structure only here; free-slot protocol mid-flight is separate.
+    const firstWorker = findIsolatedWorkerByFamilyDispatchId(pool, firstId)!;
+    firstWorker.settled = true;
+    deleteIsolatedWorkerForAttempt(pool, firstWorker);
 
     const settledFirst = settleFamilyPendingForHost({
       family: familyAfterMark,
@@ -314,6 +494,8 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
     expect(pendingDispatchCount(settledFirst.family)).toBe(1);
     expect(settledFirst.family.lastDispatchOutcome?.dispatchId).toBe(firstId);
     expect(settledFirst.family.lastDispatchOutcome?.status).toBe("completed");
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(1);
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(true);
 
     const viewMidSettle = projectFamilyGraphView({
       family: settledFirst.family,
@@ -323,6 +505,10 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
     expect(listFamilyPendingViews(viewMidSettle.scheduler)).toHaveLength(1);
     expect(familyDispatchOccupancySummary(viewMidSettle.scheduler)).not.toContain("idle");
     expect(renderFamilyStatus(viewMidSettle, 120)).not.toMatch(/Family dispatch: idle/);
+
+    const secondWorker = findIsolatedWorkerByFamilyDispatchId(pool, secondId)!;
+    secondWorker.settled = true;
+    deleteIsolatedWorkerForAttempt(pool, secondWorker);
 
     const settledSecond = settleFamilyPendingForHost({
       family: settledFirst.family,
@@ -337,6 +523,7 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
     expect(settledSecond.family.pendingDispatches[secondId]).toBeUndefined();
     expect(settledSecond.family.lastDispatchOutcome?.dispatchId).toBe(secondId);
     expect(settledSecond.family.lastDispatchOutcome?.status).toBe("completed");
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(0);
 
     const viewDone = projectFamilyGraphView({
       family: settledSecond.family,
@@ -347,6 +534,22 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
     // After all pendings settle, occupancy reports last outcome (not multi-pending).
     expect(familyDispatchOccupancySummary(viewDone.scheduler)).toBe("last dispatch completed");
     expect(familyDispatchOccupancySummary(viewDone.scheduler)).not.toContain("multi-pending");
+  });
+
+  it("reuses free-slot protocol mid-flight proof (two concurrent awaits unbound)", async () => {
+    // Real protocol helper from S4, not Map-only occupancy.
+    const traced = await traceConcurrentIsolatedFreeSlotProtocol({ workerHoldMs: 20 });
+    expect(traced.bothCompleted).toBe(true);
+    expect(traced.peakConcurrentAwaits).toBe(2);
+    const awaitTraces = traced.traces.filter((t) => t.phase === "await");
+    expect(awaitTraces.length).toBeGreaterThanOrEqual(2);
+    expect(awaitTraces.every((t) => t.freeSlotsBound === false)).toBe(true);
+    expect(awaitTraces.every((t) => t.lockHeld === false)).toBe(true);
+    expect(traced.awaitOverlapBoundCount).toBe(0);
+    const startTraces = traced.traces.filter((t) => t.phase === "start");
+    const settleTraces = traced.traces.filter((t) => t.phase === "settle");
+    expect(startTraces.every((t) => t.freeSlotsBound && t.lockHeld)).toBe(true);
+    expect(settleTraces.every((t) => t.freeSlotsBound && t.lockHeld)).toBe(true);
   });
 
   it("keeps independent-settle when one of two child pendings fails", () => {
@@ -396,7 +599,7 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
   });
 
   it("settles one of two pendings as interrupted and leaves the sibling pending", () => {
-    // §5.2: deferred settle as interrupted in family state (helper layer).
+    // Independent settle of one pending as interrupted (not pre-S4 one-seat capacity defer).
     const { family, rootState, memberStates } = createTwoChildReadyFamily("family-g1-3-interrupt");
     const selection = selectFamilyProductControllerAction({
       liveState: rootState,

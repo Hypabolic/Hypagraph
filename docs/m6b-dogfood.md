@@ -7,8 +7,8 @@
 - Plan: `docs/m6b-event-history-plan.md`
 - Live Pi model: `xai-auth/grok-4.5`
 - Live extension: `./extensions/hypagraph.ts`
-- Live short path: `docs/dogfood-evidence/m6b-live/`
-- Live loop and revision path: `docs/dogfood-evidence/m6b-live-loop-revision/`
+- Live short path: `docs/dogfood-evidence/m6b-live/` (case ID `CASE-M6B-RESULT-TXT`)
+- Live loop and revision path: `docs/dogfood-evidence/m6b-live-loop-revision/` (case ID `CASE-M6B-LOOP-REVISION`)
 - Automated product-path test: `tests/m6b-dogfood.test.ts`
 - Recovery tests: `tests/hypagoal-continuation-pi.test.ts`, `tests/hypagoal-revision-pi.test.ts`
 - Suite after this slice: 109 test files and 586 tests
