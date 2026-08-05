@@ -146,7 +146,7 @@ Roadmap exit: hardened agent-independent execution kernel. Use section 2 of `doc
 
 1. **Named recipe library** — Grok-style built-in Hypagoals and launch-with-args.
 2. **The Gauntlet** — design only (`docs/gauntlet-built-in-hypagoal.md`).
-3. **Deterministic orchestration slices** still incomplete as product: branch-scoped facts, aggregate node (`quorum` / `ranked` / `union`), synthesis node (`docs/deterministic-orchestration-plan.md`).
+3. **Deterministic orchestration slices** still incomplete as full product: branch-scoped facts; aggregate node (`quorum` / `ranked` / `union`); model synthesis strategies (`docs/deterministic-orchestration-plan.md`). Ordinary all-success multi-child child-outcome join is shipped on the product path (no author produce; no hand `expectedBindingCount`). Live dogfood for multi-child join remains open.
 4. **Live dogfood** — M6.3/M8/M9 live external systems as needed.
 5. **Dependabot** — one high vulnerability report on the default branch (hygiene).
 6. **Schema migrations** — still pre-external-adoption style rejects; prepare migration policy before first external adoption if not already decided.

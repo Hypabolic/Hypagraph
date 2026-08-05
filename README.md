@@ -408,7 +408,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - remaining interaction presentation effects, typed routing, deadlines, and full reload affinity;
 - full revision-on-workers and richer worker progress events;
 - live multi-pending concurrent family acceptance under real Pi for Gate 1.3 case `CASE-G1-3-CONCURRENT-FAMILY` (raised Live bar in [Gate 1.3 live acceptance](docs/gate1-3-concurrent-family-live-acceptance.md); host path and automated substitute exist; Live ledger row remains **No** until real Pi dogfood is recorded under `docs/dogfood-evidence/gate1-3-live/`);
-- aggregate / synthesis fan-in and named multi-agent recipes;
+- full quorum / ranked / model synthesis and named multi-agent recipes (Ordinary all-success multi-child join is on the product path; Live dogfood still open);
 - optional grandchild depth and family-budget visibility hardening;
 - live TUI dogfood of the full root → child → return path as a release acceptance bar (automated extension substitute exists; live bar is not closed).
 

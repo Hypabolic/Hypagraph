@@ -149,6 +149,21 @@ Rules:
 4. Inspect members, bindings, child-wait, budget, and focus with `/hypagraph status` and `hypagraph_read`. Status names the active **worker** member goal id, node, and attempt when a worker is live.
 5. Focus a member graph with `/hypagraph graph member <goalId>`.
 
+### Multi-child fan-out and ordinary join
+
+Use this path when one parent task must wait for two or more child Hypagoals on the same parent node.
+
+1. Call `hypagoal_create_child` more than once while the parent task is active or already `waiting_for_child` for the same parent node. Create siblings while the parent waits. Do not wait for a full single-child cycle before each create when you need multi-child join.
+2. The parent stays `waiting_for_child` while any sibling binding for that parent node is active.
+3. When every sibling for that parent node is terminal and all completed, the host auto-joins (all-success). The host publishes the default fact `join.passed` = true. Authors do not need a produce declaration for that default fact on the ordinary path.
+4. Do not set `expectedBindingCount` for the ordinary path. Do not declare produce `join.passed` on the parent for ordinary multi-child join. Those steps are not required for the default path.
+5. After join pass, the parent task is **running** for integration. Child success or join success does not complete the parent task.
+6. If any join member is not completed, and child failure policy has not already failed or blocked the parent, join fail publishes `join.passed` = false and blocks the parent (product default). When failure policy already owns the parent, synthesis quiet-skips.
+7. One child alone does not trigger multi-child auto join. The multi-child minimum is two (`AUTO_JOIN_MIN` = 2).
+8. Optional advanced path: if you need a gate or typed consume on the join result, you may declare boolean produce `join.passed` on the parent. You may also set `expectedBindingCount` for advanced callers. These steps are optional. They are not mandatory for ordinary multi-child join.
+
+Ordinary multi-child all-success join is a product path. Live Pi dogfood for multi-child join is not claimed here. Full quorum, ranked, and model synthesis strategies are not shipped.
+
 ### Flagship family recipe (root + one child)
 
 Root free-form shape:

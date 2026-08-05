@@ -609,6 +609,17 @@ describe("Family product remediation R3–R5", () => {
     expect(skill).toMatch(/current-session/);
   });
 
+  it("skill documents ordinary multi-child join path (no mandatory hand join.passed)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const skill = readFileSync(resolve(process.cwd(), "skills/hypagraph/SKILL.md"), "utf8");
+    expect(skill).toMatch(/Multi-child fan-out and ordinary join/i);
+    expect(skill).toContain("join.passed");
+    expect(skill).toMatch(/Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i);
+    expect(skill).toMatch(/Do not set `expectedBindingCount` for the ordinary path/i);
+    expect(skill).not.toMatch(/must produce join\.passed|must declare join\.passed for (the )?ordinary/i);
+  });
+
   it("R5 mergeLiveRootIntoFamily keeps newer root sequence and child membership", () => {
     const rootCreated = createHypagoalWorkflow(rootDefinition as any, {
       workflowId: "workflow-root-r5",

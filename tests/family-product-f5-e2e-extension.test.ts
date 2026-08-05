@@ -320,6 +320,31 @@ describe("Wave F5 automated family product e2e path", () => {
     expect(skill).toMatch(/isolated-pi \(default\) or current-session|isolated-pi or current-session|may use the default/i);
   });
 
+  it("skill documents ordinary multi-child join without mandatory produce or expectedBindingCount", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const skill = readFileSync(resolve(process.cwd(), "skills/hypagraph/SKILL.md"), "utf8");
+    // Multi-child fan-out while waiting_for_child.
+    expect(skill).toMatch(/Multi-child fan-out and ordinary join/i);
+    expect(skill).toMatch(/waiting_for_child/);
+    expect(skill).toMatch(/hypagoal_create_child.*more than once|more than once.*hypagoal_create_child|Create siblings while the parent waits/i);
+    // Auto join and default join.passed on the ordinary path.
+    expect(skill).toMatch(/auto-joins|auto join/i);
+    expect(skill).toContain("join.passed");
+    expect(skill).toMatch(/host publishes the default fact|publishes the default fact/i);
+    // Pass leaves parent running; one-child does not multi-join.
+    expect(skill).toMatch(/running.*for integration|for integration/i);
+    expect(skill).toMatch(/One child alone does not trigger multi-child auto join|multi-child minimum is two/i);
+    // Must not require mandatory hand produce or expectedBindingCount for ordinary path.
+    expect(skill).toMatch(/Do not set `expectedBindingCount` for the ordinary path/i);
+    expect(skill).toMatch(/Do not declare produce `join\.passed` on the parent for ordinary multi-child join/i);
+    expect(skill).toMatch(/not required for the default path|not mandatory for ordinary multi-child join/i);
+    // Must not instruct that produce or expectedBindingCount is mandatory for ordinary multi-child.
+    expect(skill).not.toMatch(
+      /must declare produce [`']?join\.passed|must set `expectedBindingCount` for (ordinary|multi-child|N greater)|authors? must declare join\.passed for multi-child/i,
+    );
+  });
+
   it("fails the success contract when product return is skipped (negative R2 check)", async () => {
     // Structural negative: a still-active binding must not satisfy the R2 success assertions.
     const stillActive: { status: string; returnRecord?: { outcome: string } } = {
