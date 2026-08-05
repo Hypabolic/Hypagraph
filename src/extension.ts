@@ -112,6 +112,20 @@ import {
   settleFamilyPendingForHost,
 } from "./pi/family-controller-host.js";
 import {
+  attachMember,
+  attachRootMember,
+  bumpSessionGenerations,
+  createSessionContext,
+  liveSlotsFromMember,
+  resolveLiveSlotRelease,
+  setSessionFamilyRecord,
+  setSessionRootWorkflowId,
+  shouldPersistNonRootMemberAfterBind,
+  syncMemberFromLiveSlots,
+  type MemberContext,
+  type SessionContext,
+} from "./pi/session-context.js";
+import {
   detectPendingChildReturn,
   renderChildReturnApplied,
 } from "./pi/family-product-return.js";
@@ -576,10 +590,20 @@ interface PendingHypagoalAuthoring {
 }
 
 export default function hypagraphExtension(pi: ExtensionAPI): void {
+  /**
+   * Live desk root workflow authority for session persistence.
+   * Non-root member dispatch uses MemberContext and must not swap these
+   * globals as the only working set (Seam A / S3).
+   */
   let state: HypagraphState | undefined;
   let events: DomainEvent[] = [];
   let sessionGeneration = 0;
   let branchGeneration = 0;
+  /** One session bag per extension instance (Seam A). */
+  let sessionContext: SessionContext = createSessionContext({
+    sessionGeneration: 0,
+    branchGeneration: 0,
+  });
   let hypagoalAuthoring: PendingHypagoalAuthoring | undefined;
   let pendingContinuation: PendingGoalContinuation | undefined;
   let deliveredContinuation: PendingGoalContinuation | undefined;
@@ -651,6 +675,17 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   /** Latest child project-store write result from hypagoal_create_child (host memory). */
   let childProjectStoreArtifactWritten: boolean | undefined;
   let childProjectStoreWorkflowId: string | undefined;
+  /**
+   * Depth of open free-slot binds (root or non-root).
+   * Temporary single-seat bridge for nested helpers (S3).
+   */
+  let liveSlotBindDepth = 0;
+  /**
+   * Depth of open non-root free-slot binds.
+   * While greater than zero, free slots hold a child working set.
+   * queueGoalContinuation and rootMemberContext must not treat free slots as desk root.
+   */
+  let nonRootLiveSlotBindDepth = 0;
 
   /** Keep mid-flight cancel mirrors on the active isolated attempt (R3). */
   const mirrorActiveIsolatedCancelState = (): void => {
@@ -660,8 +695,95 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     activeIsolatedRootAttempt.cancelEvents = structuredClone(events);
   };
 
+  /** Clear free host family cache and session bag family slot together. */
+  const clearFamilyRecord = (): void => {
+    latestFamilyRecord = undefined;
+    setSessionFamilyRecord(sessionContext, undefined);
+  };
+
   const rememberFamilyRecord = (family: PersistedGoalFamily | undefined): void => {
-    if (family) latestFamilyRecord = family;
+    if (!family) {
+      clearFamilyRecord();
+      return;
+    }
+    latestFamilyRecord = family;
+    setSessionFamilyRecord(sessionContext, family);
+  };
+
+  /**
+   * Build a MemberContext for the live desk root.
+   * Returns undefined when no root goal is live, when a non-root free-slot
+   * bind is active, or when free state is not the recorded desk root.
+   */
+  const rootMemberContext = (): MemberContext | undefined => {
+    if (!state?.goal) return undefined;
+    if (nonRootLiveSlotBindDepth > 0) return undefined;
+    const rootId = sessionContext.rootWorkflowId;
+    if (rootId !== undefined && state.workflowId !== rootId) return undefined;
+    const member = attachRootMember(sessionContext, {
+      workflowId: state.workflowId,
+      goalId: state.goal.goalId,
+      state,
+      events,
+    });
+    if (!member.isLiveRoot) return undefined;
+    return member;
+  };
+
+  /**
+   * Install a MemberContext into free host slots for nested helpers that still
+   * close over state/events. MemberContext remains the dispatch authority.
+   * Non-root install saves the live root and restores it on release only when
+   * session generations still match the bind capture (restore-safe).
+   */
+  const bindMemberLiveSlots = (member: MemberContext): { release: () => void } => {
+    if (member.isLiveRoot) {
+      const slots = liveSlotsFromMember(member);
+      state = slots.state;
+      events = slots.events;
+      liveSlotBindDepth += 1;
+      return {
+        release: () => {
+          syncMemberFromLiveSlots(member, { state, events });
+          // Live root free slots remain the session root authority.
+          state = member.state;
+          events = member.events;
+          liveSlotBindDepth = Math.max(0, liveSlotBindDepth - 1);
+        },
+      };
+    }
+    const savedRootState = state;
+    const savedRootEvents = events;
+    const bindSessionGeneration = sessionGeneration;
+    const bindBranchGeneration = branchGeneration;
+    const slots = liveSlotsFromMember(member);
+    state = slots.state;
+    events = slots.events;
+    liveSlotBindDepth += 1;
+    nonRootLiveSlotBindDepth += 1;
+    return {
+      release: () => {
+        const resolved = resolveLiveSlotRelease({
+          memberWorkflowId: member.workflowId,
+          memberState: member.state,
+          memberEvents: member.events,
+          freeState: state,
+          freeEvents: events,
+          savedRootState,
+          savedRootEvents,
+          bindSessionGeneration,
+          bindBranchGeneration,
+          currentSessionGeneration: sessionGeneration,
+          currentBranchGeneration: branchGeneration,
+        });
+        member.state = resolved.nextMemberState;
+        member.events = resolved.nextMemberEvents;
+        state = resolved.nextFreeState;
+        events = resolved.nextFreeEvents;
+        liveSlotBindDepth = Math.max(0, liveSlotBindDepth - 1);
+        nonRootLiveSlotBindDepth = Math.max(0, nonRootLiveSlotBindDepth - 1);
+      },
+    };
   };
 
   const clearPostCreateGate = (): void => {
@@ -1063,8 +1185,13 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   };
 
   const restore = async (ctx: ExtensionContext, branchChanged: boolean): Promise<void> => {
-    sessionGeneration += 1;
-    if (branchChanged) branchGeneration += 1;
+    // Session bag owns generation bumps; free counters stay aligned (Seam A).
+    bumpSessionGenerations(sessionContext, { branchChanged });
+    sessionGeneration = sessionContext.sessionGeneration;
+    branchGeneration = sessionContext.branchGeneration;
+    if (branchChanged) {
+      clearFamilyRecord();
+    }
     hypagoalAuthoring = undefined;
     pendingContinuation = undefined;
     deliveredContinuation = undefined;
@@ -1135,6 +1262,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     eventStore.synchronize(session);
     state = session?.snapshot;
     events = session?.events ?? [];
+    setSessionRootWorkflowId(sessionContext, state?.workflowId);
     // Migrate a restored v0.6 root into a one-member family when no family record exists.
     // Append is additive. Prior workflow event batches are not rewritten.
     const familyProjection = restoreOrMigrateOneMemberFamilySession(branch);
@@ -1142,11 +1270,7 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
       appendOneMemberFamilyRecord(pi, familyProjection.family);
     }
     // Prefer branch-local family for restore and branch-change settle/sweep (S2).
-    // Drop host memory from the previous branch so a stale family is not swept
-    // onto the current branch session.
-    if (branchChanged) {
-      latestFamilyRecord = undefined;
-    }
+    // Branch change already cleared host family memory above.
     const branchSessionFamily = familyProjection?.family
       ?? restoreLatestFamilySession(branch);
     if (branchSessionFamily) {
@@ -2699,12 +2823,26 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     const decision = selection.decision;
 
     if (selection.isLiveRoot) {
-      return dispatchDecisionOnLiveState(ctx, decision, options);
+      const rootMember = rootMemberContext();
+      if (!rootMember) return "stop";
+      return dispatchDecisionOnLiveState(ctx, rootMember, decision, options);
     }
 
-    // Non-root member: swap host state to the child workflow for this action only.
-    const rootState = state!;
-    const rootEvents = events;
+    // Non-root member: work on an explicit MemberContext. Do not reassign free
+    // root state/events as the only working set (Seam A).
+    const liveRoot = state;
+    if (!liveRoot) return "stop";
+    // Capture desk-root stream and generations once before any free-slot bind.
+    // Member working set is MemberContext. Free slots may bind temporarily
+    // for nested helpers; persist uses this pre-bind root capture only when
+    // generations still match (restore mid-dispatch skips family write).
+    const entrySessionGeneration = sessionGeneration;
+    const entryBranchGeneration = branchGeneration;
+    const liveRootCapture = {
+      workflowId: liveRoot.workflowId,
+      snapshot: liveRoot,
+      events,
+    };
     const memberStream = selection.family.workflows[selection.memberWorkflowId];
     if (!memberStream) {
       ctx.ui.notify(
@@ -2725,31 +2863,43 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
 
     const previousSequence = memberStream.snapshot.sequence;
     const previousEvents = structuredClone(memberStream.events);
-    state = structuredClone(selection.memberState);
-    events = structuredClone(memberStream.events);
+    // attachMember clones state and events at the API boundary.
+    const member = attachMember(sessionContext, {
+      workflowId: selection.memberWorkflowId,
+      goalId: selection.memberGoalId,
+      state: selection.memberState,
+      events: memberStream.events,
+    });
     eventStore.noteWorkflowSequence(selection.memberWorkflowId, previousSequence);
 
     let outcome: "continue" | "stop" | "model-follow-up" = "stop";
     let familyAfterChild = selection.family;
     try {
-      outcome = await dispatchDecisionOnLiveState(ctx, decision, options);
+      outcome = await dispatchDecisionOnLiveState(ctx, member, decision, options);
     } finally {
-      // Always attempt to persist child mutations and restore the live root.
-      const childState = state;
-      const childEvents = events;
-      if (childState && childState.workflowId === selection.memberWorkflowId) {
+      // Persist child mutations only when generations still match entry.
+      // After restore mid-dispatch, skip R5 merge and family write so the
+      // restored family bag is not rewritten from pre-bind captures.
+      const mayPersist = shouldPersistNonRootMemberAfterBind({
+        bindSessionGeneration: entrySessionGeneration,
+        bindBranchGeneration: entryBranchGeneration,
+        currentSessionGeneration: sessionGeneration,
+        currentBranchGeneration: branchGeneration,
+        memberWorkflowId: selection.memberWorkflowId,
+        memberState: member.state,
+      });
+      if (mayPersist && member.state) {
         const persisted = await persistNonRootMemberUpdate({
           family: selection.family,
           workflowId: selection.memberWorkflowId,
           previousEvents,
-          nextState: childState,
-          nextEvents: childEvents,
+          nextState: member.state,
+          nextEvents: member.events,
           previousSequence,
-          // Pass the desk root captured before the member swap (R5).
           liveRoot: {
-            workflowId: rootState.workflowId,
-            events: rootEvents,
-            snapshot: rootState,
+            workflowId: liveRootCapture.workflowId,
+            events: liveRootCapture.events,
+            snapshot: liveRootCapture.snapshot,
           },
         });
         if (!persisted.ok) {
@@ -2761,11 +2911,13 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
         } else {
           familyAfterChild = persisted.family;
         }
+      } else if (!mayPersist) {
+        // Session restore (or branch change) invalidated this member pass.
+        outcome = "stop";
       }
-      // Restore live root before product child return (return mutates parent).
-      state = rootState;
-      events = rootEvents;
-      eventStore.noteWorkflowSequence(rootState.workflowId, rootState.sequence);
+      if (state) {
+        eventStore.noteWorkflowSequence(state.workflowId, state.sequence);
+      }
       paintUi(ctx);
     }
 
@@ -2783,174 +2935,182 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
   };
 
   /**
-   * Dispatch one already-selected action against the current host state variable.
-   * Shared by root and temporary child-swap paths.
+   * Dispatch one already-selected action against an explicit MemberContext.
+   * Nested helpers that still close over free state/events use a temporary
+   * live-slot bind. MemberContext remains the authority for the outcome.
+   * Shared by root and non-root member paths.
    */
   const dispatchDecisionOnLiveState = async (
     ctx: ExtensionContext,
+    member: MemberContext,
     decision: GoalDispatchableContinuation,
     options?: { familyDispatchId?: string },
   ): Promise<"continue" | "stop" | "model-follow-up"> => {
-    if (!state) return "stop";
+    if (!member.state) return "stop";
 
-    if (isReadyCheckDecision(decision)) {
-      const continued = await dispatchDeterministicCheck(ctx, decision);
-      return continued ? "continue" : "stop";
-    }
-    if (isReadyCodeDecision(decision)) {
-      const continued = await dispatchDeterministicCode(ctx, decision);
-      return continued ? "continue" : "stop";
-    }
-    if (isDeterministicEffectDecision(decision)) {
-      const continued = await dispatchDeterministicEffect(ctx, decision);
-      return continued ? "continue" : "stop";
-    }
-    if (isReadyGateDecision(decision)) {
-      const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
-      const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state, {
-        dispatchId,
-        decision,
-        at: new Date().toISOString(),
-      });
-      if (!dispatched.ok) {
-        ctx.ui.notify(`Hypagoal deterministic gate was not dispatched.
-${formatDiagnostics(dispatched.diagnostics)}`, "warning");
-        return "stop";
+    const liveBinding = bindMemberLiveSlots(member);
+    try {
+      if (isReadyCheckDecision(decision)) {
+        const continued = await dispatchDeterministicCheck(ctx, decision);
+        return continued ? "continue" : "stop";
       }
-      state = dispatched.state;
-      events.push(...dispatched.events);
-      paintUi(ctx);
-      if (dispatched.outcome === "failed") {
-        ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
-${formatDiagnostics(dispatched.diagnostics)}`, "warning");
-        return "stop";
+      if (isReadyCodeDecision(decision)) {
+        const continued = await dispatchDeterministicCode(ctx, decision);
+        return continued ? "continue" : "stop";
       }
-      return "continue";
-    }
-
-    // Ready interaction: request and present without a model turn.
-    // Demos and product graphs must not charge token budget to open a dock.
-    if (decision.kind === "request-ready-interaction") {
-      const nodeId = decision.nodeId;
-      const runtime = state.runtime.nodes[nodeId];
-      if (!runtime || runtime.status !== "ready") {
-        ctx.ui.notify(
-          `Hypagoal interaction '${nodeId}' is not ready for presentation.`,
-          "warning",
-        );
-        return "stop";
+      if (isDeterministicEffectDecision(decision)) {
+        const continued = await dispatchDeterministicEffect(ctx, decision);
+        return continued ? "continue" : "stop";
       }
-      if (!interactionPresentationIsAllowed(state, nodeId)) {
-        ctx.ui.notify(
-          `Interaction '${nodeId}' was not presented. The graph has other runnable work.`,
-          "warning",
-        );
-        return "stop";
-      }
-      try {
-        await runCommands([{
-          type: "request-interaction",
-          nodeId,
-          attemptId: randomUUID(),
-          commandId: randomUUID(),
-          correlationId: randomUUID(),
+      if (isReadyGateDecision(decision)) {
+        const dispatchId = `hypagoal-dispatch:${randomUUID()}`;
+        const dispatched = await dispatchReadyGateAndCommit(eventStore.lease(), state!, {
+          dispatchId,
+          decision,
           at: new Date().toISOString(),
-        }]);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(
-          `Hypagoal could not request interaction '${nodeId}'. ${detail}`,
-          "warning",
-        );
-        return "stop";
+        });
+        if (!dispatched.ok) {
+          ctx.ui.notify(`Hypagoal deterministic gate was not dispatched.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+          return "stop";
+        }
+        state = dispatched.state;
+        events.push(...dispatched.events);
+        paintUi(ctx);
+        if (dispatched.outcome === "failed") {
+          ctx.ui.notify(`Hypagoal deterministic gate '${decision.nodeId}' failed.
+${formatDiagnostics(dispatched.diagnostics)}`, "warning");
+          return "stop";
+        }
+        return "continue";
       }
-      const awaiting = awaitingInteractions(state!).find((item) => item.nodeId === nodeId);
-      if (!awaiting) {
-        ctx.ui.notify(
-          `Hypagoal requested interaction '${nodeId}', but it is not awaiting a response.`,
-          "warning",
-        );
-        return "stop";
-      }
-      const outcome = await presentAwaitingInteraction(ctx, awaiting);
-      paintUi(ctx);
-      if (outcome === "answered") return "continue";
-      if (outcome === "presentation-failed") {
-        const observation = interactionPresentationObservation(state!, nodeId, awaiting.attemptId);
-        const detail = observation?.error
-          ? `${observation.status}: ${observation.error}`
-          : (observation?.status ?? "failed");
-        ctx.ui.notify(
-          `Interaction '${nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
-          "warning",
-        );
-        return "stop";
-      }
-      if (outcome === "unavailable") {
-        ctx.ui.notify(
-          waitingUnavailableNote(state!)
-            ?? `This host has no dialog capability. Interaction '${nodeId}' still waits for an answer.`,
-          "warning",
-        );
-        return "stop";
-      }
-      ctx.ui.notify(
-        waitingLifecycleNote(state!)
-          ?? `Waiting for a user response on node '${nodeId}'. Use /hypagraph ask to present the dialog again.`,
-        "info",
-      );
-      return "stop";
-    }
 
-    // Default model task actions use isolated workers, not follow-up.
-    // Legacy current-session default is test-only via configureHostRoutingForTests.
-    const routing = routeRootModelLaneAction(decision, state, {
-      legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
-    });
-    if (routing.kind === "isolated-worker") {
-      const continued = await dispatchIsolatedRootModelTask(ctx, routing, options);
-      return continued ? "continue" : "stop";
-    }
+      // Ready interaction: request and present without a model turn.
+      // Demos and product graphs must not charge token budget to open a dock.
+      if (decision.kind === "request-ready-interaction") {
+        const nodeId = decision.nodeId;
+        const runtime = state!.runtime.nodes[nodeId];
+        if (!runtime || runtime.status !== "ready") {
+          ctx.ui.notify(
+            `Hypagoal interaction '${nodeId}' is not ready for presentation.`,
+            "warning",
+          );
+          return "stop";
+        }
+        if (!interactionPresentationIsAllowed(state!, nodeId)) {
+          ctx.ui.notify(
+            `Interaction '${nodeId}' was not presented. The graph has other runnable work.`,
+            "warning",
+          );
+          return "stop";
+        }
+        try {
+          await runCommands([{
+            type: "request-interaction",
+            nodeId,
+            attemptId: randomUUID(),
+            commandId: randomUUID(),
+            correlationId: randomUUID(),
+            at: new Date().toISOString(),
+          }]);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(
+            `Hypagoal could not request interaction '${nodeId}'. ${detail}`,
+            "warning",
+          );
+          return "stop";
+        }
+        const awaiting = awaitingInteractions(state!).find((item) => item.nodeId === nodeId);
+        if (!awaiting) {
+          ctx.ui.notify(
+            `Hypagoal requested interaction '${nodeId}', but it is not awaiting a response.`,
+            "warning",
+          );
+          return "stop";
+        }
+        const outcome = await presentAwaitingInteraction(ctx, awaiting);
+        paintUi(ctx);
+        if (outcome === "answered") return "continue";
+        if (outcome === "presentation-failed") {
+          const observation = interactionPresentationObservation(state!, nodeId, awaiting.attemptId);
+          const detail = observation?.error
+            ? `${observation.status}: ${observation.error}`
+            : (observation?.status ?? "failed");
+          ctx.ui.notify(
+            `Interaction '${nodeId}' presentation ${detail}. The node is failed and does not wait for an answer.`,
+            "warning",
+          );
+          return "stop";
+        }
+        if (outcome === "unavailable") {
+          ctx.ui.notify(
+            waitingUnavailableNote(state!)
+              ?? `This host has no dialog capability. Interaction '${nodeId}' still waits for an answer.`,
+            "warning",
+          );
+          return "stop";
+        }
+        ctx.ui.notify(
+          waitingLifecycleNote(state!)
+            ?? `Waiting for a user response on node '${nodeId}'. Use /hypagraph ask to present the dialog again.`,
+          "info",
+        );
+        return "stop";
+      }
 
-    const operationId = `hypagoal-continuation:${randomUUID()}`;
-    const request = await applyCommandsAndCommit(eventStore.lease(), state, [{
-      type: "request-goal-continuation",
-      goalId: decision.goalId,
-      workflowId: decision.workflowId,
-      expectedRevision: decision.revision,
-      expectedSequence: decision.sequence,
-      expectedSnapshotHash: decision.snapshotHash,
-      expectedContinuationOrdinal: decision.continuationOrdinal,
-      sessionGeneration,
-      branchGeneration,
-      action: decision.kind === "request-revision"
-        ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
-        : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
-      commandId: operationId,
-      correlationId: operationId,
-      at: new Date().toISOString(),
-    }]);
-    if (!request.ok) {
-      ctx.ui.notify(`Hypagoal continuation was not queued.
+      // Default model task actions use isolated workers, not follow-up.
+      // Legacy current-session default is test-only via configureHostRoutingForTests.
+      const routing = routeRootModelLaneAction(decision, state!, {
+        legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
+      });
+      if (routing.kind === "isolated-worker") {
+        const continued = await dispatchIsolatedRootModelTask(ctx, routing, options);
+        return continued ? "continue" : "stop";
+      }
+
+      const operationId = `hypagoal-continuation:${randomUUID()}`;
+      const request = await applyCommandsAndCommit(eventStore.lease(), state!, [{
+        type: "request-goal-continuation",
+        goalId: decision.goalId,
+        workflowId: decision.workflowId,
+        expectedRevision: decision.revision,
+        expectedSequence: decision.sequence,
+        expectedSnapshotHash: decision.snapshotHash,
+        expectedContinuationOrdinal: decision.continuationOrdinal,
+        sessionGeneration,
+        branchGeneration,
+        action: decision.kind === "request-revision"
+          ? { kind: "request-revision", blocker: structuredClone(decision.blocker) }
+          : { kind: decision.kind, nodeId: decision.nodeId, ...(decision.loopId ? { loopId: decision.loopId } : {}) },
+        commandId: operationId,
+        correlationId: operationId,
+        at: new Date().toISOString(),
+      }]);
+      if (!request.ok) {
+        ctx.ui.notify(`Hypagoal continuation was not queued.
 ${formatDiagnostics(request.diagnostics)}`, "warning");
-      return "stop";
+        return "stop";
+      }
+      state = request.value.state;
+      events.push(...request.value.events);
+      paintUi(ctx);
+      if (state.goal?.status === "budget_limited") {
+        ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
+        return "stop";
+      }
+      pendingContinuation = createPendingGoalContinuation(
+        decision,
+        state,
+        { sessionGeneration, branchGeneration },
+        operationId,
+        options?.familyDispatchId,
+      );
+      pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
+      return "model-follow-up";
+    } finally {
+      liveBinding.release();
     }
-    state = request.value.state;
-    events.push(...request.value.events);
-    paintUi(ctx);
-    if (state.goal?.status === "budget_limited") {
-      ctx.ui.notify(renderHypagoalLifecycleMessage(state), "warning");
-      return "stop";
-    }
-    pendingContinuation = createPendingGoalContinuation(
-      decision,
-      state,
-      { sessionGeneration, branchGeneration },
-      operationId,
-      options?.familyDispatchId,
-    );
-    pi.sendUserMessage(pendingContinuation.prompt, { deliverAs: "followUp" });
-    return "model-follow-up";
   };
 
   const handleNonDispatchableDecision = async (
@@ -3009,6 +3169,8 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     if (postCreateAwaitingUserChoice) return;
     // An open presentation defers deadline evaluation to the next controller
     // entry after the presentation ends. Level-triggered recovery still applies.
+    // Non-root free-slot bind holds child state in free slots; do not re-enter
+    // as if free slots were the desk root (Seam A).
     if (
       pendingContinuation
       || deliveredContinuation
@@ -3016,6 +3178,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
       || activeExecutions.hasActive()
       || activePresentations.size > 0
       || (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled)
+      || nonRootLiveSlotBindDepth > 0
     ) return;
     let deterministicDispatches = 0;
 
@@ -3107,7 +3270,9 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           );
           return;
         }
-        dispatchOutcome = await dispatchDecisionOnLiveState(ctx, decision);
+        const rootMember = rootMemberContext();
+        if (!rootMember) return;
+        dispatchOutcome = await dispatchDecisionOnLiveState(ctx, rootMember, decision);
         if (deterministic) deterministicDispatches += 1;
       } else if (controller.kind === "dispatch-batch") {
         // Gate 1.1 concurrent product path (AC4):
@@ -4017,6 +4182,7 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       if (result.kind === "created") {
         state = result.state;
         events = [...result.events];
+        setSessionRootWorkflowId(sessionContext, state.workflowId);
         // Project store artifacts. Runtime authority remains the event stream.
         // Failure is visible to the user and on status; create still succeeds.
         projectStoreArtifactWritten = false;
@@ -6242,6 +6408,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           }
           state = result.state;
           events = [...result.events];
+          setSessionRootWorkflowId(sessionContext, state.workflowId);
           projectStoreArtifactWritten = undefined;
           childProjectStoreArtifactWritten = undefined;
           childProjectStoreWorkflowId = undefined;
