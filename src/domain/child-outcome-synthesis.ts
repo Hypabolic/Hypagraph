@@ -13,8 +13,10 @@
  * - Unsupported schema versions are rejected with a clear diagnostic.
  * - Binding id order in results is deterministic (locale-independent sort).
  *
- * Empty join set: vacuous success under all-success (no live child failed).
+ * Empty join set: the join passes under all-success (no live child failed).
  * Partial terminal set: result status is pending. Callers must wait.
+ * Optional expectedBindingCount: the join stays pending until that many
+ * bindings are present in the policy set and every member is terminal.
  */
 
 import type { ChildReturnOutcomeKind, GoalFamilyRuntime } from "./goal-family.js";
@@ -54,6 +56,13 @@ export interface ChildOutcomeSynthesisPolicy {
   bindingIds: string[];
   /** Boolean fact published on the parent when the join is terminal. */
   resultFactName: string;
+  /**
+   * When set, the join stays pending until bindingIds.length reaches this count
+   * and every member is terminal. Use this for sequential multi-child fan-out
+   * so the first return does not complete the join early.
+   * Must be a positive safe integer when present.
+   */
+  expectedBindingCount?: number;
 }
 
 /**
@@ -91,8 +100,9 @@ export interface ChildOutcomeSynthesisResult {
 }
 
 /**
- * Persisted synthesis application record (schema-versioned).
- * Stored on the parent workflow event stream when apply succeeds.
+ * Schema-versioned synthesis application record returned to callers.
+ * This record is not a durable workflow event. Durability comes from
+ * publish-facts and block-node events when those commands run.
  */
 export interface ChildOutcomeSynthesisRecord {
   schemaVersion: typeof CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION;
@@ -122,6 +132,10 @@ export type ChildOutcomeSynthesisApplyResult =
     parentEvents: DomainEvent[];
     result: ChildOutcomeSynthesisResult;
     record: ChildOutcomeSynthesisRecord;
+    /** True when a publish-facts event was emitted for the join fact. */
+    factPublished: boolean;
+    /** True when parent state changed (fact publish and/or block). */
+    parentMutated: boolean;
   }
   | { ok: false; diagnostics: Diagnostic[] };
 
@@ -283,6 +297,25 @@ export function validateChildOutcomeSynthesisPolicy(
     resultFactName = policy.resultFactName.trim();
   }
 
+  let expectedBindingCount: number | undefined;
+  if (policy.expectedBindingCount !== undefined) {
+    if (
+      typeof policy.expectedBindingCount !== "number"
+      || !Number.isSafeInteger(policy.expectedBindingCount)
+      || policy.expectedBindingCount < 1
+    ) {
+      return {
+        ok: false,
+        diagnostics: [reject(
+          "child_outcome_synthesis_invalid_expected_binding_count",
+          "Policy expectedBindingCount must be a positive safe integer when provided.",
+          "policy.expectedBindingCount",
+        )],
+      };
+    }
+    expectedBindingCount = policy.expectedBindingCount;
+  }
+
   return {
     ok: true,
     policy: {
@@ -290,6 +323,7 @@ export function validateChildOutcomeSynthesisPolicy(
       strategy: policy.strategy as ChildOutcomeSynthesisStrategy,
       bindingIds,
       resultFactName,
+      ...(expectedBindingCount !== undefined ? { expectedBindingCount } : {}),
     },
   };
 }
@@ -309,6 +343,7 @@ export function parseChildOutcomeSynthesisPolicy(
 export function createAllSuccessJoinPolicy(input: {
   bindingIds: readonly string[];
   resultFactName?: string;
+  expectedBindingCount?: number;
 }): ChildOutcomeSynthesisPolicyResult {
   return validateChildOutcomeSynthesisPolicy({
     schemaVersion: CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION,
@@ -316,6 +351,9 @@ export function createAllSuccessJoinPolicy(input: {
     bindingIds: [...input.bindingIds],
     ...(input.resultFactName !== undefined
       ? { resultFactName: input.resultFactName }
+      : {}),
+    ...(input.expectedBindingCount !== undefined
+      ? { expectedBindingCount: input.expectedBindingCount }
       : {}),
   });
 }
@@ -449,6 +487,33 @@ export function evaluateChildOutcomeSynthesis(
   const terminalCount = completedBindingIds.length + failedBindingIds.length;
   const completedCount = completedBindingIds.length;
 
+  // Wait for the planned fan-out size when expectedBindingCount is set.
+  if (
+    policy.expectedBindingCount !== undefined
+    && totalCount < policy.expectedBindingCount
+  ) {
+    const remaining = policy.expectedBindingCount - totalCount;
+    const word = remaining === 1 ? "binding" : "bindings";
+    return {
+      ok: true,
+      result: {
+        schemaVersion: CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION,
+        strategy: policy.strategy,
+        status: "pending",
+        passed: false,
+        completedCount,
+        terminalCount,
+        totalCount,
+        pendingBindingIds: [...pendingBindingIds],
+        completedBindingIds,
+        failedBindingIds,
+        reason:
+          `Join waits for ${remaining} more ${word} `
+          + `(${totalCount} of ${policy.expectedBindingCount} present).`,
+      },
+    };
+  }
+
   if (pendingBindingIds.length > 0) {
     const count = pendingBindingIds.length;
     const word = count === 1 ? "binding" : "bindings";
@@ -471,7 +536,7 @@ export function evaluateChildOutcomeSynthesis(
     };
   }
 
-  // Empty join set: vacuous success.
+  // Empty join set: the join passes under all-success.
   if (totalCount === 0) {
     return {
       ok: true,
@@ -672,13 +737,43 @@ export interface ApplyChildOutcomeSynthesisInput {
 }
 
 /**
+ * True when the parent node declares a boolean produce for the result fact.
+ */
+export function parentDeclaresJoinResultFact(
+  parentState: HypagraphState,
+  parentNodeId: string,
+  resultFactName: string,
+): boolean {
+  const definitionNode = parentState.definition.nodes.find((node) => node.id === parentNodeId);
+  return (definitionNode?.produces ?? []).some(
+    (contract) => contract.name === resultFactName && contract.type === "boolean",
+  );
+}
+
+/**
+ * True when the join result fact is already present for the current attempt.
+ */
+export function joinResultFactAlreadyApplied(
+  parentState: HypagraphState,
+  resultFactName: string,
+  parentAttemptId: string,
+): boolean {
+  const existing = parentState.runtime.facts[resultFactName];
+  return Boolean(
+    existing
+    && existing.type === "boolean"
+    && existing.attemptId === parentAttemptId,
+  );
+}
+
+/**
  * Apply a terminal synthesis result to the parent workflow.
  *
  * Requires parent node status running and a matching current attempt
  * (after child return has resumed the parent).
  *
- * Publishes the boolean result fact. The parent node must declare that fact
- * in produces, or publication fails with a clear diagnostic.
+ * Publishes the boolean result fact when the parent node declares that fact
+ * in produces. When the fact is not declared, publication is skipped.
  *
  * When the join failed and blockParentOnFailure is true, blocks the parent node.
  * Timestamps and command ids are pure inputs.
@@ -787,22 +882,22 @@ export function applyChildOutcomeSynthesisToParent(
   const baseCommandId = input.commandId
     ?? `record-child-outcome-synthesis:${input.parentNodeId}:${policy.bindingIds.slice().sort(compareBindingId).join(",")}`;
 
-  const definitionNode = input.parentState.definition.nodes.find(
-    (node) => node.id === input.parentNodeId,
-  );
-  const factDeclared = (definitionNode?.produces ?? []).some(
-    (contract) => contract.name === fact.name && contract.type === "boolean",
+  const factDeclared = parentDeclaresJoinResultFact(
+    input.parentState,
+    input.parentNodeId,
+    fact.name,
   );
 
-  // Idempotent when the same fact value is already present for this attempt.
-  const existing = input.parentState.runtime.facts[fact.name];
+  // Idempotent when the join fact is already present for this attempt.
+  const alreadyApplied = joinResultFactAlreadyApplied(
+    input.parentState,
+    fact.name,
+    input.parentAttemptId,
+  );
+
   let nextState = input.parentState;
   const parentEvents: DomainEvent[] = [];
-
-  const alreadyApplied = existing
-    && existing.type === "boolean"
-    && existing.value === fact.value
-    && existing.attemptId === input.parentAttemptId;
+  let factPublished = false;
 
   if (factDeclared && !alreadyApplied) {
     const published = handleCommand(nextState, {
@@ -823,6 +918,7 @@ export function applyChildOutcomeSynthesisToParent(
     }
     nextState = published.state;
     parentEvents.push(...published.events);
+    factPublished = published.events.some((event) => event.type === "hypagraph.fact.published");
   }
 
   const blockOnFailure = input.blockParentOnFailure !== false;
@@ -844,8 +940,6 @@ export function applyChildOutcomeSynthesisToParent(
     parentEvents.push(...blocked.events);
   }
 
-  // Passed join with no declared fact and no block still counts as applied when
-  // the parent remains running after child returns (graph already advanced).
   // Failed join must either publish false or block; otherwise reject.
   if (
     input.result.status === "failed"
@@ -882,6 +976,12 @@ export function applyChildOutcomeSynthesisToParent(
     parentEvents,
     result: structuredClone(input.result),
     record: structuredClone(record),
+    factPublished: factPublished || (
+      alreadyApplied
+      && factDeclared
+      && input.parentState.runtime.facts[fact.name]?.value === fact.value
+    ),
+    parentMutated: parentEvents.length > 0,
   };
 }
 

@@ -3036,14 +3036,20 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       }
     }
 
-    // S6: when every child in a parent-node join set is terminal, run all-success
-    // synthesis and transition the parent (publish join.passed when declared; block on fail).
-    if (applied > 0 && state?.goal) {
+    // S6: when every child in a parent-node join set is terminal and auto/explicit
+    // readiness rules pass, run all-success synthesis and transition the parent.
+    // Run even when this pass applied zero returns (restore / re-entry after
+    // return commit without synthesis). Quiet when no parent mutation occurs.
+    if (state?.goal) {
       const parentGoalId = state.goal.goalId;
       const synthesisPass = await withIsolatedFreeSlotLock(async () => {
         const live = state;
         if (!live?.goal) {
-          return { family, notified: [] as Array<{ text: string; level: "info" | "warning" }> };
+          return {
+            family,
+            notified: [] as Array<{ text: string; level: "info" | "warning" }>,
+            parentMutated: false,
+          };
         }
         let bag = latestFamilyRecord ?? family;
         const parentWorkflowId = live.workflowId;
@@ -3070,15 +3076,7 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
               text: `Child join synthesis was not applied. ${item.code}: ${item.message}`,
               level: "warning" as const,
             })),
-          };
-        }
-        if (synthesized.applied.length === 0) {
-          return {
-            family: synthesized.family,
-            notified: synthesized.diagnostics.map((item) => ({
-              text: `Child join synthesis note: ${item.code}: ${item.message}`,
-              level: "warning" as const,
-            })),
+            parentMutated: false,
           };
         }
 
@@ -3086,15 +3084,22 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
         if (!nextParentWorkflow) {
           return {
             family: synthesized.family,
-            notified: [{
-              text: `Child join synthesis committed without parent workflow '${parentWorkflowId}'.`,
-              level: "warning" as const,
-            }],
+            notified: synthesized.applied.length > 0
+              ? [{
+                text: `Child join synthesis committed without parent workflow '${parentWorkflowId}'.`,
+                level: "warning" as const,
+              }]
+              : [],
+            parentMutated: false,
           };
         }
 
         const previousParentSequence = live.sequence;
-        const appendedParentEvents = nextParentWorkflow.events.slice(events.length);
+        const priorEventCount = bag.workflows[parentWorkflowId]?.events.length ?? events.length;
+        const appendedParentEvents = nextParentWorkflow.events.slice(priorEventCount);
+        const parentMutated = appendedParentEvents.length > 0
+          || synthesized.applied.some((item) => item.parentMutated);
+
         if (appendedParentEvents.length > 0) {
           try {
             await eventStore.lease().append({
@@ -3111,20 +3116,22 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
                 text: `Child join synthesis could not append parent events. ${message}`,
                 level: "warning" as const,
               }],
+              parentMutated: false,
             };
           }
+          appendOneMemberFamilyRecord(pi, synthesized.family);
+          rememberFamilyRecord(synthesized.family);
+          state = nextParentWorkflow.snapshot;
+          events = structuredClone(nextParentWorkflow.events);
+          eventStore.noteWorkflowSequence(parentWorkflowId, state.sequence);
         }
 
-        appendOneMemberFamilyRecord(pi, synthesized.family);
-        rememberFamilyRecord(synthesized.family);
-        state = nextParentWorkflow.snapshot;
-        events = structuredClone(nextParentWorkflow.events);
-        eventStore.noteWorkflowSequence(parentWorkflowId, state.sequence);
-
-        const notified = synthesized.applied.map((item) => {
+        const notified: Array<{ text: string; level: "info" | "warning" }> = [];
+        for (const item of synthesized.applied) {
+          if (!item.parentMutated && !item.factPublished) continue;
           const parentNodeStatus =
             nextParentWorkflow.snapshot.runtime.nodes[item.parentNodeId]?.status ?? "unknown";
-          return {
+          notified.push({
             text: renderJoinSynthesisApplied({
               parentNodeId: item.parentNodeId,
               status: item.result.status === "passed" ? "passed" : "failed",
@@ -3132,24 +3139,35 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
               totalCount: item.result.totalCount,
               resultFactName: item.policy.resultFactName,
               parentNodeStatus,
+              factPublished: item.factPublished,
+              parentMutated: item.parentMutated,
             }),
-            level: (item.result.status === "passed" ? "info" : "warning") as "info" | "warning",
-          };
-        });
-        for (const item of synthesized.diagnostics) {
-          notified.push({
-            text: `Child join synthesis note: ${item.code}: ${item.message}`,
-            level: "warning",
+            level: item.result.status === "passed" ? "info" : "warning",
           });
         }
-        return { family: synthesized.family, notified };
+        for (const item of synthesized.diagnostics) {
+          if (
+            parentMutated
+            || item.code === "child_outcome_synthesis_parent_not_running"
+          ) {
+            notified.push({
+              text: `Child join synthesis note: ${item.code}: ${item.message}`,
+              level: "warning",
+            });
+          }
+        }
+        return {
+          family: appendedParentEvents.length > 0 ? synthesized.family : bag,
+          notified,
+          parentMutated,
+        };
       });
 
       family = synthesisPass.family;
       for (const note of synthesisPass.notified) {
         ctx.ui.notify(note.text, note.level);
       }
-      if (synthesisPass.notified.some((note) => note.level === "info")) {
+      if (synthesisPass.parentMutated) {
         paintUi(ctx);
       }
     }

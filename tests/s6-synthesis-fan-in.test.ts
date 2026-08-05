@@ -38,9 +38,12 @@ import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
 import type { HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
 import { handleCommand } from "../src/domain/reducer.js";
 import {
+  AUTO_JOIN_MIN_BINDING_COUNT,
   applyProductJoinSynthesis,
   applyReadyJoinSynthesesAfterReturns,
   applyReadyJoinSynthesesToPersistedFamily,
+  isAutoProductJoinEligible,
+  renderJoinSynthesisApplied,
   resolveProductJoinPolicy,
 } from "../src/pi/family-product-synthesis.js";
 import type { PersistedGoalFamily } from "../src/persistence/family-store.js";
@@ -220,6 +223,18 @@ describe("S6 domain child outcome synthesis policy", () => {
     expect(classInstance.ok).toBe(false);
     if (classInstance.ok) throw new Error("expected class instance reject");
     expect(classInstance.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_policy");
+
+    const badExpected = validateChildOutcomeSynthesisPolicy({
+      schemaVersion: 1,
+      strategy: "all-success",
+      bindingIds: ["b-1"],
+      expectedBindingCount: 0,
+    });
+    expect(badExpected.ok).toBe(false);
+    if (badExpected.ok) throw new Error("expected expectedBindingCount reject");
+    expect(badExpected.diagnostics[0]?.code).toBe(
+      "child_outcome_synthesis_invalid_expected_binding_count",
+    );
   });
 
   it("rejects empty binding id entries and invalid result fact names", () => {
@@ -303,7 +318,7 @@ describe("S6 domain all-success evaluation", () => {
     expect(pending.result.publishedFact).toBeUndefined();
   });
 
-  it("treats an empty join set as vacuous success under all-success", () => {
+  it("treats an empty join set as a pass under all-success", () => {
     const empty = policy([]);
     const result = evaluateChildOutcomeSynthesis(empty, []);
     expect(result.ok).toBe(true);
@@ -311,6 +326,34 @@ describe("S6 domain all-success evaluation", () => {
     expect(result.result.status).toBe("passed");
     expect(result.result.passed).toBe(true);
     expect(result.result.reason).toMatch(/Empty join set/);
+  });
+
+  it("stays pending until expectedBindingCount bindings are present", () => {
+    const withExpected = createAllSuccessJoinPolicy({
+      bindingIds: ["b-1"],
+      expectedBindingCount: 2,
+    });
+    expect(withExpected.ok).toBe(true);
+    if (!withExpected.ok) throw new Error("policy");
+    const pending = evaluateChildOutcomeSynthesis(withExpected.policy, [
+      { bindingId: "b-1", terminal: true, outcome: "completed" },
+    ]);
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) throw new Error("expected ok");
+    expect(pending.result.status).toBe("pending");
+    expect(pending.result.reason).toMatch(/more binding/);
+  });
+
+  it("rejects a class-instance member object", () => {
+    const member = Object.assign(new (class Member {})(), {
+      bindingId: "b-1",
+      terminal: true,
+      outcome: "completed",
+    });
+    const result = evaluateChildOutcomeSynthesis(policy(["b-1"]), [member as ChildOutcomeMember]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected class instance member reject");
+    expect(result.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_member");
   });
 
   it("orders result arrays by binding id without locale-sensitive compare", () => {
@@ -677,6 +720,47 @@ describe("S6 host product synthesis path", () => {
     };
   };
 
+  const setupAfterFirstChildOnly = () => {
+    let rootState = createStartedWorkflow(parentWithJoinFact("Host join root"), "workflow-root", "goal-root");
+    rootState = startTask(rootState, "work");
+    const familyResult = createRootFamily({
+      familyId: "family-s6-first",
+      rootGoalId: "goal-root",
+      rootWorkflowId: "workflow-root",
+      at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 4,
+        maxGoalsInFamily: 16,
+        maxChildCreationAttemptsPerNode: 4,
+      },
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+    const child1 = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("Host child one only"),
+      childGoalId: "goal-child-1",
+      childWorkflowId: "workflow-child-1",
+      bindingId: "binding-1",
+      at: later,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child1.ok) throw new Error(JSON.stringify(child1.diagnostics));
+    const return1 = returnChildGoal({
+      family: child1.family,
+      parentState: child1.parentState,
+      childState: terminalCompletedChild(child1.childState),
+      bindingId: "binding-1",
+      at: returnAt,
+      outcome: "completed",
+    });
+    if (!return1.ok) throw new Error(JSON.stringify(return1.diagnostics));
+    return { family: return1.family, parentState: return1.parentState };
+  };
+
   it("resolves an all-success policy from parent bindings on the host path", () => {
     const setup = setupHostFamily();
     const resolved = resolveProductJoinPolicy({
@@ -688,6 +772,48 @@ describe("S6 host product synthesis path", () => {
     if (!resolved.ok) throw new Error("expected resolve ok");
     expect(resolved.policy.strategy).toBe("all-success");
     expect(resolved.policy.bindingIds).toEqual(["binding-1", "binding-2"]);
+    expect(resolved.explicit).toBe(false);
+  });
+
+  it("does not auto-complete join after the first of two sequential children", () => {
+    const first = setupAfterFirstChildOnly();
+    expect(first.parentState.runtime.nodes.work?.status).toBe("running");
+    const ready = applyReadyJoinSynthesesAfterReturns({
+      family: first.family,
+      parentState: first.parentState,
+      parentGoalId: "goal-root",
+      at: returnAt,
+    });
+    expect(ready.ok).toBe(true);
+    expect(ready.applied).toHaveLength(0);
+    expect(ready.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]).toBeUndefined();
+    expect(ready.pending.length + ready.skipped.length).toBeGreaterThan(0);
+    // Auto path waits for at least two bindings without expectedBindingCount.
+    expect(AUTO_JOIN_MIN_BINDING_COUNT).toBe(2);
+  });
+
+  it("does not apply join early when expectedBindingCount is two and one binding exists", () => {
+    const first = setupAfterFirstChildOnly();
+    const policy = createAllSuccessJoinPolicy({
+      bindingIds: ["binding-1"],
+      expectedBindingCount: 2,
+    });
+    if (!policy.ok) throw new Error(JSON.stringify(policy.diagnostics));
+    const attemptId = first.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    const product = applyProductJoinSynthesis({
+      family: first.family,
+      parentState: first.parentState,
+      policy: policy.policy,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: returnAt,
+    });
+    expect(product.ok).toBe(true);
+    if (!product.ok) throw new Error("expected ok");
+    expect(product.status).toBe("pending");
+    expect(first.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]).toBeUndefined();
   });
 
   it("applies product join synthesis after multi-child return and changes parent state", () => {
@@ -710,6 +836,8 @@ describe("S6 host product synthesis path", () => {
       throw new Error(JSON.stringify(applied));
     }
     expect(applied.result.status).toBe("passed");
+    expect(applied.factPublished).toBe(true);
+    expect(applied.parentMutated).toBe(true);
     expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
     expect(applied.parentState.runtime.nodes.work?.status).toBe("running");
     expect(applied.parentEvents.length).toBeGreaterThan(0);
@@ -726,15 +854,64 @@ describe("S6 host product synthesis path", () => {
     expect(ready.ok).toBe(true);
     expect(ready.applied).toHaveLength(1);
     expect(ready.applied[0]?.result.status).toBe("passed");
+    expect(ready.applied[0]?.factPublished).toBe(true);
     expect(ready.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
     expect(ready.pending).toHaveLength(0);
   });
 
-  it("blocks parent when product join synthesis fails under all-success", () => {
-    // Build parent running with one completed binding, then apply a failed synthetic result
-    // through the product helper path with an explicit policy and pure failed members
-    // is covered by domain apply. Here: two children where second fails with block policy
-    // leaves parent blocked; ready helper still evaluates terminal join without re-apply.
+  it("applies join on restore-style re-entry when returns already settled and fact is missing", () => {
+    // Mimic extension re-entry: applied returns are already committed; synthesis
+    // still runs when the join set is ready and join.passed is absent.
+    const setup = setupHostFamily("completed");
+    expect(setup.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]).toBeUndefined();
+    const persisted: PersistedGoalFamily = {
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
+      familyEvents: [],
+      familySnapshot: setup.family,
+      workflows: {
+        "workflow-root": {
+          events: [],
+          snapshot: setup.parentState,
+        },
+        "workflow-child-1": {
+          events: [],
+          snapshot: setup.child1State,
+        },
+        "workflow-child-2": {
+          events: [],
+          snapshot: setup.child2State,
+        },
+      },
+    };
+    const synthesized = applyReadyJoinSynthesesToPersistedFamily({
+      family: persisted,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(synthesized.ok).toBe(true);
+    if (!synthesized.ok) throw new Error(JSON.stringify(synthesized.diagnostics));
+    expect(synthesized.applied).toHaveLength(1);
+    expect(synthesized.applied[0]?.factPublished).toBe(true);
+    const parentWorkflow = synthesized.family.workflows["workflow-root"];
+    expect(parentWorkflow?.snapshot.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+    expect(parentWorkflow?.events.some((event) => event.type === "hypagraph.fact.published")).toBe(true);
+
+    // Second pass is quiet: fact already present, no further mutation.
+    const again = applyReadyJoinSynthesesToPersistedFamily({
+      family: synthesized.family,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(again.ok).toBe(true);
+    if (!again.ok) throw new Error(JSON.stringify(again.diagnostics));
+    expect(again.applied).toHaveLength(0);
+    expect(again.skipped.length + again.pending.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not re-apply failed join when child failure policy already blocked the parent", () => {
+    // Product path: non-completed child return applies failure policy first.
+    // Parent is not running, so host synthesis does not publish join.passed=false.
+    // Child failure policy owns the parent effect.
     const setup = setupHostFamily("failed");
     expect(setup.parentState.runtime.nodes.work?.status).toBe("blocked");
     const ready = applyReadyJoinSynthesesAfterReturns({
@@ -744,7 +921,6 @@ describe("S6 host product synthesis path", () => {
       at: joinAt,
     });
     expect(ready.ok).toBe(true);
-    // Parent not running: no applied mutation; join still terminal-failed.
     expect(ready.applied).toHaveLength(0);
     expect(
       ready.diagnostics.some((item) => item.code === "child_outcome_synthesis_parent_not_running"),
@@ -786,5 +962,97 @@ describe("S6 host product synthesis path", () => {
     expect(parentWorkflow?.snapshot.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
     expect(parentWorkflow?.events.some((event) => event.type === "hypagraph.fact.published")).toBe(true);
   });
+
+  it("renders notify text without claiming publish when fact was not published", () => {
+    const published = renderJoinSynthesisApplied({
+      parentNodeId: "work",
+      status: "passed",
+      completedCount: 2,
+      totalCount: 2,
+      resultFactName: "join.passed",
+      parentNodeStatus: "running",
+      factPublished: true,
+      parentMutated: true,
+    });
+    expect(published).toMatch(/Published 'join.passed'=true/);
+
+    const evaluationOnly = renderJoinSynthesisApplied({
+      parentNodeId: "work",
+      status: "passed",
+      completedCount: 2,
+      totalCount: 2,
+      resultFactName: "join.passed",
+      parentNodeStatus: "running",
+      factPublished: false,
+      parentMutated: false,
+    });
+    expect(evaluationOnly).toMatch(/Evaluation only/);
+    expect(evaluationOnly).not.toMatch(/Published 'join.passed'=true/);
+  });
+
+  it("requires produce declaration for auto product eligibility", () => {
+    const setup = setupHostFamily("completed");
+    // Strip produces by using a parent definition without join.passed.
+    let plainRoot = createStartedWorkflow(
+      {
+        title: "No join produce",
+        goal: "No join produce",
+        nodes: [{
+          id: "work",
+          title: "Work",
+          requires: [],
+          acceptance: [],
+          scope: { paths: ["src/**"] },
+        }],
+        loops: [],
+        policy: { mode: "guided", requireEvidence: false },
+      },
+      "workflow-plain",
+      "goal-plain",
+    );
+    plainRoot = startTask(plainRoot, "work");
+    const policy = createAllSuccessJoinPolicy({ bindingIds: ["binding-1", "binding-2"] });
+    if (!policy.ok) throw new Error("policy");
+    const eligibility = isAutoProductJoinEligible({
+      policy: policy.policy,
+      explicit: false,
+      parentState: plainRoot,
+      parentNodeId: "work",
+      parentAttemptId: plainRoot.runtime.nodes.work?.currentAttemptId ?? "attempt-work",
+    });
+    expect(eligibility.eligible).toBe(false);
+    if (eligibility.eligible) throw new Error("expected ineligible");
+    expect(eligibility.reason).toMatch(/does not declare boolean produce/);
+    // silence unused setup
+    expect(setup.family.schemaVersion).toBe(GOAL_FAMILY_SCHEMA_VERSION);
+  });
+
+  it("applies one-child join when an explicit policy is supplied", () => {
+    const first = setupAfterFirstChildOnly();
+    const policy = createAllSuccessJoinPolicy({
+      bindingIds: ["binding-1"],
+      expectedBindingCount: 1,
+    });
+    if (!policy.ok) throw new Error(JSON.stringify(policy.diagnostics));
+    const attemptId = first.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    const applied = applyProductJoinSynthesis({
+      family: first.family,
+      parentState: first.parentState,
+      policy: policy.policy,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: returnAt,
+      commandId: "host-synth-one",
+    });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok || applied.status !== "applied") {
+      throw new Error(JSON.stringify(applied));
+    }
+    expect(applied.factPublished).toBe(true);
+    expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+  });
 });
+
 

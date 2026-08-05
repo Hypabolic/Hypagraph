@@ -3,8 +3,21 @@
  *
  * After child returns settle, the host evaluates an all-success join over a
  * declared binding set and applies the result to the parent workflow:
- * - publish join.passed (or configured fact) when the parent declares it;
- * - block the parent node when the join fails.
+ * - publish join.passed when the parent declares that boolean produce;
+ * - block the parent node when the join fails and the parent is still running.
+ *
+ * Auto product path (no explicit policy):
+ * - Join set is every binding for (parentGoalId, parentNodeId).
+ * - Apply only when every binding is terminal, the parent node is running,
+ *   the parent declares the result fact produce, the fact is not already on
+ *   the current attempt, and either expectedBindingCount is met or the set
+ *   has at least two bindings (prevents first sequential child from completing
+ *   a planned multi-child join). For a one-child join, pass an explicit policy
+ *   or expectedBindingCount: 1.
+ *
+ * Failed-join host publish and block run only while the parent is still
+ * running. When a child failure policy already failed or blocked the parent,
+ * synthesis does not re-apply. Child failure policy owns that path.
  *
  * These helpers are pure of Pi I/O. Extension commits parent events and
  * family records after the helpers return.
@@ -15,7 +28,9 @@ import {
   createAllSuccessJoinPolicy,
   DEFAULT_JOIN_RESULT_FACT_NAME,
   isJoinSetTerminal,
+  joinResultFactAlreadyApplied,
   listBindingsForParentJoin,
+  parentDeclaresJoinResultFact,
   synthesizeAndApplyChildOutcomes,
   synthesizeChildOutcomesFromFamily,
   validateChildOutcomeSynthesisPolicy,
@@ -37,12 +52,15 @@ export {
 };
 export type { ChildOutcomeSynthesisPolicy, ChildOutcomeSynthesisResult };
 
+/** Minimum binding count for auto product join without expectedBindingCount. */
+export const AUTO_JOIN_MIN_BINDING_COUNT = 2 as const;
+
 export interface ProductJoinSynthesisInput {
   family: GoalFamilyRuntime;
   parentState: HypagraphState;
   /**
    * Explicit join policy. When omitted, the host builds an all-success policy
-   * from all bindings for parentGoalId + parentNodeId.
+   * from all bindings for parentGoalId + parentNodeId (auto product path).
    */
   policy?: ChildOutcomeSynthesisPolicy;
   parentGoalId: string;
@@ -64,35 +82,114 @@ export type ProductJoinSynthesisResult =
     result: ChildOutcomeSynthesisResult;
     policy: ChildOutcomeSynthesisPolicy;
     record: NonNullable<Extract<ChildOutcomeSynthesisApplyResult, { ok: true }>["record"]>;
+    factPublished: boolean;
+    parentMutated: boolean;
+  }
+  | {
+    ok: true;
+    status: "skipped";
+    result: ChildOutcomeSynthesisResult;
+    policy: ChildOutcomeSynthesisPolicy;
+    reason: string;
   }
   | { ok: false; diagnostics: Diagnostic[] };
 
 /**
  * Resolve the join policy for a parent node group.
- * Explicit policy wins. Otherwise all bindings for the parent goal and node
- * form an all-success join set.
+ * Explicit policy takes priority. Otherwise all bindings for the parent goal
+ * and node form an all-success join set.
  */
 export function resolveProductJoinPolicy(input: {
   family: GoalFamilyRuntime;
   parentGoalId: string;
   parentNodeId: string;
   policy?: ChildOutcomeSynthesisPolicy;
-}): { ok: true; policy: ChildOutcomeSynthesisPolicy } | { ok: false; diagnostics: Diagnostic[] } {
+}): { ok: true; policy: ChildOutcomeSynthesisPolicy; explicit: boolean } | { ok: false; diagnostics: Diagnostic[] } {
   if (input.policy) {
-    return validateChildOutcomeSynthesisPolicy(input.policy);
+    const validated = validateChildOutcomeSynthesisPolicy(input.policy);
+    if (!validated.ok) return validated;
+    return { ok: true, policy: validated.policy, explicit: true };
   }
   const bindingIds = listBindingsForParentJoin({
     family: input.family,
     parentGoalId: input.parentGoalId,
     parentNodeId: input.parentNodeId,
   });
-  return createAllSuccessJoinPolicy({ bindingIds });
+  const created = createAllSuccessJoinPolicy({ bindingIds });
+  if (!created.ok) return created;
+  return { ok: true, policy: created.policy, explicit: false };
 }
 
 /**
- * Evaluate and, when terminal, apply child-outcome synthesis on the product path.
+ * Decide whether the auto product path may apply a terminal join.
+ * Explicit policies skip the multi-binding minimum and only honour expectedBindingCount.
+ */
+export function isAutoProductJoinEligible(input: {
+  policy: ChildOutcomeSynthesisPolicy;
+  explicit: boolean;
+  parentState: HypagraphState;
+  parentNodeId: string;
+  parentAttemptId: string;
+}): { eligible: true } | { eligible: false; reason: string; pending: boolean } {
+  const { policy, explicit, parentState, parentNodeId, parentAttemptId } = input;
+
+  if (!parentDeclaresJoinResultFact(parentState, parentNodeId, policy.resultFactName)) {
+    return {
+      eligible: false,
+      pending: false,
+      reason:
+        `Parent task '${parentNodeId}' does not declare boolean produce `
+        + `'${policy.resultFactName}'. Product join apply requires that produce.`,
+    };
+  }
+
+  if (joinResultFactAlreadyApplied(parentState, policy.resultFactName, parentAttemptId)) {
+    return {
+      eligible: false,
+      pending: false,
+      reason:
+        `Join result fact '${policy.resultFactName}' is already present on attempt `
+        + `'${parentAttemptId}'.`,
+    };
+  }
+
+  if (policy.expectedBindingCount !== undefined) {
+    if (policy.bindingIds.length < policy.expectedBindingCount) {
+      const remaining = policy.expectedBindingCount - policy.bindingIds.length;
+      const word = remaining === 1 ? "binding" : "bindings";
+      return {
+        eligible: false,
+        pending: true,
+        reason:
+          `Join waits for ${remaining} more ${word} `
+          + `(${policy.bindingIds.length} of ${policy.expectedBindingCount} present).`,
+      };
+    }
+    return { eligible: true };
+  }
+
+  // Auto path without expectedBindingCount: require at least two bindings so
+  // the first sequential child return cannot complete a multi-child join.
+  if (!explicit && policy.bindingIds.length < AUTO_JOIN_MIN_BINDING_COUNT) {
+    return {
+      eligible: false,
+      pending: true,
+      reason:
+        `Auto join waits for at least ${AUTO_JOIN_MIN_BINDING_COUNT} terminal bindings `
+        + `or an explicit policy with expectedBindingCount. `
+        + `Current set has ${policy.bindingIds.length}.`,
+    };
+  }
+
+  // Explicit one-child policy without expectedBindingCount is allowed.
+  return { eligible: true };
+}
+
+/**
+ * Evaluate and, when terminal and eligible, apply child-outcome synthesis.
  *
- * Returns pending when any join binding is still active.
+ * Returns pending when any join binding is still active or expected count is not met.
+ * Returns skipped when the product path must not apply (no produce, already applied).
  * Does not mutate inputs.
  */
 export function applyProductJoinSynthesis(
@@ -105,12 +202,55 @@ export function applyProductJoinSynthesis(
     ...(input.policy ? { policy: input.policy } : {}),
   });
   if (!policyResult.ok) return policyResult;
-  const policy = policyResult.policy;
+  const { policy, explicit } = policyResult;
 
-  const applied = synthesizeAndApplyChildOutcomes({
-    family: input.family,
+  const evaluated = synthesizeChildOutcomesFromFamily(input.family, policy);
+  if (!evaluated.ok) return evaluated;
+
+  if (evaluated.result.status === "pending") {
+    return {
+      ok: true,
+      status: "pending",
+      result: evaluated.result,
+      policy,
+    };
+  }
+
+  const eligibility = isAutoProductJoinEligible({
+    policy,
+    explicit,
+    parentState: input.parentState,
+    parentNodeId: input.parentNodeId,
+    parentAttemptId: input.parentAttemptId,
+  });
+  if (!eligibility.eligible) {
+    if (eligibility.pending) {
+      return {
+        ok: true,
+        status: "pending",
+        result: {
+          ...evaluated.result,
+          status: "pending",
+          passed: false,
+          reason: eligibility.reason,
+          publishedFact: undefined,
+        },
+        policy,
+      };
+    }
+    return {
+      ok: true,
+      status: "skipped",
+      result: evaluated.result,
+      policy,
+      reason: eligibility.reason,
+    };
+  }
+
+  const applied = applyChildOutcomeSynthesisToParent({
     parentState: input.parentState,
     policy,
+    result: evaluated.result,
     parentNodeId: input.parentNodeId,
     parentAttemptId: input.parentAttemptId,
     at: input.at,
@@ -120,27 +260,7 @@ export function applyProductJoinSynthesis(
       ? { blockParentOnFailure: input.blockParentOnFailure }
       : {}),
   });
-
   if (!applied.ok) return applied;
-  if ("status" in applied && applied.status === "pending") {
-    return {
-      ok: true,
-      status: "pending",
-      result: applied.result,
-      policy,
-    };
-  }
-
-  // Terminal apply branch.
-  if (!("parentState" in applied)) {
-    return {
-      ok: false,
-      diagnostics: [{
-        code: "child_outcome_synthesis_apply_incomplete",
-        message: "Synthesis apply did not return parent state.",
-      }],
-    };
-  }
 
   return {
     ok: true,
@@ -150,14 +270,23 @@ export function applyProductJoinSynthesis(
     result: applied.result,
     policy,
     record: applied.record,
+    factPublished: applied.factPublished,
+    parentMutated: applied.parentMutated,
   };
+}
+
+export interface AppliedJoinSynthesis {
+  parentNodeId: string;
+  result: ChildOutcomeSynthesisResult;
+  policy: ChildOutcomeSynthesisPolicy;
+  factPublished: boolean;
+  parentMutated: boolean;
 }
 
 /**
  * After product child returns, try join synthesis for each parent node group
- * that has no remaining active bindings.
+ * that has no remaining active bindings and meets auto or explicit readiness.
  *
- * Returns one applied synthesis at most per parent node group that is ready.
  * Parent state is chained when multiple groups apply in one pass.
  */
 export function applyReadyJoinSynthesesAfterReturns(input: {
@@ -172,25 +301,18 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
   ok: true;
   parentState: HypagraphState;
   parentEvents: DomainEvent[];
-  applied: Array<{
-    parentNodeId: string;
-    result: ChildOutcomeSynthesisResult;
-    policy: ChildOutcomeSynthesisPolicy;
-  }>;
+  applied: AppliedJoinSynthesis[];
   pending: Array<{ parentNodeId: string; result: ChildOutcomeSynthesisResult }>;
+  skipped: Array<{ parentNodeId: string; reason: string }>;
   diagnostics: Diagnostic[];
 } {
   let parentState = input.parentState;
   const parentEvents: DomainEvent[] = [];
-  const applied: Array<{
-    parentNodeId: string;
-    result: ChildOutcomeSynthesisResult;
-    policy: ChildOutcomeSynthesisPolicy;
-  }> = [];
+  const applied: AppliedJoinSynthesis[] = [];
   const pending: Array<{ parentNodeId: string; result: ChildOutcomeSynthesisResult }> = [];
+  const skipped: Array<{ parentNodeId: string; reason: string }> = [];
   const diagnostics: Diagnostic[] = [];
 
-  // Collect parent node ids that have at least one binding for this parent goal.
   const nodeIds = new Set<string>();
   for (const binding of Object.values(input.family.bindings)) {
     if (binding.parentGoalId === input.parentGoalId) {
@@ -210,19 +332,20 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
       parentNodeId,
     });
     if (bindingIds.length === 0) continue;
-    if (!isJoinSetTerminal(input.family, bindingIds)) {
-      const policyResult = resolveProductJoinPolicy({
-        family: input.family,
-        parentGoalId: input.parentGoalId,
-        parentNodeId,
-        ...(input.policiesByParentNodeId?.[parentNodeId]
-          ? { policy: input.policiesByParentNodeId[parentNodeId] }
-          : {}),
-      });
-      if (!policyResult.ok) {
-        diagnostics.push(...policyResult.diagnostics);
-        continue;
-      }
+
+    const explicitPolicy = input.policiesByParentNodeId?.[parentNodeId];
+    const policyResult = resolveProductJoinPolicy({
+      family: input.family,
+      parentGoalId: input.parentGoalId,
+      parentNodeId,
+      ...(explicitPolicy ? { policy: explicitPolicy } : {}),
+    });
+    if (!policyResult.ok) {
+      diagnostics.push(...policyResult.diagnostics);
+      continue;
+    }
+
+    if (!isJoinSetTerminal(input.family, policyResult.policy.bindingIds)) {
       const evaluated = synthesizeChildOutcomesFromFamily(input.family, policyResult.policy);
       if (evaluated.ok) {
         pending.push({ parentNodeId, result: evaluated.result });
@@ -234,33 +357,19 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
 
     const parentNode = parentState.runtime.nodes[parentNodeId];
     if (!parentNode?.currentAttemptId || parentNode.status !== "running") {
-      // Parent is not in a state that can accept synthesis apply (for example
-      // already failed from a child failure policy). Record evaluation only.
-      const policyResult = resolveProductJoinPolicy({
-        family: input.family,
-        parentGoalId: input.parentGoalId,
-        parentNodeId,
-        ...(input.policiesByParentNodeId?.[parentNodeId]
-          ? { policy: input.policiesByParentNodeId[parentNodeId] }
-          : {}),
-      });
-      if (!policyResult.ok) {
-        diagnostics.push(...policyResult.diagnostics);
-        continue;
-      }
+      // Parent cannot accept synthesis apply (for example child failure policy
+      // already failed or blocked the parent). Child failure policy owns that path.
       const evaluated = synthesizeChildOutcomesFromFamily(input.family, policyResult.policy);
-      if (evaluated.ok && evaluated.result.status !== "pending") {
-        // Join is terminal but parent cannot accept apply. Surface as diagnostic
-        // only when the join failed (parent may already be failed or blocked).
-        if (evaluated.result.status === "failed") {
-          diagnostics.push({
-            code: "child_outcome_synthesis_parent_not_running",
-            message:
-              `Join for parent node '${parentNodeId}' failed but the parent is `
-              + `'${parentNode?.status ?? "missing"}' and cannot accept synthesis apply.`,
-            location: "parentNodeId",
-          });
-        }
+      if (evaluated.ok && evaluated.result.status === "failed") {
+        diagnostics.push({
+          code: "child_outcome_synthesis_parent_not_running",
+          message:
+            `Join for parent node '${parentNodeId}' is terminal but the parent is `
+            + `'${parentNode?.status ?? "missing"}'. `
+            + "Failed-join fact publish is not applied when the parent is not running. "
+            + "Child failure policy already owns the parent effect.",
+          location: "parentNodeId",
+        });
       } else if (!evaluated.ok) {
         diagnostics.push(...evaluated.diagnostics);
       }
@@ -274,9 +383,7 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
       parentNodeId,
       parentAttemptId: parentNode.currentAttemptId,
       at: input.at,
-      ...(input.policiesByParentNodeId?.[parentNodeId]
-        ? { policy: input.policiesByParentNodeId[parentNodeId] }
-        : {}),
+      ...(explicitPolicy ? { policy: explicitPolicy } : {}),
       ...(input.blockParentOnFailure !== undefined
         ? { blockParentOnFailure: input.blockParentOnFailure }
         : {}),
@@ -290,12 +397,18 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
       pending.push({ parentNodeId, result: synthesis.result });
       continue;
     }
+    if (synthesis.status === "skipped") {
+      skipped.push({ parentNodeId, reason: synthesis.reason });
+      continue;
+    }
     parentState = synthesis.parentState;
     parentEvents.push(...synthesis.parentEvents);
     applied.push({
       parentNodeId,
       result: synthesis.result,
       policy: synthesis.policy,
+      factPublished: synthesis.factPublished,
+      parentMutated: synthesis.parentMutated,
     });
   }
 
@@ -305,6 +418,7 @@ export function applyReadyJoinSynthesesAfterReturns(input: {
     parentEvents,
     applied,
     pending,
+    skipped,
     diagnostics,
   };
 }
@@ -319,18 +433,42 @@ export function renderJoinSynthesisApplied(input: {
   totalCount: number;
   resultFactName: string;
   parentNodeStatus: string;
+  factPublished: boolean;
+  parentMutated: boolean;
 }): string {
+  const counts = `${input.completedCount}/${input.totalCount} completed`;
   if (input.status === "passed") {
+    if (input.factPublished) {
+      return (
+        `Child join synthesis passed for parent task '${input.parentNodeId}' `
+        + `(${counts}). Published '${input.resultFactName}'=true. `
+        + `Parent status is '${input.parentNodeStatus}'.`
+      );
+    }
     return (
       `Child join synthesis passed for parent task '${input.parentNodeId}' `
-      + `(${input.completedCount}/${input.totalCount} completed). `
-      + `Published '${input.resultFactName}'=true. Parent status is '${input.parentNodeStatus}'.`
+      + `(${counts}). Evaluation only; '${input.resultFactName}' was not published. `
+      + `Parent status is '${input.parentNodeStatus}'.`
+    );
+  }
+  if (input.factPublished) {
+    return (
+      `Child join synthesis failed for parent task '${input.parentNodeId}' `
+      + `(${counts}). Published '${input.resultFactName}'=false. `
+      + `Parent status is '${input.parentNodeStatus}'.`
+    );
+  }
+  if (input.parentMutated) {
+    return (
+      `Child join synthesis failed for parent task '${input.parentNodeId}' `
+      + `(${counts}). Parent was blocked. `
+      + `Parent status is '${input.parentNodeStatus}'.`
     );
   }
   return (
     `Child join synthesis failed for parent task '${input.parentNodeId}' `
-    + `(${input.completedCount}/${input.totalCount} completed). `
-    + `Published '${input.resultFactName}'=false. Parent status is '${input.parentNodeStatus}'.`
+    + `(${counts}). No parent mutation was applied. `
+    + `Parent status is '${input.parentNodeStatus}'.`
   );
 }
 
@@ -358,12 +496,9 @@ export function applyReadyJoinSynthesesToPersistedFamily(input: {
 }): {
   ok: true;
   family: PersistedGoalFamily;
-  applied: Array<{
-    parentNodeId: string;
-    result: ChildOutcomeSynthesisResult;
-    policy: ChildOutcomeSynthesisPolicy;
-  }>;
+  applied: AppliedJoinSynthesis[];
   pending: Array<{ parentNodeId: string; result: ChildOutcomeSynthesisResult }>;
+  skipped: Array<{ parentNodeId: string; reason: string }>;
   diagnostics: Diagnostic[];
 } | { ok: false; diagnostics: Diagnostic[] } {
   const parentMember = input.family.familySnapshot.members[input.parentGoalId];
@@ -412,6 +547,7 @@ export function applyReadyJoinSynthesesToPersistedFamily(input: {
       family: input.family,
       applied: ready.applied,
       pending: ready.pending,
+      skipped: ready.skipped,
       diagnostics: ready.diagnostics,
     };
   }
@@ -432,6 +568,10 @@ export function applyReadyJoinSynthesesToPersistedFamily(input: {
     family: nextFamily,
     applied: ready.applied,
     pending: ready.pending,
+    skipped: ready.skipped,
     diagnostics: ready.diagnostics,
   };
 }
+
+// Re-export synthesizeAndApply for tests that need the pure domain path.
+export { synthesizeAndApplyChildOutcomes };
