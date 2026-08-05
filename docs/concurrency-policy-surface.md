@@ -19,7 +19,7 @@ The product path must enforce:
 
 Domain helpers for limits and groups already exist. This surface wires those helpers into ordinary product selection, commit, settle, and status text.
 
-This document does not cover live multi-pending concurrent family acceptance under real Pi. That work is Gate 1.3. Host model-slot limits apply on that path.
+This document does not cover live multi-pending concurrent family acceptance under real Pi. That work is Gate 1.3. After S4, the host model worker pool capacity is the resolved product `globalConcurrency` (default 2). Live multi-worker evidence under real Pi remains open.
 
 ## 2. Global limit and per-executor limit
 
@@ -62,7 +62,7 @@ Residual gaps:
 
 - Host-only route overrides that never appear on the node definition or policy attributes are not derived.
 - Invalid `node.executorProfile` shapes are ignored by domain profile resolution (same as model routing).
-- Live multi-pending concurrent family acceptance under real Pi remains Gate 1.3 (host model-slot limits apply; multi-worker start of more than one model per pass is not Gate 1.3 Live).
+- Live multi-pending concurrent family acceptance under real Pi remains Gate 1.3. Host capacity after S4 is N under resolved `globalConcurrency` with concurrent model start and settle-on-complete. Ledger **Live** stays open until real Pi dogfood is recorded.
 
 ## 3. Exclusive and concurrent groups
 
@@ -179,24 +179,74 @@ Host controller entry: `src/extension.ts` uses Seam C helpers for batch commit, 
 4. Compact widget lines may use a multi-pending count.
 5. First-pending compact fields may remain for single-item surfaces; multi-pending lists are authoritative when present.
 
-## 9. Non-goals
+## 9. Host worker pool (S4)
+
+After S4 the host no longer uses a single isolated attempt seat.
+
+| Rule | Behaviour |
+| --- | --- |
+| Pool | `SessionContext.workerPool` is a `Map` of `ActiveIsolatedRootAttempt` |
+| Key | `familyDispatchId` when present; else `attemptId` |
+| Capacity | Resolved product `globalConcurrency` (default 2) |
+| Admit | Start a model worker only when unsettled pool count is less than that limit |
+| Batch start | Mark admitted members, start model members concurrently, settle each on completion |
+| Partial failure | `independent-settle` only: settle one pending by dispatch id; siblings stay running |
+| Status | Report every unsettled worker; do not claim idle while pool or family pendings exist |
+
+Historical host limits (before S4):
+
+1. `modelSlots = 1` partitioned model capacity to one isolated attempt per pass.
+2. Deferred model pendings settled as `interrupted` solely for that one seat.
+3. Serial await of one model worker before the next start.
+
+Those limits are not the product bar after S4.
+
+Free-slot lifetime after S4 (protocol in `src/pi/isolated-free-slot-protocol.ts`):
+
+1. Bind free slots under the free-slot lock for start-node and pool register only.
+2. Release free slots before the long isolated process await.
+3. Re-bind under the free-slot lock for settlement only.
+4. MemberContext and cancel mirrors are authority during unlocked await.
+
+Deterministic and current-session paths may still bind free slots for their full duration. Only the isolated model worker path uses the short-bind protocol.
+
+Host commit aligns with free isolated seats (S4 Issue 8):
+
+1. Before concurrent commit, the host keeps only free-seat model members plus deterministic members from the selection.
+2. The host does not commit model pendings it cannot mark and start in this pass.
+3. Uncommitted selected members can be selected again when seats free (controller re-enters after the current pass).
+4. Interrupt remains only on mark failure, not on capacity.
+5. Domain selection with `treatPendingAsOccupancy` remains the primary capacity gate for pending occupancy.
+
+Family bag writes for concurrent isolated settle (S4 Issues 6–7, 9–10):
+
+1. Member stream replace and family pending settle run under the free-slot lock in one critical section.
+2. The bag is reloaded under that lock after settlement awaits.
+3. Post-dispatch `persistNonRootMemberUpdate` is skipped when isolated settle already wrote the member (avoids stale batch-start base clobber).
+4. Residual member persist (when not skipped) reloads and writes entirely under the free-slot lock.
+5. Concurrent model batch defers child return to one controller-level `applyPendingChildReturns` pass after `Promise.all`; each return reloads the bag under the free-slot lock.
+
+## 10. Non-goals
 
 This Gate 1.2 surface document does not close:
 
-1. Gate 1.3 live multi-pending concurrent family acceptance under real Pi (case script and automated substitute: `docs/gate1-3-concurrent-family-live-acceptance.md`; host model-slot limits apply; ledger **Live** still open);
+1. Gate 1.3 live multi-pending concurrent family acceptance under real Pi (case script and automated substitute: `docs/gate1-3-concurrent-family-live-acceptance.md`; host pool capacity is N under policy after S4; ledger **Live** still open until real Pi dogfood);
 2. Gate 2 synthesis or aggregate fan-in;
 3. persisted separate concurrency occupancy documents beyond family pendings;
 4. partial-failure modes other than `independent-settle`;
-5. automatic sibling fail-on-first failure as a product default.
+5. automatic sibling fail-on-first failure as a product default;
+6. full removal of free-slot bind for deterministic and current-session nested helpers.
 
-## 10. Related files and tests
+## 11. Related files and tests
 
-### 10.1 Source
+### 11.1 Source
 
 - `src/pi/family-product-dispatch.ts`
 - `src/pi/family-controller-host.ts` (`interruptAllFamilyPendingsForHost`)
-- `src/pi/isolated-root-dispatch.ts` (`ActiveIsolatedRootAttempt.familyDispatchId`)
-- `src/extension.ts` (restore sweep; `/hypagraph reclaim-pending`)
+- `src/pi/isolated-root-dispatch.ts` (pool helpers; `ActiveIsolatedRootAttempt.familyDispatchId`)
+- `src/pi/isolated-free-slot-protocol.ts` (short free-slot hold protocol for isolated workers)
+- `src/pi/session-context.ts` (`workerPool` Map)
+- `src/extension.ts` (batch concurrent start; restore sweep; `/hypagraph reclaim-pending`)
 - `src/domain/concurrency-limits.ts`
 - `src/domain/concurrency-groups.ts`
 - `src/domain/family-concurrent-dispatch.ts`
@@ -205,15 +255,17 @@ This Gate 1.2 surface document does not close:
 - `src/ui/family-surface.ts`
 - `tests/s2-family-pending-restore-sweep.test.ts`
 
-### 10.2 Tests
+### 11.2 Tests
 
 - `tests/gate1-2-concurrency-policy-surface.test.ts`
 - `tests/gate1-1-multi-pending-family.test.ts`
 - `tests/gate1-3-concurrent-family-live-acceptance.test.ts` (Gate 1.3 automated substitute; not Live evidence)
+- `tests/s4-worker-pool-concurrent-fanout.test.ts` (S4 pool, free-slot protocol, concurrent fan-out)
+- `tests/isolated-root-dispatch.test.ts` (pool helpers)
 - `tests/m8-s7-global-and-per-executor-concurrency-limits.test.ts`
 - `tests/m8-s8-concurrency-groups-and-fairness.test.ts`
 
-### 10.3 Related docs
+### 11.3 Related docs
 
 - `docs/session-handoff.md`
 - `docs/gate1-3-concurrent-family-live-acceptance.md`

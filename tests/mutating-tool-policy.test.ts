@@ -61,11 +61,9 @@ describe("mutating tool policy", () => {
     expect(isHypagraphFamilyControlToolDuringWorker("hypagoal_create_child")).toBe(true);
     expect(extensionSource).toMatch(/child_create_blocked_active_worker_node/);
     expect(extensionSource).toMatch(/isHypagraphFamilyControlToolDuringWorker/);
-    // Fence: no blanket execute reject that blocks create-child solely for any unsettled worker
-    // without the same-node comparison (guard must require parentNodeId === attempt.nodeId).
-    expect(extensionSource).toMatch(
-      /input\.parentNodeId === activeIsolatedRootAttempt\.nodeId/,
-    );
+    // Fence: same-node guard checks the pool via findIsolatedWorkerByNodeId (S4).
+    // Parent node match remains the only worker create-child block.
+    expect(extensionSource).toMatch(/findIsolatedWorkerByNodeId/);
   });
 
   it("bans current-session on non-root members with a clear reason", () => {

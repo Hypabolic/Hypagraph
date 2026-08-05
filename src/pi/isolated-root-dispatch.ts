@@ -525,3 +525,214 @@ export function resolveProfileForNode(
   const node: NodeDefinition | undefined = state.definition.nodes.find((item) => item.id === nodeId);
   return resolveModelNodeExecutorProfile({ node: node ?? null });
 }
+
+// ---------------------------------------------------------------------------
+// Multi-worker pool (S4). Host memory only. Learn structure from pi-subagents
+// active run registry; do not import that package.
+// ---------------------------------------------------------------------------
+
+/**
+ * Keyed registry of in-flight isolated model attempts.
+ * Key is familyDispatchId when present, else attemptId.
+ */
+export type IsolatedWorkerPool = Map<string, ActiveIsolatedRootAttempt>;
+
+/** Create an empty multi-worker pool. */
+export function createIsolatedWorkerPool(): IsolatedWorkerPool {
+  return new Map();
+}
+
+/**
+ * Stable host key for one active attempt.
+ * Prefer familyDispatchId when the attempt belongs to a family pending.
+ */
+export function isolatedWorkerPoolKey(active: ActiveIsolatedRootAttempt): string {
+  return active.familyDispatchId ?? active.attemptId;
+}
+
+/** Register an unsettled attempt. Overwrites an existing entry with the same key. */
+export function registerIsolatedWorker(
+  pool: IsolatedWorkerPool,
+  active: ActiveIsolatedRootAttempt,
+): string {
+  const key = isolatedWorkerPoolKey(active);
+  pool.set(key, active);
+  return key;
+}
+
+/** Read one pool entry by key. */
+export function getIsolatedWorker(
+  pool: IsolatedWorkerPool,
+  key: string,
+): ActiveIsolatedRootAttempt | undefined {
+  return pool.get(key);
+}
+
+/** Remove one pool entry by key. Returns true when an entry was removed. */
+export function deleteIsolatedWorker(
+  pool: IsolatedWorkerPool,
+  key: string,
+): boolean {
+  return pool.delete(key);
+}
+
+/** Remove the pool entry for an attempt (by familyDispatchId or attemptId). */
+export function deleteIsolatedWorkerForAttempt(
+  pool: IsolatedWorkerPool,
+  active: ActiveIsolatedRootAttempt,
+): boolean {
+  return deleteIsolatedWorker(pool, isolatedWorkerPoolKey(active));
+}
+
+/** Count pool entries that are not yet settled. */
+export function countUnsettledIsolatedWorkers(pool: IsolatedWorkerPool): number {
+  let count = 0;
+  for (const entry of pool.values()) {
+    if (!entry.settled) count += 1;
+  }
+  return count;
+}
+
+/**
+ * True when a new model worker may start under the resolved global limit.
+ * Capacity is product globalConcurrency (default 2), not a hard-coded one.
+ */
+export function canAdmitIsolatedWorker(
+  pool: IsolatedWorkerPool,
+  globalConcurrency: number,
+): boolean {
+  if (!Number.isSafeInteger(globalConcurrency) || globalConcurrency < 1) {
+    return false;
+  }
+  return countUnsettledIsolatedWorkers(pool) < globalConcurrency;
+}
+
+/** Find an unsettled (or any) pool entry by attempt id. */
+export function findIsolatedWorkerByAttemptId(
+  pool: IsolatedWorkerPool,
+  attemptId: string,
+): ActiveIsolatedRootAttempt | undefined {
+  for (const entry of pool.values()) {
+    if (entry.attemptId === attemptId) return entry;
+  }
+  return undefined;
+}
+
+/**
+ * Find a pool entry by node id.
+ * When workflowId is set, match that member workflow only.
+ */
+export function findIsolatedWorkerByNodeId(
+  pool: IsolatedWorkerPool,
+  nodeId: string,
+  workflowId?: string,
+): ActiveIsolatedRootAttempt | undefined {
+  for (const entry of pool.values()) {
+    if (entry.nodeId !== nodeId) continue;
+    if (workflowId !== undefined && entry.workflowId !== workflowId) continue;
+    return entry;
+  }
+  return undefined;
+}
+
+/** Find a pool entry by member workflow id. */
+export function findIsolatedWorkerByWorkflowId(
+  pool: IsolatedWorkerPool,
+  workflowId: string,
+): ActiveIsolatedRootAttempt | undefined {
+  for (const entry of pool.values()) {
+    if (entry.workflowId === workflowId) return entry;
+  }
+  return undefined;
+}
+
+/** Find a pool entry by family pending dispatch id. */
+export function findIsolatedWorkerByFamilyDispatchId(
+  pool: IsolatedWorkerPool,
+  familyDispatchId: string,
+): ActiveIsolatedRootAttempt | undefined {
+  return pool.get(familyDispatchId)
+    ?? [...pool.values()].find((entry) => entry.familyDispatchId === familyDispatchId);
+}
+
+/** List all unsettled pool entries (stable insertion order of the Map). */
+export function listUnsettledIsolatedWorkers(
+  pool: IsolatedWorkerPool,
+): ActiveIsolatedRootAttempt[] {
+  const list: ActiveIsolatedRootAttempt[] = [];
+  for (const entry of pool.values()) {
+    if (!entry.settled) list.push(entry);
+  }
+  return list;
+}
+
+/**
+ * Abort every unsettled pool entry.
+ * Returns deep-cloned teardown snapshots (cancel mirrors included) for settle.
+ */
+export function abortAllUnsettledIsolatedWorkers(
+  pool: IsolatedWorkerPool,
+  reason: string,
+): ActiveIsolatedRootAttempt[] {
+  const aborted: ActiveIsolatedRootAttempt[] = [];
+  for (const entry of pool.values()) {
+    if (entry.settled) continue;
+    try {
+      entry.abortController.abort(reason);
+    } catch {
+      // Abort must not throw into restore/shutdown paths.
+    }
+    aborted.push(cloneActiveIsolatedForTeardown(entry));
+  }
+  return aborted;
+}
+
+/**
+ * Deep-clone cancel mirrors for mid-flight teardown settle.
+ * Keeps abortController reference so abort still reaches the live attempt.
+ */
+export function cloneActiveIsolatedForTeardown(
+  active: ActiveIsolatedRootAttempt,
+): ActiveIsolatedRootAttempt {
+  return {
+    ...active,
+    ...(active.cancelSnapshot === undefined
+      ? {}
+      : { cancelSnapshot: structuredClone(active.cancelSnapshot) }),
+    ...(active.cancelEvents === undefined
+      ? {}
+      : { cancelEvents: structuredClone(active.cancelEvents) }),
+  };
+}
+
+/**
+ * Clear every pool entry (settled and unsettled).
+ * Call after abort and orphan settle on restore, branch change, or shutdown.
+ */
+export function clearIsolatedWorkerPool(pool: IsolatedWorkerPool): void {
+  pool.clear();
+}
+
+/**
+ * Format one worker status line for /hypagraph status and executor status.
+ */
+export function formatIsolatedWorkerStatusLine(
+  active: ActiveIsolatedRootAttempt,
+  options?: { includeElapsed?: boolean; nowMs?: number },
+): string {
+  const includeElapsed = options?.includeElapsed !== false;
+  let elapsedPart = "";
+  if (includeElapsed) {
+    const nowMs = options?.nowMs ?? Date.now();
+    const elapsedMs = nowMs - Date.parse(active.startedAt);
+    const elapsed = Number.isFinite(elapsedMs)
+      ? `${Math.max(0, Math.round(elapsedMs / 1000))}s`
+      : "unknown";
+    elapsedPart = `, elapsed ${elapsed}`;
+  }
+  return (
+    `Worker: member '${active.goalId}' node '${active.nodeId}' `
+    + `attempt '${active.attemptId}' `
+    + `(${active.profile.kind}${elapsedPart})`
+  );
+}

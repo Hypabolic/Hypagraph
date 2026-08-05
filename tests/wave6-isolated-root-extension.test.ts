@@ -246,7 +246,7 @@ describe("Wave 6 root isolated dispatch extension (S6.2)", () => {
     await value.commands.get("hypagraph")!.handler("executor status", value.ctx);
     const output = value.notify.mock.calls.map((call) => String(call[0])).join("\n");
     expect(output).toContain("Default model task routing: isolated-pi");
-    expect(output).toContain("Root worker: none");
+    expect(output).toContain("Worker: none");
   });
 
   it("blocks orchestrator mutating tools while a root worker is active (S6.6)", async () => {
@@ -375,7 +375,7 @@ describe("Wave 6 root isolated dispatch extension (S6.2)", () => {
       value.notify.mockClear();
       await value.commands.get("hypagraph")!.handler("executor status", value.ctx);
       const executorStatus = value.notify.mock.calls.map((call) => String(call[0])).join("\n");
-      expect(executorStatus).toContain("Root worker: none");
+      expect(executorStatus).toContain("Worker: none");
     } finally {
       await baseHost.teardownOnRestore({ kind: "other", reason: "test cleanup" });
       bindActiveIsolatedPiHost(undefined);

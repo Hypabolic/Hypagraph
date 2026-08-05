@@ -19,6 +19,7 @@ import { recoverInterruptedEffects } from "./effect/recovery.js";
 import { evaluateCheckStart } from "./domain/check-policy.js";
 import type { GoalFamilyRuntime } from "./domain/goal-family.js";
 import type {
+  Diagnostic,
   DomainEvent,
   EvidenceReference,
   FactInput,
@@ -27,6 +28,7 @@ import type {
   InteractionDefinition,
   PersistedHypagraph,
 } from "./domain/model.js";
+import type { ExecutorContextEnvelope } from "./domain/executor-contract.js";
 import { InteractionDialogComponent, type InteractionDialogResult } from "./pi/interaction-dialog.js";
 import {
   hostSupportsPostCreateDock,
@@ -155,13 +157,27 @@ import {
   materializeIsolatedPiContext,
   type IsolatedPiHost,
 } from "./pi/isolated-pi-executor.js";
+import { DEFAULT_GLOBAL_CONCURRENCY } from "./domain/concurrency-limits.js";
+import { applyMemberStreamAndPendingSettle } from "./pi/family-concurrent-bag.js";
+import { runIsolatedWithFreeSlotProtocol } from "./pi/isolated-free-slot-protocol.js";
 import {
+  abortAllUnsettledIsolatedWorkers,
   acceptIsolatedRootSettlement,
   buildOrphanedTaskCancelCommands,
   buildPostSubmitVerificationCommands,
+  canAdmitIsolatedWorker,
+  clearIsolatedWorkerPool,
+  cloneActiveIsolatedForTeardown,
+  countUnsettledIsolatedWorkers,
   DEFAULT_ISOLATED_ROOT_TIMEOUT_MS,
+  deleteIsolatedWorkerForAttempt,
+  findIsolatedWorkerByAttemptId,
+  findIsolatedWorkerByNodeId,
+  formatIsolatedWorkerStatusLine,
   isolatedRootSettleMeta,
+  listUnsettledIsolatedWorkers,
   prepareIsolatedRootAttempt,
+  registerIsolatedWorker,
   routeRootModelLaneAction,
   withHostTimestamp,
   type ActiveIsolatedRootAttempt,
@@ -658,10 +674,30 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
    */
   let demoTour: { ids: readonly string[]; index: number } | undefined;
   /**
-   * In-flight root isolated model attempt (host memory).
-   * Default task work uses this path instead of orchestrator follow-up.
+   * Multi-worker pool of in-flight isolated model attempts (S4).
+   * Lives on SessionContext.workerPool. Capacity is resolved globalConcurrency.
    */
-  let activeIsolatedRootAttempt: ActiveIsolatedRootAttempt | undefined;
+  const isolatedWorkerPool = (): Map<string, ActiveIsolatedRootAttempt> =>
+    sessionContext.workerPool;
+  /**
+   * Serializes free-slot start and settle critical sections so concurrent
+   * isolated workers do not clobber free host state (S4 free-slot remnant).
+   */
+  let isolatedFreeSlotChain: Promise<void> = Promise.resolve();
+  const withIsolatedFreeSlotLock = async <T>(fn: () => Promise<T>): Promise<T> => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const previous = isolatedFreeSlotChain;
+    isolatedFreeSlotChain = previous.then(() => gate);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
   /**
    * Latest family record known to the host (create, controller load, persist, return).
    * session_shutdown has no branch ctx; cancel uses this for non-root settle (R3).
@@ -686,13 +722,24 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
    * queueGoalContinuation and rootMemberContext must not treat free slots as desk root.
    */
   let nonRootLiveSlotBindDepth = 0;
+  /**
+   * Workflow ids whose member stream was already written to the family bag under
+   * the free-slot lock by the isolated settle path (S4 Issue 6).
+   * Post-dispatch persistNonRootMemberUpdate must skip these to avoid clobber.
+   */
+  const isolatedFamilyPersistedWorkflowIds = new Set<string>();
 
-  /** Keep mid-flight cancel mirrors on the active isolated attempt (R3). */
+  /**
+   * Keep mid-flight cancel mirrors on unsettled isolated attempts (R3 / S4).
+   * Updates every pool entry whose workflow matches free host state.
+   */
   const mirrorActiveIsolatedCancelState = (): void => {
-    if (!activeIsolatedRootAttempt || activeIsolatedRootAttempt.settled || !state) return;
-    if (state.workflowId !== activeIsolatedRootAttempt.workflowId) return;
-    activeIsolatedRootAttempt.cancelSnapshot = structuredClone(state);
-    activeIsolatedRootAttempt.cancelEvents = structuredClone(events);
+    if (!state) return;
+    for (const active of listUnsettledIsolatedWorkers(isolatedWorkerPool())) {
+      if (state.workflowId !== active.workflowId) continue;
+      active.cancelSnapshot = structuredClone(state);
+      active.cancelEvents = structuredClone(events);
+    }
   };
 
   /** Clear free host family cache and session bag family slot together. */
@@ -800,13 +847,9 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     clearPostCreateGate();
   };
 
+  /** Abort every unsettled isolated worker in the pool (S4). */
   const abortActiveIsolatedRootAttempt = (reason: string): void => {
-    if (!activeIsolatedRootAttempt || activeIsolatedRootAttempt.settled) return;
-    try {
-      activeIsolatedRootAttempt.abortController.abort(reason);
-    } catch {
-      // Abort must not throw into restore/shutdown paths.
-    }
+    abortAllUnsettledIsolatedWorkers(isolatedWorkerPool(), reason);
   };
 
   /**
@@ -934,8 +977,9 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     // Mark the tracked attempt settled so an in-flight dispatchIsolatedRootModelTask
     // does not apply a second settlement after user cancel or restore (R3).
     tracked.settled = true;
-    if (activeIsolatedRootAttempt?.attemptId === tracked.attemptId) {
-      activeIsolatedRootAttempt.settled = true;
+    const poolEntry = findIsolatedWorkerByAttemptId(isolatedWorkerPool(), tracked.attemptId);
+    if (poolEntry) {
+      poolEntry.settled = true;
     }
 
     // Clear the matching family pending so orphan cancel frees occupancy (S2).
@@ -1149,11 +1193,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const ensureNoActiveExecution = (): void => {
     const hostBlock = activeHostExecutionBlockReason("another workflow change");
     if (hostBlock) throw new Error(hostBlock);
-    if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
+    const unsettledWorkers = listUnsettledIsolatedWorkers(isolatedWorkerPool());
+    if (unsettledWorkers.length > 0) {
+      const first = unsettledWorkers[0]!;
+      const countLabel = unsettledWorkers.length === 1
+        ? "An isolated model worker"
+        : `${unsettledWorkers.length} isolated model workers`;
       throw new Error(
-        `An isolated model worker owns node '${activeIsolatedRootAttempt.nodeId}' `
-        + `(attempt '${activeIsolatedRootAttempt.attemptId}'). `
-        + "Use /hypagraph executor cancel to stop it, or let it finish before another workflow change.",
+        `${countLabel} in flight (example: node '${first.nodeId}', `
+        + `attempt '${first.attemptId}'). `
+        + "Use /hypagraph executor cancel to stop them, or let them finish before another workflow change.",
       );
     }
     if (isolatedPiController.hasActiveProcesses()) {
@@ -1199,25 +1248,16 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
     staleContinuationTurn = false;
     revisionProposalHandled = false;
     restoreContinuationTools();
-    // Drop in-flight root worker bookkeeping. Abort, teardown, and cancel follow.
-    // Deep-clone cancel mirrors before clearing so mid-flight child settle still works (R3).
-    const orphanedRootAttempt = activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
-      ? {
-        ...activeIsolatedRootAttempt,
-        ...(activeIsolatedRootAttempt.cancelSnapshot === undefined
-          ? {}
-          : { cancelSnapshot: structuredClone(activeIsolatedRootAttempt.cancelSnapshot) }),
-        ...(activeIsolatedRootAttempt.cancelEvents === undefined
-          ? {}
-          : { cancelEvents: structuredClone(activeIsolatedRootAttempt.cancelEvents) }),
-      }
-      : undefined;
+    // Drop in-flight worker pool bookkeeping. Abort, teardown, and cancel follow.
+    // Deep-clone cancel mirrors before clearing so mid-flight child settle still works (R3 / S4).
+    const orphanedRootAttempts = listUnsettledIsolatedWorkers(isolatedWorkerPool())
+      .map((entry) => cloneActiveIsolatedForTeardown(entry));
     abortActiveIsolatedRootAttempt(
       branchChanged
         ? "The Pi session branch changed before the isolated worker completed."
         : "The Pi session reloaded before the isolated worker completed.",
     );
-    activeIsolatedRootAttempt = undefined;
+    clearIsolatedWorkerPool(isolatedWorkerPool());
     activeExecutions.cancelAll("The Pi session branch changed.");
     activeCodeExecutions.cancelAll("The Pi session branch changed.");
     activeEffectExecutions.cancelAll("The Pi session branch changed.");
@@ -1329,14 +1369,13 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Hypagraph could not close the interrupted action dispatch.
 ${formatDiagnostics(closed.diagnostics)}`, "warning");
       }
-      // Cancel the tracked member attempt when an isolated worker was torn down.
+      // Cancel each tracked member attempt when isolated workers were torn down (S4 pool).
       // Uses goalId/workflowId so child workers settle into the family record (R3).
       // familyDispatchId on the attempt also clears the matching family pending (S2).
-      if (orphanedRootAttempt) {
+      if (orphanedRootAttempts.length > 0) {
         const orphanReason = branchChanged
           ? "The Pi branch changed before the isolated model worker completed."
           : "The Pi session reloaded before the isolated model worker completed.";
-        const orphanCorrelation = `isolated-root-orphan:${branchChanged ? "branch" : "restore"}:${randomUUID()}`;
         // Same branch-local precedence as pending sweep (S2 Issue 1).
         const familyForCancel = resolveFamilyRecordForPendingSweep({
           ...(familyProjection?.family === undefined
@@ -1350,14 +1389,18 @@ ${formatDiagnostics(closed.diagnostics)}`, "warning");
             : { hostLatestFamily: latestFamilyRecord }),
         });
         if (familyForCancel) rememberFamilyRecord(familyForCancel);
-        await settleTrackedIsolatedAttempt({
-          tracked: orphanedRootAttempt,
-          reason: orphanReason,
-          correlationId: orphanCorrelation,
-          store: recoveryStore,
-          ...(familyForCancel === undefined ? {} : { family: familyForCancel }),
-          notify: (message, level) => ctx.ui.notify(message, level),
-        });
+        for (const orphanedRootAttempt of orphanedRootAttempts) {
+          const orphanCorrelation =
+            `isolated-root-orphan:${branchChanged ? "branch" : "restore"}:${randomUUID()}`;
+          await settleTrackedIsolatedAttempt({
+            tracked: orphanedRootAttempt,
+            reason: orphanReason,
+            correlationId: orphanCorrelation,
+            store: recoveryStore,
+            ...(familyForCancel === undefined ? {} : { family: familyForCancel }),
+            notify: (message, level) => ctx.ui.notify(message, level),
+          });
+        }
       }
       // Sweep stranded family pendings on reload and branch change (S2).
       // Mirrors interruptPendingActionDispatchAndCommit for multi-pending occupancy.
@@ -2278,6 +2321,11 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
    * Dispatch one default model task through an isolated worker.
    * Returns true when the controller may select the next action.
    * Returns false when the controller must stop this pass.
+   *
+   * Free-slot protocol (S4): bind under withIsolatedFreeSlotLock for
+   * start/register only; release before the process await; re-bind under
+   * lock for settlement. MemberContext is authority during unlocked await.
+   * Callers must not hold an outer free-slot bind across this function.
    */
   const dispatchIsolatedRootModelTask = async (
     ctx: ExtensionContext,
@@ -2285,12 +2333,26 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       ReturnType<typeof routeRootModelLaneAction>,
       { kind: "isolated-worker" }
     >,
-    options?: { familyDispatchId?: string },
+    options?: {
+      familyDispatchId?: string;
+      /** Resolved product globalConcurrency for pool admit. Default DEFAULT_GLOBAL_CONCURRENCY. */
+      globalConcurrency?: number;
+      /**
+       * Member working set for this worker. Required for free-slot re-bind
+       * during start and settle. Authority during unlocked await.
+       */
+      member: MemberContext;
+    },
   ): Promise<boolean> => {
-    if (!state?.goal) return false;
-    if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
+    const member = options?.member;
+    if (!member?.state?.goal) return false;
+    const globalConcurrency = options?.globalConcurrency ?? DEFAULT_GLOBAL_CONCURRENCY;
+    if (!canAdmitIsolatedWorker(isolatedWorkerPool(), globalConcurrency)) {
+      const unsettled = countUnsettledIsolatedWorkers(isolatedWorkerPool());
       ctx.ui.notify(
-        `Hypagoal already has an isolated worker on node '${activeIsolatedRootAttempt.nodeId}'.`,
+        `Hypagoal isolated worker pool is at capacity `
+        + `(${unsettled}/${globalConcurrency} unsettled). `
+        + `Cannot start node '${decision.action.nodeId}'.`,
         "warning",
       );
       return false;
@@ -2316,226 +2378,400 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     const runGeneration = sessionGeneration;
     const runBranch = branchGeneration;
 
-    const prepared = prepareIsolatedRootAttempt({
-      state,
-      family,
-      action: decision.action,
-      profile: decision.resolved.profile,
-      attemptId,
-      operationId,
-      sessionGeneration: runGeneration,
-      branchGeneration: runBranch,
-      rootObjective: state.definition.goal,
-      startedAt: at,
-      timeoutMs: DEFAULT_ISOLATED_ROOT_TIMEOUT_MS,
-      ...(options?.familyDispatchId !== undefined
-        ? { familyDispatchId: options.familyDispatchId }
-        : {}),
-    });
-    if (!prepared.ok) {
-      ctx.ui.notify(
-        `Hypagoal isolated model dispatch was not prepared.\n${formatDiagnostics(prepared.diagnostics)}`,
-        "warning",
-      );
-      return false;
-    }
+    type StartedOk = {
+      ok: true;
+      active: ActiveIsolatedRootAttempt;
+      context: ExecutorContextEnvelope;
+    };
+    type StartedFail = {
+      ok: false;
+      reason: "no-state" | "capacity" | "prepare" | "start" | "materialize";
+      diagnostics?: Diagnostic[];
+    };
 
-    if (prepared.startCommands.length > 0) {
-      const started = await applyCommandsAndCommit(
-        eventStore.lease(),
-        state,
-        withHostTimestamp(prepared.startCommands, at),
-      );
-      if (!started.ok) {
-        ctx.ui.notify(
-          `Hypagoal could not start task '${decision.action.nodeId}' for isolated dispatch.\n${formatDiagnostics(started.diagnostics)}`,
-          "warning",
-        );
-        return false;
-      }
-      state = started.value.state;
-      events.push(...started.value.events);
-      paintUi(ctx);
-    }
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let lastActive: ActiveIsolatedRootAttempt | undefined;
 
-    // Re-materialize after start so identity matches committed revision/state.
-    const rematerialized = materializeIsolatedPiContext({
-      family,
-      state,
-      nodeId: prepared.active.nodeId,
-      attemptId: prepared.active.attemptId,
-      profile: decision.resolved.profile,
-      rootObjective: state.definition.goal,
-    });
-    if (!rematerialized.ok) {
-      ctx.ui.notify(
-        `Hypagoal isolated context was not materialized.\n${formatDiagnostics(rematerialized.diagnostics)}`,
-        "warning",
-      );
-      return false;
-    }
-
-    activeIsolatedRootAttempt = prepared.active;
-    // Mirror post-start (or continue) state so restore/cancel can settle mid-flight (R3).
-    // Must run after start-node commit so cancelSnapshot has a running attempt.
-    mirrorActiveIsolatedCancelState();
-    const timeoutMs = prepared.active.timeoutMs ?? DEFAULT_ISOLATED_ROOT_TIMEOUT_MS;
-    const timeoutHandle = setTimeout(() => {
-      prepared.active.abortController.abort(
-        `Isolated model worker timed out after ${timeoutMs}ms.`,
-      );
-    }, timeoutMs);
-    ctx.ui.notify(
-      `Hypagoal started isolated worker for task '${prepared.active.nodeId}' `
-      + `(profile ${decision.resolved.profile.kind}, attempt '${prepared.active.attemptId}', `
-      + `timeout ${Math.round(timeoutMs / 1000)}s).`,
-      "info",
-    );
-    paintUi(ctx);
-
-    let settlement;
     try {
-      settlement = await dispatchIsolatedPiAttempt(
-        rematerialized.value,
-        prepared.active.abortController.signal,
-        isolatedRootSettleMeta(operationId, new Date().toISOString()),
-      );
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      clearTimeout(timeoutHandle);
-      // start-node may already be committed. Cancel the durable attempt so the
-      // runtime does not keep a running task with no tracked abort handle.
-      try {
-        prepared.active.abortController.abort(
-          `Isolated model worker threw before settlement: ${detail}`,
-        );
-      } catch {
-        // Abort must not throw into the catch path.
-      }
-      if (state && sessionGeneration === runGeneration && branchGeneration === runBranch) {
-        const cancelCommands = buildOrphanedTaskCancelCommands({
-          state,
-          at: new Date().toISOString(),
-          reason: `Isolated model worker threw before settlement: ${detail}`,
-          correlationId: `isolated-root-throw:${randomUUID()}`,
-          only: {
-            nodeId: prepared.active.nodeId,
-            attemptId: prepared.active.attemptId,
-          },
-        });
-        if (cancelCommands.length > 0) {
-          try {
-            const cancelled = await applyCommandsAndCommit(
+      return await runIsolatedWithFreeSlotProtocol<StartedOk, Awaited<ReturnType<typeof dispatchIsolatedPiAttempt>>>({
+        withLock: withIsolatedFreeSlotLock,
+        bindFreeSlots: () => bindMemberLiveSlots(member),
+        runStart: async (): Promise<StartedOk> => {
+          // Member is bound into free slots for this critical section only.
+          if (!state?.goal || !member.state) {
+            const fail: StartedFail = { ok: false, reason: "no-state" };
+            throw Object.assign(new Error("isolated-start-fail"), { startedFail: fail });
+          }
+          if (!canAdmitIsolatedWorker(isolatedWorkerPool(), globalConcurrency)) {
+            const fail: StartedFail = { ok: false, reason: "capacity" };
+            throw Object.assign(new Error("isolated-start-fail"), { startedFail: fail });
+          }
+          // Prefer free slots (bound member) for prepare so start-node matches commit target.
+          const prepared = prepareIsolatedRootAttempt({
+            state,
+            family,
+            action: decision.action,
+            profile: decision.resolved.profile,
+            attemptId,
+            operationId,
+            sessionGeneration: runGeneration,
+            branchGeneration: runBranch,
+            rootObjective: state.definition.goal,
+            startedAt: at,
+            timeoutMs: DEFAULT_ISOLATED_ROOT_TIMEOUT_MS,
+            ...(options?.familyDispatchId !== undefined
+              ? { familyDispatchId: options.familyDispatchId }
+              : {}),
+          });
+          if (!prepared.ok) {
+            const fail: StartedFail = {
+              ok: false,
+              reason: "prepare",
+              diagnostics: prepared.diagnostics,
+            };
+            throw Object.assign(new Error("isolated-start-fail"), { startedFail: fail });
+          }
+
+          if (prepared.startCommands.length > 0) {
+            const startCommit = await applyCommandsAndCommit(
               eventStore.lease(),
               state,
-              cancelCommands,
+              withHostTimestamp(prepared.startCommands, at),
             );
-            if (cancelled.ok) {
-              state = cancelled.value.state;
-              events.push(...cancelled.value.events);
-              paintUi(ctx);
+            if (!startCommit.ok) {
+              const fail: StartedFail = {
+                ok: false,
+                reason: "start",
+                diagnostics: startCommit.diagnostics,
+              };
+              throw Object.assign(new Error("isolated-start-fail"), { startedFail: fail });
+            }
+            state = startCommit.value.state;
+            events.push(...startCommit.value.events);
+            // MemberContext is authority: sync mutations back before release.
+            syncMemberFromLiveSlots(member, { state, events });
+            paintUi(ctx);
+          }
+
+          const rematerialized = materializeIsolatedPiContext({
+            family,
+            state,
+            nodeId: prepared.active.nodeId,
+            attemptId: prepared.active.attemptId,
+            profile: decision.resolved.profile,
+            rootObjective: state.definition.goal,
+          });
+          if (!rematerialized.ok) {
+            const fail: StartedFail = {
+              ok: false,
+              reason: "materialize",
+              diagnostics: rematerialized.diagnostics,
+            };
+            throw Object.assign(new Error("isolated-start-fail"), { startedFail: fail });
+          }
+
+          // Cancel mirrors on the attempt: use member stream (authority), not free root.
+          prepared.active.cancelSnapshot = structuredClone(member.state ?? state);
+          prepared.active.cancelEvents = structuredClone(member.events.length > 0
+            ? member.events
+            : events);
+          registerIsolatedWorker(isolatedWorkerPool(), prepared.active);
+          lastActive = prepared.active;
+          return {
+            ok: true as const,
+            active: prepared.active,
+            context: rematerialized.value,
+          };
+        },
+        awaitWorker: async (started) => {
+          lastActive = started.active;
+          const timeoutMs = started.active.timeoutMs ?? DEFAULT_ISOLATED_ROOT_TIMEOUT_MS;
+          timeoutHandle = setTimeout(() => {
+            started.active.abortController.abort(
+              `Isolated model worker timed out after ${timeoutMs}ms.`,
+            );
+          }, timeoutMs);
+          ctx.ui.notify(
+            `Hypagoal started isolated worker for task '${started.active.nodeId}' `
+            + `(profile ${decision.resolved.profile.kind}, attempt '${started.active.attemptId}', `
+            + `timeout ${Math.round(timeoutMs / 1000)}s).`,
+            "info",
+          );
+          paintUi(ctx);
+          // Free slots are released. MemberContext and cancel mirrors are authority.
+          return dispatchIsolatedPiAttempt(
+            started.context,
+            started.active.abortController.signal,
+            isolatedRootSettleMeta(operationId, new Date().toISOString()),
+          );
+        },
+        runSettle: async (started, settlement) => {
+          const preparedActive = started.active;
+          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) {
+            return false;
+          }
+          if (preparedActive.settled
+            || !findIsolatedWorkerByAttemptId(isolatedWorkerPool(), preparedActive.attemptId)
+            || findIsolatedWorkerByAttemptId(isolatedWorkerPool(), preparedActive.attemptId)?.settled) {
+            deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+            return true;
+          }
+
+          const accepted = acceptIsolatedRootSettlement({
+            active: preparedActive,
+            settlement,
+            sessionGeneration,
+            branchGeneration,
+          });
+          if (!accepted.ok) {
+            deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+            ctx.ui.notify(
+              `Hypagoal isolated settlement was not accepted for task '${preparedActive.nodeId}'. ${accepted.reason}`
+              + (accepted.diagnostics ? `\n${formatDiagnostics(accepted.diagnostics)}` : ""),
+              "warning",
+            );
+            return false;
+          }
+
+          // Free slots hold this member after re-bind. Prefer free slots, then mirrors.
+          let settleState = state && state.workflowId === preparedActive.workflowId
+            ? state
+            : (member.state && member.state.workflowId === preparedActive.workflowId
+              ? member.state
+              : preparedActive.cancelSnapshot);
+          let settleEvents = state && state.workflowId === preparedActive.workflowId
+            ? events
+            : (member.state && member.state.workflowId === preparedActive.workflowId
+              ? structuredClone(member.events)
+              : (preparedActive.cancelEvents
+                ? structuredClone(preparedActive.cancelEvents)
+                : undefined));
+          if (!settleState) {
+            const memberStream = latestFamilyRecord?.workflows[preparedActive.workflowId];
+            settleState = memberStream?.snapshot;
+            settleEvents = memberStream ? structuredClone(memberStream.events) : undefined;
+          }
+          if (!settleState) {
+            deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+            ctx.ui.notify(
+              `Hypagoal isolated settlement lost member stream for task '${preparedActive.nodeId}'.`,
+              "warning",
+            );
+            return false;
+          }
+
+          const settleAt = new Date().toISOString();
+          eventStore.noteWorkflowSequence(preparedActive.workflowId, settleState.sequence);
+          const committed = await applyCommandsAndCommit(
+            eventStore.lease(),
+            settleState,
+            accepted.commands.map((command) => ({ ...command, at: settleAt })),
+          );
+          if (!committed.ok) {
+            deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+            ctx.ui.notify(
+              `Hypagoal isolated settlement commands failed for task '${preparedActive.nodeId}'.\n${formatDiagnostics(committed.diagnostics)}`,
+              "warning",
+            );
+            return false;
+          }
+          let nextMemberState = committed.value.state;
+          let nextMemberEvents = [
+            ...(settleEvents ?? []),
+            ...committed.value.events,
+          ];
+
+          if (accepted.result.outcome === "submitted") {
+            const verifyCommands = buildPostSubmitVerificationCommands({
+              state: nextMemberState,
+              nodeId: preparedActive.nodeId,
+              attemptId: preparedActive.attemptId,
+              operationId,
+              at: new Date().toISOString(),
+            });
+            if (verifyCommands) {
+              const verified = await applyCommandsAndCommit(
+                eventStore.lease(),
+                nextMemberState,
+                verifyCommands,
+              );
+              if (!verified.ok) {
+                deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+                paintUi(ctx);
+                ctx.ui.notify(
+                  `Hypagoal isolated task '${preparedActive.nodeId}' submitted but verification failed.\n${formatDiagnostics(verified.diagnostics)}`,
+                  "warning",
+                );
+                return false;
+              }
+              nextMemberState = verified.value.state;
+              nextMemberEvents = [...nextMemberEvents, ...verified.value.events];
+            }
+          }
+
+          // Write settled stream into free slots (bound member) and MemberContext.
+          if (state && state.workflowId === preparedActive.workflowId) {
+            state = nextMemberState;
+            events = nextMemberEvents;
+          }
+          syncMemberFromLiveSlots(member, {
+            state: nextMemberState,
+            events: nextMemberEvents,
+          });
+
+          // Re-read family bag under the free-slot lock after all awaits so sibling
+          // settles that finished earlier are not lost (S4 Issue 6 / 7).
+          // Member stream replace + pending settle use the same merge helper as tests.
+          const familyForMember = latestFamilyRecord;
+          if (familyForMember && familyForMember.workflows[preparedActive.workflowId]) {
+            let baseForMerge = familyForMember;
+            // After release, free slots will restore desk root; merge live root when free is still root.
+            if (state && state.workflowId !== preparedActive.workflowId) {
+              baseForMerge = mergeLiveRootIntoFamily(baseForMerge, {
+                workflowId: state.workflowId,
+                events,
+                snapshot: state,
+              });
+            }
+            const applied = applyMemberStreamAndPendingSettle({
+              family: baseForMerge,
+              workflowId: preparedActive.workflowId,
+              nextEvents: nextMemberEvents,
+              nextSnapshot: nextMemberState,
+              at: new Date().toISOString(),
+              ...(options?.familyDispatchId !== undefined
+                ? { dispatchId: options.familyDispatchId, settleOutcome: "completed" as const }
+                : {}),
+            });
+            if (applied.ok) {
+              appendOneMemberFamilyRecord(pi, applied.family);
+              rememberFamilyRecord(applied.family);
+              // Skip post-dispatch persistNonRootMemberUpdate for this workflow (Issue 6).
+              isolatedFamilyPersistedWorkflowIds.add(preparedActive.workflowId);
             } else {
               ctx.ui.notify(
-                `Hypagoal could not cancel the orphaned task after an isolated worker throw.\n${formatDiagnostics(cancelled.diagnostics)}`,
+                `Hypagoal could not merge isolated settle into the family bag for `
+                + `'${preparedActive.workflowId}'. ${applied.reason}`,
                 "warning",
               );
             }
-          } catch {
-            // Still clear host bookkeeping below.
           }
-        }
-      }
-      activeIsolatedRootAttempt = undefined;
-      ctx.ui.notify(
-        `Hypagoal isolated worker threw for task '${prepared.active.nodeId}'. ${detail}`,
-        "warning",
-      );
-      return false;
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
 
-    if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) {
-      // Restore already reclaimed the process and cleared bookkeeping.
-      return false;
-    }
-
-    // User cancel / external settle already cancelled the attempt (R3).
-    if (prepared.active.settled || !activeIsolatedRootAttempt
-      || activeIsolatedRootAttempt.attemptId !== prepared.active.attemptId) {
-      activeIsolatedRootAttempt = undefined;
-      return true;
-    }
-
-    const accepted = acceptIsolatedRootSettlement({
-      active: prepared.active,
-      settlement,
-      sessionGeneration,
-      branchGeneration,
-    });
-    if (!accepted.ok) {
-      activeIsolatedRootAttempt = undefined;
-      ctx.ui.notify(
-        `Hypagoal isolated settlement was not accepted for task '${prepared.active.nodeId}'. ${accepted.reason}`
-        + (accepted.diagnostics ? `\n${formatDiagnostics(accepted.diagnostics)}` : ""),
-        "warning",
-      );
-      return false;
-    }
-
-    const settleAt = new Date().toISOString();
-    const committed = await applyCommandsAndCommit(
-      eventStore.lease(),
-      state,
-      accepted.commands.map((command) => ({ ...command, at: settleAt })),
-    );
-    if (!committed.ok) {
-      activeIsolatedRootAttempt = undefined;
-      ctx.ui.notify(
-        `Hypagoal isolated settlement commands failed for task '${prepared.active.nodeId}'.\n${formatDiagnostics(committed.diagnostics)}`,
-        "warning",
-      );
-      return false;
-    }
-    state = committed.value.state;
-    events.push(...committed.value.events);
-
-    if (accepted.result.outcome === "submitted") {
-      const verifyCommands = buildPostSubmitVerificationCommands({
-        state,
-        nodeId: prepared.active.nodeId,
-        attemptId: prepared.active.attemptId,
-        operationId,
-        at: new Date().toISOString(),
-      });
-      if (verifyCommands) {
-        const verified = await applyCommandsAndCommit(
-          eventStore.lease(),
-          state,
-          verifyCommands,
-        );
-        if (!verified.ok) {
-          activeIsolatedRootAttempt = undefined;
+          deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
           paintUi(ctx);
           ctx.ui.notify(
-            `Hypagoal isolated task '${prepared.active.nodeId}' submitted but verification failed.\n${formatDiagnostics(verified.diagnostics)}`,
+            `Hypagoal isolated worker finished task '${preparedActive.nodeId}' `
+            + `(outcome ${accepted.result.outcome}). ${accepted.summary}`.trim(),
+            accepted.result.outcome === "submitted" ? "info" : "warning",
+          );
+          return true;
+        },
+        runErrorCancel: async (started, error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          // Structured start failures use startedFail; do not cancel a non-started attempt.
+          const startedFail = (error as { startedFail?: StartedFail })?.startedFail;
+          if (startedFail) return;
+
+          const preparedActive = started?.active ?? lastActive;
+          if (!preparedActive) return;
+          try {
+            preparedActive.abortController.abort(
+              `Isolated model worker threw before settlement: ${detail}`,
+            );
+          } catch {
+            // Abort must not throw into the catch path.
+          }
+          if (sessionGeneration !== runGeneration || branchGeneration !== runBranch) {
+            deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+            return;
+          }
+          // Free slots hold this member after re-bind. Prefer free, then mirrors, then member.
+          let cancelState = state && state.workflowId === preparedActive.workflowId
+            ? state
+            : (member.state && member.state.workflowId === preparedActive.workflowId
+              ? member.state
+              : preparedActive.cancelSnapshot);
+          if (!cancelState) {
+            cancelState = latestFamilyRecord?.workflows[preparedActive.workflowId]?.snapshot;
+          }
+          if (cancelState) {
+            const cancelCommands = buildOrphanedTaskCancelCommands({
+              state: cancelState,
+              at: new Date().toISOString(),
+              reason: `Isolated model worker threw before settlement: ${detail}`,
+              correlationId: `isolated-root-throw:${randomUUID()}`,
+              only: {
+                nodeId: preparedActive.nodeId,
+                attemptId: preparedActive.attemptId,
+              },
+            });
+            if (cancelCommands.length > 0) {
+              try {
+                const cancelled = await applyCommandsAndCommit(
+                  eventStore.lease(),
+                  cancelState,
+                  cancelCommands,
+                );
+                if (cancelled.ok) {
+                  if (state && state.workflowId === preparedActive.workflowId) {
+                    state = cancelled.value.state;
+                    events = [...(preparedActive.cancelEvents ?? events), ...cancelled.value.events];
+                  }
+                  syncMemberFromLiveSlots(member, {
+                    state: cancelled.value.state,
+                    events: [
+                      ...(member.events),
+                      ...cancelled.value.events,
+                    ],
+                  });
+                  paintUi(ctx);
+                } else {
+                  ctx.ui.notify(
+                    `Hypagoal could not cancel the orphaned task after an isolated worker throw.\n${formatDiagnostics(cancelled.diagnostics)}`,
+                    "warning",
+                  );
+                }
+              } catch {
+                // Still clear host bookkeeping below.
+              }
+            }
+          }
+          deleteIsolatedWorkerForAttempt(isolatedWorkerPool(), preparedActive);
+          ctx.ui.notify(
+            `Hypagoal isolated worker threw for task '${preparedActive.nodeId}'. ${detail}`,
             "warning",
           );
-          return false;
+        },
+      }, { rethrowOnWorkerError: false, onWorkerErrorResult: false });
+    } catch (error) {
+      const startedFail = (error as { startedFail?: StartedFail })?.startedFail;
+      if (startedFail) {
+        if (startedFail.reason === "capacity") {
+          ctx.ui.notify(
+            `Hypagoal isolated worker pool is at capacity. Cannot start node '${decision.action.nodeId}'.`,
+            "warning",
+          );
+        } else if (
+          startedFail.reason === "prepare"
+          || startedFail.reason === "start"
+          || startedFail.reason === "materialize"
+        ) {
+          const label = startedFail.reason === "prepare"
+            ? "was not prepared"
+            : startedFail.reason === "start"
+              ? `could not start task '${decision.action.nodeId}' for isolated dispatch`
+              : "context was not materialized";
+          ctx.ui.notify(
+            `Hypagoal isolated model dispatch ${label}.\n${formatDiagnostics(startedFail.diagnostics ?? [])}`,
+            "warning",
+          );
         }
-        state = verified.value.state;
-        events.push(...verified.value.events);
+        return false;
       }
+      throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
-
-    activeIsolatedRootAttempt = undefined;
-    paintUi(ctx);
-    ctx.ui.notify(
-      `Hypagoal isolated worker finished task '${prepared.active.nodeId}' `
-      + `(outcome ${accepted.result.outcome}). ${accepted.summary}`.trim(),
-      accepted.result.outcome === "submitted" ? "info" : "warning",
-    );
-    return true;
   };
 
   /**
@@ -2629,121 +2865,168 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
    * Syncs the live parent stream into the family, commits returnChildGoalInFamily,
    * appends parent leave-wait events to the root event stream, and updates live state.
    * Child success does not complete the parent task.
+   *
+   * Each return mutation reloads latestFamilyRecord and holds withIsolatedFreeSlotLock
+   * for the full merge + append + remember so concurrent model settles cannot clobber
+   * the bag (S4 Issue 9).
    */
   const applyPendingChildReturns = async (
     ctx: ExtensionContext,
     familyRecord: PersistedGoalFamily,
   ): Promise<{ applied: number; family: PersistedGoalFamily }> => {
-    const live = state;
-    if (!live?.goal) return { applied: 0, family: familyRecord };
+    if (!state?.goal) return { applied: 0, family: familyRecord };
 
-    let parentState: HypagraphState = live;
-    let parentEvents: DomainEvent[] = events;
-    const parentWorkflowId = live.workflowId;
-
-    let family: PersistedGoalFamily = {
-      ...familyRecord,
-      workflows: {
-        ...familyRecord.workflows,
-        [parentWorkflowId]: {
-          events: structuredClone(parentEvents),
-          snapshot: structuredClone(parentState),
-        },
-      },
-    };
-
+    let family = familyRecord;
     let applied = 0;
     // Re-scan after each return so multiple terminal children can settle in one pass.
     let progress = true;
     while (progress) {
       progress = false;
-      for (const binding of Object.values(family.familySnapshot.bindings)) {
-        if (binding.status !== "active") continue;
-        const childMember = family.familySnapshot.members[binding.childGoalId];
-        if (!childMember) continue;
-        const childWorkflow = family.workflows[childMember.workflowId];
-        if (!childWorkflow) continue;
 
-        const pending = detectPendingChildReturn({
-          family,
-          childState: childWorkflow.snapshot,
-        });
-        if (!pending || pending.bindingId !== binding.bindingId) continue;
+      type ReturnStep =
+        | { did: false; family: PersistedGoalFamily }
+        | {
+          did: true;
+          family: PersistedGoalFamily;
+          notify: {
+            outcome: string;
+            bindingId: string;
+            childGoalId: string;
+            parentNodeId: string;
+            parentNodeStatus: string;
+            parentEffect: string;
+            level: "info" | "warning";
+          };
+        };
 
-        const previousParentSequence = parentState.sequence;
-        const returned = returnChildGoalInFamily({
-          family,
-          parentGoalId: pending.parentGoalId,
-          bindingId: pending.bindingId,
-          at: new Date().toISOString(),
-          outcome: pending.outcome,
-          ...(pending.facts.length > 0 ? { facts: pending.facts } : {}),
-          ...(pending.evidence.length > 0 ? { evidence: pending.evidence } : {}),
-          reason: pending.reason,
-        });
+      const step: ReturnStep = await withIsolatedFreeSlotLock(async (): Promise<ReturnStep> => {
+        const live = state;
+        if (!live?.goal) return { did: false, family };
 
-        if (!returned.ok) {
-          ctx.ui.notify(
-            `Child return was not applied for binding '${pending.bindingId}'.\n${formatDiagnostics(returned.diagnostics)}`,
-            "warning",
-          );
-          continue;
-        }
+        // Always reload under the free-slot / family lock (Issue 9).
+        let bag = latestFamilyRecord ?? family;
+        const parentWorkflowId = live.workflowId;
+        let parentState: HypagraphState = live;
+        let parentEvents: DomainEvent[] = events;
+        bag = {
+          ...bag,
+          workflows: {
+            ...bag.workflows,
+            [parentWorkflowId]: {
+              events: structuredClone(parentEvents),
+              snapshot: structuredClone(parentState),
+            },
+          },
+        };
 
-        const nextParentWorkflow = returned.family.workflows[parentWorkflowId];
-        if (!nextParentWorkflow) {
-          ctx.ui.notify(
-            `Child return committed without parent workflow '${parentWorkflowId}'.`,
-            "warning",
-          );
-          continue;
-        }
+        for (const binding of Object.values(bag.familySnapshot.bindings)) {
+          if (binding.status !== "active") continue;
+          const childMember = bag.familySnapshot.members[binding.childGoalId];
+          if (!childMember) continue;
+          const childWorkflow = bag.workflows[childMember.workflowId];
+          if (!childWorkflow) continue;
 
-        const appendedParentEvents = nextParentWorkflow.events.slice(parentEvents.length);
-        if (appendedParentEvents.length > 0) {
-          try {
-            await eventStore.lease().append({
-              workflowId: parentWorkflowId,
-              expectedSequence: previousParentSequence,
-              events: appendedParentEvents,
-              snapshot: nextParentWorkflow.snapshot,
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+          const pending = detectPendingChildReturn({
+            family: bag,
+            childState: childWorkflow.snapshot,
+          });
+          if (!pending || pending.bindingId !== binding.bindingId) continue;
+
+          const previousParentSequence = parentState.sequence;
+          const returned = returnChildGoalInFamily({
+            family: bag,
+            parentGoalId: pending.parentGoalId,
+            bindingId: pending.bindingId,
+            at: new Date().toISOString(),
+            outcome: pending.outcome,
+            ...(pending.facts.length > 0 ? { facts: pending.facts } : {}),
+            ...(pending.evidence.length > 0 ? { evidence: pending.evidence } : {}),
+            reason: pending.reason,
+          });
+
+          if (!returned.ok) {
             ctx.ui.notify(
-              `Child return committed to the family, but parent event append failed. ${message}`,
+              `Child return was not applied for binding '${pending.bindingId}'.\n${formatDiagnostics(returned.diagnostics)}`,
               "warning",
             );
             continue;
           }
+
+          const nextParentWorkflow = returned.family.workflows[parentWorkflowId];
+          if (!nextParentWorkflow) {
+            ctx.ui.notify(
+              `Child return committed without parent workflow '${parentWorkflowId}'.`,
+              "warning",
+            );
+            continue;
+          }
+
+          const appendedParentEvents = nextParentWorkflow.events.slice(parentEvents.length);
+          if (appendedParentEvents.length > 0) {
+            try {
+              // Hold the free-slot lock across append so concurrent settle cannot
+              // write the bag between return commit and remember.
+              await eventStore.lease().append({
+                workflowId: parentWorkflowId,
+                expectedSequence: previousParentSequence,
+                events: appendedParentEvents,
+                snapshot: nextParentWorkflow.snapshot,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              ctx.ui.notify(
+                `Child return committed to the family, but parent event append failed. ${message}`,
+                "warning",
+              );
+              continue;
+            }
+          }
+
+          appendOneMemberFamilyRecord(pi, returned.family);
+          rememberFamilyRecord(returned.family);
+          parentState = nextParentWorkflow.snapshot;
+          parentEvents = structuredClone(nextParentWorkflow.events);
+          state = parentState;
+          events = parentEvents;
+          eventStore.noteWorkflowSequence(parentWorkflowId, parentState.sequence);
+
+          const parentNodeStatus =
+            parentState.runtime.nodes[binding.parentNodeId]?.status ?? "unknown";
+          const returnRecord =
+            returned.family.familySnapshot.bindings[binding.bindingId]?.returnRecord;
+          return {
+            did: true,
+            family: returned.family,
+            notify: {
+              outcome: pending.outcome,
+              bindingId: pending.bindingId,
+              childGoalId: pending.childGoalId,
+              parentNodeId: binding.parentNodeId,
+              parentNodeStatus,
+              parentEffect: returnRecord?.parentEffect ?? "unknown",
+              level: pending.outcome === "completed" ? "info" : "warning",
+            },
+          };
         }
+        return { did: false, family: bag };
+      });
 
-        appendOneMemberFamilyRecord(pi, returned.family);
-        family = returned.family;
-        rememberFamilyRecord(family);
-        parentState = nextParentWorkflow.snapshot;
-        parentEvents = structuredClone(nextParentWorkflow.events);
-        state = parentState;
-        events = parentEvents;
-        eventStore.noteWorkflowSequence(parentWorkflowId, parentState.sequence);
+      family = step.family;
+      if (step.did) {
         paintUi(ctx);
-
-        const parentNodeStatus = parentState.runtime.nodes[binding.parentNodeId]?.status ?? "unknown";
-        const returnRecord = family.familySnapshot.bindings[binding.bindingId]?.returnRecord;
         ctx.ui.notify(
           renderChildReturnApplied({
-            outcome: pending.outcome,
-            bindingId: pending.bindingId,
-            childGoalId: pending.childGoalId,
-            parentNodeId: binding.parentNodeId,
-            parentNodeStatus,
-            parentEffect: returnRecord?.parentEffect ?? "unknown",
+            outcome: step.notify.outcome as import("./domain/goal-family.js").ChildReturnOutcomeKind,
+            bindingId: step.notify.bindingId,
+            childGoalId: step.notify.childGoalId,
+            parentNodeId: step.notify.parentNodeId,
+            parentNodeStatus: step.notify.parentNodeStatus,
+            parentEffect: step.notify.parentEffect,
           }),
-          pending.outcome === "completed" ? "info" : "warning",
+          step.notify.level,
         );
         applied += 1;
         progress = true;
-        break;
       }
     }
 
@@ -2790,6 +3073,13 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     return nextFamily;
   };
 
+  /**
+   * Settle one family pending against the current family bag.
+   * Fully synchronous load-modify-write so sequential callers stay atomic on
+   * the JS event loop. Concurrent isolated settle must call this only while
+   * holding withIsolatedFreeSlotLock (folded into runSettle) so it cannot
+   * interleave with member stream family writes (S4 Issue 7).
+   */
   settleFamilyDispatchById = (
     dispatchId: string | undefined,
     outcome: "completed" | "failed" | "interrupted",
@@ -2818,7 +3108,16 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
       ReturnType<typeof selectFamilyControllerAction>,
       { kind: "dispatch" }
     >,
-    options?: { familyDispatchId?: string },
+    options?: {
+      familyDispatchId?: string;
+      globalConcurrency?: number;
+      /**
+       * When true, skip per-member applyPendingChildReturns.
+       * Concurrent batch path runs one controller-level return pass after
+       * Promise.all so sibling returns cannot race (S4 Issue 9).
+       */
+      deferChildReturn?: boolean;
+    },
   ): Promise<"continue" | "stop" | "model-follow-up"> => {
     const decision = selection.decision;
 
@@ -2877,43 +3176,58 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     try {
       outcome = await dispatchDecisionOnLiveState(ctx, member, decision, options);
     } finally {
-      // Persist child mutations only when generations still match entry.
-      // After restore mid-dispatch, skip R5 merge and family write so the
-      // restored family bag is not rewritten from pre-bind captures.
-      const mayPersist = shouldPersistNonRootMemberAfterBind({
-        bindSessionGeneration: entrySessionGeneration,
-        bindBranchGeneration: entryBranchGeneration,
-        currentSessionGeneration: sessionGeneration,
-        currentBranchGeneration: branchGeneration,
-        memberWorkflowId: selection.memberWorkflowId,
-        memberState: member.state,
-      });
-      if (mayPersist && member.state) {
-        const persisted = await persistNonRootMemberUpdate({
-          family: selection.family,
-          workflowId: selection.memberWorkflowId,
-          previousEvents,
-          nextState: member.state,
-          nextEvents: member.events,
-          previousSequence,
-          liveRoot: {
-            workflowId: liveRootCapture.workflowId,
-            events: liveRootCapture.events,
-            snapshot: liveRootCapture.snapshot,
-          },
+      // Isolated settle already wrote this member under the free-slot lock and
+      // marked the workflow id. Do not re-merge from selection.family (stale batch
+      // snapshot) or concurrent sibling streams are clobbered (S4 Issue 6).
+      if (isolatedFamilyPersistedWorkflowIds.has(selection.memberWorkflowId)) {
+        isolatedFamilyPersistedWorkflowIds.delete(selection.memberWorkflowId);
+        familyAfterChild = latestFamilyRecord ?? selection.family;
+      } else {
+        // Persist child mutations only when generations still match entry.
+        // After restore mid-dispatch, skip R5 merge and family write so the
+        // restored family bag is not rewritten from pre-bind captures.
+        const mayPersist = shouldPersistNonRootMemberAfterBind({
+          bindSessionGeneration: entrySessionGeneration,
+          bindBranchGeneration: entryBranchGeneration,
+          currentSessionGeneration: sessionGeneration,
+          currentBranchGeneration: branchGeneration,
+          memberWorkflowId: selection.memberWorkflowId,
+          memberState: member.state,
         });
-        if (!persisted.ok) {
-          ctx.ui.notify(
-            `Hypagoal could not persist child workflow '${selection.memberWorkflowId}'. ${persisted.message}`,
-            "warning",
-          );
+        if (mayPersist && member.state) {
+          // Full residual merge + append + remember under free-slot lock (Issue 10).
+          // Reload latestFamilyRecord at the start of the critical section.
+          const memberStateForPersist = member.state;
+          const memberEventsForPersist = member.events;
+          const persisted = await withIsolatedFreeSlotLock(async () => {
+            const baseFamilyForPersist = latestFamilyRecord ?? selection.family;
+            return persistNonRootMemberUpdate({
+              family: baseFamilyForPersist,
+              workflowId: selection.memberWorkflowId,
+              previousEvents,
+              nextState: memberStateForPersist,
+              nextEvents: memberEventsForPersist,
+              previousSequence,
+              liveRoot: {
+                workflowId: liveRootCapture.workflowId,
+                events: liveRootCapture.events,
+                snapshot: liveRootCapture.snapshot,
+              },
+            });
+          });
+          if (!persisted.ok) {
+            ctx.ui.notify(
+              `Hypagoal could not persist child workflow '${selection.memberWorkflowId}'. ${persisted.message}`,
+              "warning",
+            );
+            outcome = "stop";
+          } else {
+            familyAfterChild = persisted.family;
+          }
+        } else if (!mayPersist) {
+          // Session restore (or branch change) invalidated this member pass.
           outcome = "stop";
-        } else {
-          familyAfterChild = persisted.family;
         }
-      } else if (!mayPersist) {
-        // Session restore (or branch change) invalidated this member pass.
-        outcome = "stop";
       }
       if (state) {
         eventStore.noteWorkflowSequence(state.workflowId, state.sequence);
@@ -2922,7 +3236,8 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
     }
 
     // When the child became terminal, return into the parent binding on the product path.
-    if (outcome !== "stop") {
+    // Concurrent batch model path defers this to one controller-level pass (Issue 9).
+    if (outcome !== "stop" && !options?.deferChildReturn) {
       const returnResult = await applyPendingChildReturns(ctx, familyAfterChild);
       if (returnResult.applied > 0 && outcome === "model-follow-up") {
         // Parent state changed; drop a stale model follow-up that targeted the child.
@@ -2939,14 +3254,36 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
    * Nested helpers that still close over free state/events use a temporary
    * live-slot bind. MemberContext remains the authority for the outcome.
    * Shared by root and non-root member paths.
+   *
+   * Isolated model workers do not hold free slots across the process await
+   * (S4 free-slot protocol). Deterministic and current-session paths still
+   * bind for their full duration.
    */
   const dispatchDecisionOnLiveState = async (
     ctx: ExtensionContext,
     member: MemberContext,
     decision: GoalDispatchableContinuation,
-    options?: { familyDispatchId?: string },
+    options?: { familyDispatchId?: string; globalConcurrency?: number },
   ): Promise<"continue" | "stop" | "model-follow-up"> => {
     if (!member.state) return "stop";
+
+    // Isolated worker path: route against MemberContext without an outer free-slot
+    // bind that would span the long process await. Start/settle re-bind under lock.
+    const isolatedRouting = routeRootModelLaneAction(decision, member.state, {
+      legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
+    });
+    if (isolatedRouting.kind === "isolated-worker") {
+      const continued = await dispatchIsolatedRootModelTask(ctx, isolatedRouting, {
+        member,
+        ...(options?.familyDispatchId !== undefined
+          ? { familyDispatchId: options.familyDispatchId }
+          : {}),
+        ...(options?.globalConcurrency !== undefined
+          ? { globalConcurrency: options.globalConcurrency }
+          : {}),
+      });
+      return continued ? "continue" : "stop";
+    }
 
     const liveBinding = bindMemberLiveSlots(member);
     try {
@@ -3059,14 +3396,15 @@ ${formatDiagnostics(dispatched.diagnostics)}`, "warning");
         return "stop";
       }
 
-      // Default model task actions use isolated workers, not follow-up.
-      // Legacy current-session default is test-only via configureHostRoutingForTests.
+      // Current-session / orchestrator follow-up (not isolated-worker).
+      // Free slots are bound for this path only.
       const routing = routeRootModelLaneAction(decision, state!, {
         legacyCurrentSessionDefault: getHostRoutingOptions().legacyCurrentSessionDefault,
       });
+      // isolated-worker was handled above without outer bind.
       if (routing.kind === "isolated-worker") {
-        const continued = await dispatchIsolatedRootModelTask(ctx, routing, options);
-        return continued ? "continue" : "stop";
+        // Should not reach: already routed on member.state. Fail closed.
+        return "stop";
       }
 
       const operationId = `hypagoal-continuation:${randomUUID()}`;
@@ -3177,7 +3515,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
       || !state
       || activeExecutions.hasActive()
       || activePresentations.size > 0
-      || (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled)
+      || countUnsettledIsolatedWorkers(isolatedWorkerPool()) > 0
       || nonRootLiveSlotBindDepth > 0
     ) return;
     let deterministicDispatches = 0;
@@ -3275,22 +3613,60 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         dispatchOutcome = await dispatchDecisionOnLiveState(ctx, rootMember, decision);
         if (deterministic) deterministicDispatches += 1;
       } else if (controller.kind === "dispatch-batch") {
-        // Gate 1.1 concurrent product path (AC4):
-        // 1) Commit the full selected multi-pending batch.
-        // 2) Mark all startable members dispatched before any host start
-        //    (all deterministic + one model when isolated capacity is free).
-        // 3) Interrupt unstartable model pendings (no stranded selected occupancy).
-        // 4) Start every startable member serially WITHOUT settling between starts.
-        // 5) After all starts finish, settle each by dispatchId (reload before settle).
-        // The second start runs while the first family pending is still dispatched.
-        // Host await is serial (shared session). Model capacity is one isolated attempt.
+        // S4 concurrent product path:
+        // 1) Filter selection to free-seat model members plus deterministic members
+        //    (itemsToCommit). Domain already bound pending occupancy.
+        // 2) Commit only itemsToCommit (do not commit beyond free isolated seats).
+        // 3) Mark every committed member dispatched before any host start.
+        // 4) Start deterministic items serially; start model items concurrently
+        //    without awaiting sibling completion before the next start.
+        // 5) Settle each model pending under the free-slot lock on completion
+        //    (independent-settle; member stream + pending in one critical section).
+        // 6) Run one controller-level applyPendingChildReturns pass after model
+        //    Promise.all (not per concurrent member).
+        // Do not use modelSlots = 1 or deferred-interrupt for one isolated seat.
         const at = new Date().toISOString();
         const memberStates = buildFamilyControllerMemberStates(controller.family, state);
+        const resolvedGlobalConcurrency = controller.concurrencyPolicy.globalConcurrency
+          ?? DEFAULT_GLOBAL_CONCURRENCY;
+
+        // Commit only free pool seats for model members (S4 Issue 8).
+        // Domain selection already bounds pending occupancy. Align commit size with
+        // free isolated seats so no committed pending is left selected without a
+        // mark/start path. Interrupt remains only on mark failure.
+        let modelSeatsFree = Math.max(
+          0,
+          resolvedGlobalConcurrency - countUnsettledIsolatedWorkers(isolatedWorkerPool()),
+        );
+        const itemsToCommit = controller.items.filter((item) => {
+          if (isDeterministicFamilyMemberDecision(item.decision)) return true;
+          if (modelSeatsFree > 0) {
+            modelSeatsFree -= 1;
+            return true;
+          }
+          return false;
+        });
+        if (itemsToCommit.length === 0) {
+          ctx.ui.notify(
+            `Hypagoal concurrent batch had no free isolated seats under globalConcurrency `
+            + `${resolvedGlobalConcurrency}. No members were committed.`,
+            "info",
+          );
+          return;
+        }
+        if (itemsToCommit.length < controller.items.length) {
+          ctx.ui.notify(
+            `Hypagoal concurrent batch committed ${itemsToCommit.length} of `
+            + `${controller.items.length} selected members (pool free seats). `
+            + "Uncommitted members can be selected again when seats free.",
+            "info",
+          );
+        }
 
         const committed = commitConcurrentFamilyBatchForHost({
           family: controller.family.familySnapshot,
           memberStates,
-          items: controller.items,
+          items: itemsToCommit,
           at,
           maxBatchSize: controller.maxBatchSize,
           // Same raw object as selection; prefer resolved policy from the decision.
@@ -3320,34 +3696,8 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         );
 
         type BatchStartItem = (typeof committed.items)[number];
-        const modelCapacityFree = !(
-          activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
-        );
-        let modelSlots = modelCapacityFree ? 1 : 0;
-        const startableItems: BatchStartItem[] = [];
-        const deferredModelItems: BatchStartItem[] = [];
-        for (const item of committed.items) {
-          if (isDeterministicFamilyMemberDecision(item.decision)) {
-            startableItems.push(item);
-            continue;
-          }
-          if (modelSlots > 0) {
-            startableItems.push(item);
-            modelSlots -= 1;
-          } else {
-            deferredModelItems.push(item);
-          }
-        }
-
-        // Interrupt model pendings the host cannot start in this pass.
-        for (const item of deferredModelItems) {
-          settleFamilyDispatchById(
-            item.dispatchId,
-            "interrupted",
-            `Host model capacity is one isolated attempt. Deferred member '${item.memberGoalId}'.`,
-            ctx,
-          );
-        }
+        // All committed items are startable (commit already aligned to free seats).
+        const startableItems: BatchStartItem[] = [...committed.items];
         familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
 
         // Mark every startable pending as dispatched before any member host start.
@@ -3384,13 +3734,20 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
           markedItems.push(item);
         }
 
-        // All marked items are dispatched. Start all before any terminal settle.
         type BatchStartOutcome = {
           item: BatchStartItem;
           itemOutcome: "continue" | "stop" | "model-follow-up";
         };
+        const deterministicMarked = markedItems.filter((item) =>
+          isDeterministicFamilyMemberDecision(item.decision)
+        );
+        const modelMarked = markedItems.filter((item) =>
+          !isDeterministicFamilyMemberDecision(item.decision)
+        );
+
+        // Deterministic items share host resources; run serially and settle each.
         const startOutcomes: BatchStartOutcome[] = [];
-        for (const item of markedItems) {
+        for (const item of deterministicMarked) {
           familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
           const itemOutcome = await dispatchSelectedMemberAction(
             ctx,
@@ -3405,19 +3762,13 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
               selectionReason: item.selectionReason,
               concurrencyPolicy: controller.concurrencyPolicy,
             },
-            { familyDispatchId: item.dispatchId },
+            {
+              familyDispatchId: item.dispatchId,
+              globalConcurrency: resolvedGlobalConcurrency,
+            },
           );
           startOutcomes.push({ item, itemOutcome });
-          if (isDeterministicFamilyMemberDecision(item.decision)) {
-            deterministicDispatches += 1;
-          }
-        }
-
-        // Settle only after every startable member has been started (or failed to start).
-        // model-follow-up keeps the pending dispatched until agent_end / abandon.
-        let batchContinue = false;
-        let batchModelFollowUp = false;
-        for (const { item, itemOutcome } of startOutcomes) {
+          deterministicDispatches += 1;
           const settleOutcome = familySettleOutcomeFromHostDispatch(itemOutcome);
           if (settleOutcome) {
             familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
@@ -3431,8 +3782,92 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
             );
             familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord;
           }
+        }
+
+        // Model items: start concurrently. Do not await sibling completion before
+        // the next start. Settle each pending when that worker completes (S4).
+        const modelWork = modelMarked.map(async (item) => {
+          const recordForStart = loadFamilyRecordForController(ctx) ?? familyRecord;
+          if (!recordForStart) {
+            return {
+              item,
+              itemOutcome: "stop" as const,
+            } satisfies BatchStartOutcome;
+          }
+          familyRecord = recordForStart;
+          const itemOutcome = await dispatchSelectedMemberAction(
+            ctx,
+            {
+              kind: "dispatch",
+              memberGoalId: item.memberGoalId,
+              memberWorkflowId: item.memberWorkflowId,
+              memberState: item.memberState,
+              isLiveRoot: item.isLiveRoot,
+              decision: item.decision,
+              family: recordForStart,
+              selectionReason: item.selectionReason,
+              concurrencyPolicy: controller.concurrencyPolicy,
+            },
+            {
+              familyDispatchId: item.dispatchId,
+              globalConcurrency: resolvedGlobalConcurrency,
+              // One controller-level child-return pass after Promise.all (Issue 9).
+              deferChildReturn: true,
+            },
+          );
+          // Isolated path settles the family pending under the free-slot lock in
+          // runSettle (Issue 7). Only settle here when the pending is still open
+          // (deterministic residual, start failure, or non-isolated path).
+          const settleOutcome = familySettleOutcomeFromHostDispatch(itemOutcome);
+          if (settleOutcome) {
+            await withIsolatedFreeSlotLock(async () => {
+              familyRecord = loadFamilyRecordForController(ctx) ?? familyRecord ?? latestFamilyRecord;
+              if (familyRecord?.familySnapshot.pendingDispatches[item.dispatchId]) {
+                settleFamilyDispatchById(
+                  item.dispatchId,
+                  settleOutcome,
+                  itemOutcome === "stop"
+                    ? `Member '${item.memberGoalId}' host dispatch stopped.`
+                    : undefined,
+                  ctx,
+                );
+              }
+              familyRecord = latestFamilyRecord ?? familyRecord;
+            });
+          }
+          return { item, itemOutcome } satisfies BatchStartOutcome;
+        });
+        // Fire all model starts together; workers run concurrently under the pool.
+        const modelOutcomes = await Promise.all(modelWork);
+        startOutcomes.push(...modelOutcomes);
+
+        // One child-return pass after all concurrent model workers finish (Issue 9).
+        // applyPendingChildReturns reloads under free-slot lock per return.
+        let childReturnsApplied = 0;
+        familyRecord = loadFamilyRecordForController(ctx) ?? latestFamilyRecord ?? familyRecord;
+        if (familyRecord) {
+          const returnPass = await applyPendingChildReturns(ctx, familyRecord);
+          familyRecord = returnPass.family;
+          childReturnsApplied = returnPass.applied;
+          if (childReturnsApplied > 0) {
+            // Parent may have left wait; drop stale model follow-up and continue.
+            pendingContinuation = undefined;
+          }
+        }
+
+        let batchContinue = false;
+        let batchModelFollowUp = false;
+        for (const { itemOutcome } of startOutcomes) {
           if (itemOutcome === "continue") batchContinue = true;
           if (itemOutcome === "model-follow-up") batchModelFollowUp = true;
+        }
+        if (childReturnsApplied > 0) {
+          batchContinue = true;
+        }
+        // Pool still has unsettled workers only when a path left them registered
+        // without settling (should not happen for isolated await). Keep honesty.
+        if (countUnsettledIsolatedWorkers(isolatedWorkerPool()) > 0) {
+          batchModelFollowUp = true;
         }
 
         if (batchModelFollowUp) {
@@ -3598,21 +4033,12 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
     activeExecutions.cancelAll();
     activeCodeExecutions.cancelAll("session_shutdown");
     activeEffectExecutions.cancelAll("session_shutdown");
-    // Abort and cancel any in-flight member worker before process teardown (R3).
+    // Abort and cancel every in-flight member worker before process teardown (R3 / S4).
     // Deep-clone cancel mirrors; session_shutdown has no branch ctx — use latestFamilyRecord.
-    const shutdownRoot = activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
-      ? {
-        ...activeIsolatedRootAttempt,
-        ...(activeIsolatedRootAttempt.cancelSnapshot === undefined
-          ? {}
-          : { cancelSnapshot: structuredClone(activeIsolatedRootAttempt.cancelSnapshot) }),
-        ...(activeIsolatedRootAttempt.cancelEvents === undefined
-          ? {}
-          : { cancelEvents: structuredClone(activeIsolatedRootAttempt.cancelEvents) }),
-      }
-      : undefined;
+    const shutdownRoots = listUnsettledIsolatedWorkers(isolatedWorkerPool())
+      .map((entry) => cloneActiveIsolatedForTeardown(entry));
     abortActiveIsolatedRootAttempt("The Pi session shut down before the isolated worker completed.");
-    if (shutdownRoot) {
+    for (const shutdownRoot of shutdownRoots) {
       try {
         await settleTrackedIsolatedAttempt({
           tracked: shutdownRoot,
@@ -3624,7 +4050,7 @@ ${formatDiagnostics(request.diagnostics)}`, "warning");
         // Shutdown must still tear down processes.
       }
     }
-    activeIsolatedRootAttempt = undefined;
+    clearIsolatedWorkerPool(isolatedWorkerPool());
     // Reclaim owned isolated Pi children so they do not orphan after session end.
     await isolatedPiController.teardownOnRestore({
       kind: "other",
@@ -3982,20 +4408,21 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         reason: POST_CREATE_GATE_BLOCK_REASON,
       };
     }
-    // While an isolated worker owns mutating task work, block the family desk
+    // While any isolated worker owns mutating task work, block the family desk
     // from acting as a second writer on repository tools. Create-child is family
     // control: allowed for any active parent task (isolated or current-session).
+    const unsettledForGate = listUnsettledIsolatedWorkers(isolatedWorkerPool());
     if (
-      activeIsolatedRootAttempt
-      && !activeIsolatedRootAttempt.settled
+      unsettledForGate.length > 0
       && isHypagraphWorkMutatingTool(event.toolName)
       && !isHypagraphFamilyControlToolDuringWorker(event.toolName)
     ) {
+      const firstWorker = unsettledForGate[0]!;
       return {
         block: true,
         reason: activeWorkerGateBlockReason(
-          activeIsolatedRootAttempt.nodeId,
-          activeIsolatedRootAttempt.attemptId,
+          firstWorker.nodeId,
+          firstWorker.attemptId,
         ),
       };
     }
@@ -4366,18 +4793,18 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         return rejectChild("hypagoal_create_child_invalid", message);
       }
 
-      // Same-node guard: only the worker's own node is blocked for create-child.
+      // Same-node guard: check ALL unsettled pool entries (S4).
       // Create-child on that node moves it to waiting_for_child and makes submit-result stale.
       // An unsettled worker on another node does not by itself reject create-child.
       // The parent task must still be active (domain exclusive ownership usually prevents
       // a second active parent in the same workflow while a worker runs).
-      if (
-        activeIsolatedRootAttempt
-        && !activeIsolatedRootAttempt.settled
-        && input.parentNodeId === activeIsolatedRootAttempt.nodeId
-        && activeIsolatedRootAttempt.workflowId === state.workflowId
-      ) {
-        const nodeId = activeIsolatedRootAttempt.nodeId;
+      const blockingWorker = findIsolatedWorkerByNodeId(
+        isolatedWorkerPool(),
+        input.parentNodeId,
+        state.workflowId,
+      );
+      if (blockingWorker && !blockingWorker.settled) {
+        const nodeId = blockingWorker.nodeId;
         return rejectChild(
           "child_create_blocked_active_worker_node",
           `An unsettled isolated worker owns parent node '${nodeId}'. `
@@ -5789,16 +6216,13 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
               );
             }
           }
-          if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
-            const elapsedMs = Date.now() - Date.parse(activeIsolatedRootAttempt.startedAt);
-            const elapsed = Number.isFinite(elapsedMs)
-              ? `${Math.max(0, Math.round(elapsedMs / 1000))}s`
-              : "unknown";
-            const memberLabel = activeIsolatedRootAttempt.goalId;
+          const unsettledWorkers = listUnsettledIsolatedWorkers(isolatedWorkerPool());
+          for (const worker of unsettledWorkers) {
+            extras.push(formatIsolatedWorkerStatusLine(worker));
+          }
+          if (unsettledWorkers.length > 1) {
             extras.push(
-              `Worker: member '${memberLabel}' node '${activeIsolatedRootAttempt.nodeId}' `
-              + `attempt '${activeIsolatedRootAttempt.attemptId}' `
-              + `(${activeIsolatedRootAttempt.profile.kind}, elapsed ${elapsed})`,
+              `Workers in flight: ${unsettledWorkers.length} under isolated worker pool`,
             );
           }
           if (familyView && familyView.memberCount > 1) {
@@ -5808,9 +6232,7 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           }
           if (familyView) {
             const strandedPendings = listFamilyPendingViews(familyView.scheduler);
-            const hasUnsettledIsolatedWorker = Boolean(
-              activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled,
-            );
+            const hasUnsettledIsolatedWorker = unsettledWorkers.length > 0;
             // Suppress reclaim hint while any host-tracked model work is in flight
             // (isolated worker or current-session / delivered continuation).
             const hasHostTrackedModelWork = hasUnsettledIsolatedWorker
@@ -6076,9 +6498,14 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
             `CLI host bound: ${cliBound ? "yes" : "no"}`,
             `CLI default profile: ${CLI_PROFILE.profileId}`,
             `Active processes: ${host.activeProcessCount ?? 0}`,
-            activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
-              ? `Worker: member '${activeIsolatedRootAttempt.goalId}' node '${activeIsolatedRootAttempt.nodeId}' attempt '${activeIsolatedRootAttempt.attemptId}' (${activeIsolatedRootAttempt.profile.kind})`
-              : "Worker: none",
+            `Worker pool unsettled: ${countUnsettledIsolatedWorkers(isolatedWorkerPool())}`,
+            ...(() => {
+              const workers = listUnsettledIsolatedWorkers(isolatedWorkerPool());
+              if (workers.length === 0) return ["Worker: none"];
+              return workers.map((worker) =>
+                formatIsolatedWorkerStatusLine(worker, { includeElapsed: false })
+              );
+            })(),
             "Dispatch seam: dispatchIsolatedPiAttempt (profile kinds isolated-pi, acp, cli)",
             "Cancel: /hypagraph executor cancel",
             "Probe: /hypagraph executor probe [acp|cli]",
@@ -6105,17 +6532,8 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           }
           ctx.ui.notify(lines.join("\n"), "info");
         } else if (sub === "cancel") {
-          const trackedRoot = activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled
-            ? {
-              ...activeIsolatedRootAttempt,
-              ...(activeIsolatedRootAttempt.cancelSnapshot === undefined
-                ? {}
-                : { cancelSnapshot: structuredClone(activeIsolatedRootAttempt.cancelSnapshot) }),
-              ...(activeIsolatedRootAttempt.cancelEvents === undefined
-                ? {}
-                : { cancelEvents: structuredClone(activeIsolatedRootAttempt.cancelEvents) }),
-            }
-            : undefined;
+          const trackedRoots = listUnsettledIsolatedWorkers(isolatedWorkerPool())
+            .map((entry) => cloneActiveIsolatedForTeardown(entry));
           abortActiveIsolatedRootAttempt(
             "The user cancelled executor attempts from /hypagraph executor cancel.",
           );
@@ -6128,25 +6546,25 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
           const cliClosed = teardown.cliClosedCount ?? 0;
           const piClosed = teardown.terminatedCount;
           const totalClosed = piClosed + acpClosed + cliClosed;
-          // Cancel the tracked member task attempt after process teardown (R3).
-          if (trackedRoot) {
+          // Cancel each tracked member task attempt after process teardown (R3 / S4).
+          if (trackedRoots.length > 0) {
             const familyForCancel = loadFamilyRecordForController(ctx);
-            await settleTrackedIsolatedAttempt({
-              tracked: trackedRoot,
-              reason: "The user cancelled the isolated model worker from /hypagraph executor cancel.",
-              correlationId: `isolated-root-user-cancel:${randomUUID()}`,
-              ...(familyForCancel === undefined ? {} : { family: familyForCancel }),
-              notify: (message, level) => ctx.ui.notify(message, level),
-            });
-            paintUi(ctx);
-            if (activeIsolatedRootAttempt?.attemptId === trackedRoot.attemptId) {
-              activeIsolatedRootAttempt = undefined;
+            for (const trackedRoot of trackedRoots) {
+              await settleTrackedIsolatedAttempt({
+                tracked: trackedRoot,
+                reason: "The user cancelled the isolated model worker from /hypagraph executor cancel.",
+                correlationId: `isolated-root-user-cancel:${randomUUID()}`,
+                ...(familyForCancel === undefined ? {} : { family: familyForCancel }),
+                notify: (message, level) => ctx.ui.notify(message, level),
+              });
             }
+            paintUi(ctx);
+            clearIsolatedWorkerPool(isolatedWorkerPool());
           }
           let message: string;
           // Prefer closed counts over the pre-teardown snapshot. An attempt can
           // settle between activeProcessCount and teardownOnRestore.
-          if (totalClosed === 0 && !trackedRoot) {
+          if (totalClosed === 0 && trackedRoots.length === 0) {
             message = before === 0
               ? "There is no active executor attempt."
               : "No executor attempt needed cancellation.";
@@ -6161,16 +6579,21 @@ Hypagraph accepted the bounded automatic revision through the canonical revision
             if (cliClosed > 0) {
               parts.push(`${cliClosed} CLI process(es)`);
             }
-            if (trackedRoot) {
+            if (trackedRoots.length > 0) {
               parts.push(
-                `member task '${trackedRoot.nodeId}' (goal '${trackedRoot.goalId}')`,
+                trackedRoots.length === 1
+                  ? `member task '${trackedRoots[0]!.nodeId}' (goal '${trackedRoots[0]!.goalId}')`
+                  : `${trackedRoots.length} member isolated tasks`,
               );
             }
             message = parts.length > 0
               ? `Cancelled ${parts.join(" and ")}.`
               : `Cancelled ${totalClosed} executor attempt(s).`;
           }
-          ctx.ui.notify(message, totalClosed === 0 && !trackedRoot ? "info" : "warning");
+          ctx.ui.notify(
+            message,
+            totalClosed === 0 && trackedRoots.length === 0 ? "info" : "warning",
+          );
         } else if (sub === "probe") {
           const probeTarget = (words[2] ?? "").toLowerCase();
           const wantAcp = probeTarget === "acp";

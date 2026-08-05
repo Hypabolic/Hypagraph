@@ -14,12 +14,25 @@ import {
   DEFAULT_MODEL_EXECUTOR_PROFILE,
 } from "../src/domain/model-executor-profile.js";
 import {
+  abortAllUnsettledIsolatedWorkers,
   acceptIsolatedRootSettlement,
   buildOrphanedTaskCancelCommands,
   buildPostSubmitVerificationCommands,
+  canAdmitIsolatedWorker,
+  clearIsolatedWorkerPool,
+  countUnsettledIsolatedWorkers,
+  createIsolatedWorkerPool,
+  deleteIsolatedWorkerForAttempt,
+  findIsolatedWorkerByAttemptId,
+  findIsolatedWorkerByFamilyDispatchId,
+  findIsolatedWorkerByNodeId,
+  formatIsolatedWorkerStatusLine,
   isolatedRootSettleMeta,
+  isolatedWorkerPoolKey,
+  listUnsettledIsolatedWorkers,
   markIsolatedRootAttemptSettled,
   prepareIsolatedRootAttempt,
+  registerIsolatedWorker,
   routeRootModelLaneAction,
   withHostTimestamp,
   type ActiveIsolatedRootAttempt,
@@ -373,5 +386,112 @@ describe("prepare and settle isolated root attempts (S6.2–S6.3)", () => {
     expect(prepared.active.workflowId).toBe(state.workflowId);
     prepared.active.abortController.abort("test-cancel");
     expect(prepared.active.abortController.signal.aborted).toBe(true);
+  });
+});
+
+const makeActive = (
+  overrides: Partial<ActiveIsolatedRootAttempt> & { attemptId: string },
+): ActiveIsolatedRootAttempt => ({
+  operationId: `op-${overrides.attemptId}`,
+  nodeId: "implement",
+  goalId: "goal-root",
+  workflowId: "workflow-root",
+  profile: DEFAULT_MODEL_EXECUTOR_PROFILE as ExecutorProfileRef,
+  actionKind: "start-ready-task",
+  sessionGeneration: 0,
+  branchGeneration: 0,
+  settled: false,
+  abortController: new AbortController(),
+  startedAt: at,
+  timeoutMs: 60_000,
+  ...overrides,
+});
+
+describe("isolated worker pool (S4)", () => {
+  it("keys family pending by familyDispatchId and root-only by attemptId", () => {
+    const withFamily = makeActive({
+      attemptId: "a1",
+      familyDispatchId: "dispatch-1",
+    });
+    const rootOnly = makeActive({ attemptId: "a2" });
+    expect(isolatedWorkerPoolKey(withFamily)).toBe("dispatch-1");
+    expect(isolatedWorkerPoolKey(rootOnly)).toBe("a2");
+  });
+
+  it("registers two unsettled workers and admits under globalConcurrency 2", () => {
+    const pool = createIsolatedWorkerPool();
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(true);
+    registerIsolatedWorker(pool, makeActive({
+      attemptId: "a1",
+      familyDispatchId: "d1",
+      nodeId: "work-a",
+      goalId: "goal-a",
+      workflowId: "wf-a",
+    }));
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(1);
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(true);
+    registerIsolatedWorker(pool, makeActive({
+      attemptId: "a2",
+      familyDispatchId: "d2",
+      nodeId: "work-b",
+      goalId: "goal-b",
+      workflowId: "wf-b",
+    }));
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(2);
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(false);
+    expect(canAdmitIsolatedWorker(pool, 3)).toBe(true);
+    expect(listUnsettledIsolatedWorkers(pool)).toHaveLength(2);
+    expect(findIsolatedWorkerByAttemptId(pool, "a1")?.nodeId).toBe("work-a");
+    expect(findIsolatedWorkerByFamilyDispatchId(pool, "d2")?.attemptId).toBe("a2");
+    expect(findIsolatedWorkerByNodeId(pool, "work-b", "wf-b")?.attemptId).toBe("a2");
+  });
+
+  it("independent settle frees one seat while the sibling stays in flight", () => {
+    const pool = createIsolatedWorkerPool();
+    const first = makeActive({
+      attemptId: "a1",
+      familyDispatchId: "d1",
+      nodeId: "work-a",
+      goalId: "goal-a",
+      workflowId: "wf-a",
+    });
+    const second = makeActive({
+      attemptId: "a2",
+      familyDispatchId: "d2",
+      nodeId: "work-b",
+      goalId: "goal-b",
+      workflowId: "wf-b",
+    });
+    registerIsolatedWorker(pool, first);
+    registerIsolatedWorker(pool, second);
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(2);
+
+    first.settled = true;
+    deleteIsolatedWorkerForAttempt(pool, first);
+    expect(countUnsettledIsolatedWorkers(pool)).toBe(1);
+    expect(findIsolatedWorkerByFamilyDispatchId(pool, "d2")?.settled).toBe(false);
+    expect(canAdmitIsolatedWorker(pool, 2)).toBe(true);
+    expect(formatIsolatedWorkerStatusLine(second, { includeElapsed: false }))
+      .toContain("work-b");
+  });
+
+  it("abortAllUnsettledIsolatedWorkers aborts every unsettled entry", () => {
+    const pool = createIsolatedWorkerPool();
+    const first = makeActive({ attemptId: "a1", familyDispatchId: "d1" });
+    const second = makeActive({ attemptId: "a2", familyDispatchId: "d2" });
+    registerIsolatedWorker(pool, first);
+    registerIsolatedWorker(pool, second);
+    const aborted = abortAllUnsettledIsolatedWorkers(pool, "test abort");
+    expect(aborted).toHaveLength(2);
+    expect(first.abortController.signal.aborted).toBe(true);
+    expect(second.abortController.signal.aborted).toBe(true);
+    clearIsolatedWorkerPool(pool);
+    expect(pool.size).toBe(0);
+  });
+
+  it("rejects invalid globalConcurrency for admit", () => {
+    const pool = createIsolatedWorkerPool();
+    expect(canAdmitIsolatedWorker(pool, 0)).toBe(false);
+    expect(canAdmitIsolatedWorker(pool, 1.5)).toBe(false);
   });
 });

@@ -46,7 +46,8 @@ describe("session-context (Seam A)", () => {
     expect(session.branchGeneration).toBe(0);
     expect(session.rootWorkflowId).toBeUndefined();
     expect(session.familyRecord).toBeUndefined();
-    expect(session.workerPool).toBeUndefined();
+    expect(session.workerPool).toBeInstanceOf(Map);
+    expect(session.workerPool.size).toBe(0);
     expect(session.paintPending).toBe(false);
 
     const custom = createSessionContext({
@@ -183,7 +184,7 @@ describe("session-context (Seam A)", () => {
       rootWorkflowId: "wf-root",
       paintPending: false,
       hasFamilyRecord: false,
-      hasWorkerPool: false,
+      hasWorkerPool: true,
     });
   });
 

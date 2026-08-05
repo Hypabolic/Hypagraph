@@ -7,22 +7,25 @@
  * free root state and events as the only execution path.
  *
  * Pure MemberContext values are independent. Product dispatch still uses a
- * temporary single-seat free-slot bind for nested helpers that close over
- * free host state. Concurrent dispatch is not safe until that bridge is
- * removed (S4).
+ * temporary free-slot bind for nested helpers that close over free host state.
+ * S4 holds free slots only for short start and settle critical sections so
+ * multiple isolated workers can run at the same time under policy capacity.
  *
  * Domain reducers stay free of these types. Context types live in the host.
  */
 
 import type { DomainEvent, HypagraphState } from "../domain/model.js";
 import type { PersistedGoalFamily } from "../persistence/family-store.js";
+import {
+  createIsolatedWorkerPool,
+  type IsolatedWorkerPool,
+} from "./isolated-root-dispatch.js";
 
 /**
- * Placeholder for the S4 multi-worker pool.
- * S3 does not implement the Map pool. The field exists so session context
- * can grow without another type break.
+ * Multi-worker pool of in-flight isolated model attempts (S4).
+ * Keyed by familyDispatchId when present, else attemptId.
  */
-export type WorkerPoolPlaceholder = undefined;
+export type WorkerPool = IsolatedWorkerPool;
 
 /**
  * One instance per extension session.
@@ -40,10 +43,10 @@ export interface SessionContext {
   /** Latest family record known to the host. Optional cache slot. */
   familyRecord: PersistedGoalFamily | undefined;
   /**
-   * Future multi-worker pool (S4). Always undefined in S3.
-   * Do not start concurrent workers from this field in this slice.
+   * Multi-worker pool of unsettled isolated model attempts (S4).
+   * Always a Map. Capacity is resolved product globalConcurrency.
    */
-  workerPool: WorkerPoolPlaceholder;
+  workerPool: WorkerPool;
   /** Host paint deferral flag. Optional until Seam F. */
   paintPending: boolean;
 }
@@ -52,7 +55,8 @@ export interface SessionContext {
  * Working context for one member action (root or non-root).
  * Dispatch mutates state and events on this object.
  * Two pure MemberContext values do not share mutable slots when attachMember
- * clones. Product free-slot bind is still a single seat until S4.
+ * clones. Free-slot bind for nested helpers is short-lived during isolated
+ * start and settle so concurrent workers can stay in flight (S4).
  */
 export interface MemberContext {
   readonly workflowId: string;
@@ -144,7 +148,7 @@ export function createSessionContext(input: CreateSessionContextInput = {}): Ses
     branchGeneration: input.branchGeneration ?? 0,
     rootWorkflowId: input.rootWorkflowId,
     familyRecord: input.familyRecord,
-    workerPool: undefined,
+    workerPool: createIsolatedWorkerPool(),
     paintPending: input.paintPending ?? false,
   };
 }
@@ -216,7 +220,8 @@ export function snapshotSession(session: SessionContext): SessionSnapshot {
     rootWorkflowId: session.rootWorkflowId,
     paintPending: session.paintPending,
     hasFamilyRecord: session.familyRecord !== undefined,
-    hasWorkerPool: session.workerPool !== undefined,
+    // Pool Map is always present after S4.
+    hasWorkerPool: true,
   };
 }
 

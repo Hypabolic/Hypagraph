@@ -426,7 +426,7 @@ describe("gate1-3 concurrent family live acceptance substitute", () => {
       dispatchId: firstId,
       at: settleFirstAt,
       outcome: "interrupted",
-      reason: "Deferred model capacity; interrupt first only.",
+      reason: "Independent-settle interrupt of one sibling only.",
       partialFailureMode: "independent-settle",
     });
     expect(interrupted.ok).toBe(true);
