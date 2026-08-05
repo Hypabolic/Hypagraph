@@ -1,0 +1,790 @@
+/**
+ * S6: synthesis fan-in domain and host path.
+ *
+ * Proves:
+ * - all-success join over terminal child outcomes;
+ * - schema reject and policy validation;
+ * - replay-stable pure evaluation (fixed timestamps);
+ * - host product helpers apply join to parent state after multi-child return.
+ *
+ * Does not claim ledger Live. Automated domain and host substitute only.
+ */
+
+import { describe, expect, it } from "vitest";
+import { createBoundedChildGoal } from "../src/domain/child-goal-creation.js";
+import {
+  CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION,
+  DEFAULT_JOIN_RESULT_FACT_NAME,
+  applyChildOutcomeSynthesisToParent,
+  collectChildOutcomeMembersFromFamily,
+  compareBindingId,
+  createAllSuccessJoinPolicy,
+  evaluateChildOutcomeSynthesis,
+  isJoinSetTerminal,
+  listBindingsForParentJoin,
+  parseChildOutcomeSynthesisPolicy,
+  synthesizeAndApplyChildOutcomes,
+  synthesizeChildOutcomesFromFamily,
+  validateChildOutcomeSynthesisPolicy,
+  type ChildOutcomeMember,
+  type ChildOutcomeSynthesisPolicy,
+} from "../src/domain/child-outcome-synthesis.js";
+import { returnChildGoal } from "../src/domain/child-goal-return.js";
+import {
+  GOAL_FAMILY_SCHEMA_VERSION,
+  createRootFamily,
+} from "../src/domain/goal-family.js";
+import { createHypagoalWorkflow } from "../src/domain/hypagoal-creation.js";
+import type { HypagraphDefinition, HypagraphState } from "../src/domain/model.js";
+import { handleCommand } from "../src/domain/reducer.js";
+import {
+  applyProductJoinSynthesis,
+  applyReadyJoinSynthesesAfterReturns,
+  applyReadyJoinSynthesesToPersistedFamily,
+  resolveProductJoinPolicy,
+} from "../src/pi/family-product-synthesis.js";
+import type { PersistedGoalFamily } from "../src/persistence/family-store.js";
+
+const at = "2026-08-05T14:00:00.000Z";
+const later = "2026-08-05T14:05:00.000Z";
+const returnAt = "2026-08-05T14:10:00.000Z";
+const joinAt = "2026-08-05T14:15:00.000Z";
+
+const parentWithJoinFact = (title: string): HypagraphDefinition => ({
+  title,
+  goal: title,
+  nodes: [{
+    id: "work",
+    title: "Work",
+    requires: [],
+    acceptance: [],
+    scope: { paths: ["src/**"] },
+    produces: [{ name: DEFAULT_JOIN_RESULT_FACT_NAME, type: "boolean" }],
+  }],
+  loops: [],
+  policy: { mode: "guided", requireEvidence: false },
+});
+
+const childTask = (title: string): HypagraphDefinition => ({
+  title,
+  goal: title,
+  nodes: [{
+    id: "work",
+    title: "Work",
+    requires: [],
+    acceptance: [],
+    scope: { paths: ["src/**"] },
+  }],
+  loops: [],
+  policy: { mode: "guided", requireEvidence: false },
+});
+
+const createStartedWorkflow = (
+  definition: HypagraphDefinition,
+  workflowId: string,
+  goalId: string,
+): HypagraphState => {
+  const result = createHypagoalWorkflow(definition, {
+    workflowId,
+    goalId,
+    goalWorkflowId: workflowId,
+    at,
+  });
+  if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+  return result.state;
+};
+
+const startTask = (
+  state: HypagraphState,
+  nodeId: string,
+  attemptId = `attempt-${nodeId}`,
+): HypagraphState => {
+  const result = handleCommand(state, {
+    type: "start-node",
+    nodeId,
+    attemptId,
+    commandId: `start-${nodeId}`,
+    correlationId: `start-${nodeId}`,
+    at: later,
+  });
+  if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+  return result.state;
+};
+
+const terminalCompletedChild = (state: HypagraphState): HypagraphState => {
+  const nodeId = state.definition.nodes[0]?.id ?? "work";
+  const attemptId = `attempt-${nodeId}-terminal`;
+  let next = state;
+  const apply = (command: Parameters<typeof handleCommand>[1]): void => {
+    const result = handleCommand(next, command);
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    next = result.state;
+  };
+  apply({
+    type: "start-node",
+    nodeId,
+    attemptId,
+    commandId: `start-${attemptId}`,
+    correlationId: `start-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "submit-result",
+    nodeId,
+    attemptId,
+    evidence: [{ ref: `evidence://${nodeId}-terminal`, kind: "note" }],
+    commandId: `submit-${attemptId}`,
+    correlationId: `submit-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "begin-verification",
+    nodeId,
+    attemptId,
+    commandId: `begin-${attemptId}`,
+    correlationId: `begin-${attemptId}`,
+    at: returnAt,
+  });
+  apply({
+    type: "complete-verification",
+    nodeId,
+    attemptId,
+    passed: true,
+    commandId: `complete-${attemptId}`,
+    correlationId: `complete-${attemptId}`,
+    at: returnAt,
+  });
+  if (next.goal?.status !== "completed") {
+    throw new Error(`Expected completed child goal, got '${next.goal?.status}'.`);
+  }
+  return next;
+};
+
+const terminalFailedChild = (state: HypagraphState): HypagraphState => {
+  const clone = structuredClone(state);
+  if (!clone.goal) throw new Error("Child goal missing.");
+  clone.goal = {
+    ...clone.goal,
+    status: "failed",
+    stopReason: "Child failed for synthesis test.",
+  };
+  clone.phase = "failed";
+  return clone;
+};
+
+const freeze = <T>(value: T): T => structuredClone(value);
+
+describe("S6 domain child outcome synthesis policy", () => {
+  it("validates an all-success policy and rejects unsupported schema versions", () => {
+    const ok = validateChildOutcomeSynthesisPolicy({
+      schemaVersion: CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION,
+      strategy: "all-success",
+      bindingIds: ["b-2", "b-1"],
+      resultFactName: "join.passed",
+    });
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) throw new Error("expected policy ok");
+    expect(ok.policy.bindingIds).toEqual(["b-2", "b-1"]);
+    expect(ok.policy.resultFactName).toBe("join.passed");
+
+    const badSchema = parseChildOutcomeSynthesisPolicy({
+      schemaVersion: 99,
+      strategy: "all-success",
+      bindingIds: ["b-1"],
+    });
+    expect(badSchema.ok).toBe(false);
+    if (badSchema.ok) throw new Error("expected schema reject");
+    expect(badSchema.diagnostics[0]?.code).toBe("unsupported_child_outcome_synthesis_schema");
+
+    const badStrategy = validateChildOutcomeSynthesisPolicy({
+      schemaVersion: 1,
+      strategy: "quorum",
+      bindingIds: ["b-1"],
+    });
+    expect(badStrategy.ok).toBe(false);
+    if (badStrategy.ok) throw new Error("expected strategy reject");
+    expect(badStrategy.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_strategy");
+
+    const duplicate = createAllSuccessJoinPolicy({ bindingIds: ["b-1", "b-1"] });
+    expect(duplicate.ok).toBe(false);
+    if (duplicate.ok) throw new Error("expected duplicate reject");
+    expect(duplicate.diagnostics[0]?.code).toBe("child_outcome_synthesis_duplicate_binding_id");
+
+    const classInstance = validateChildOutcomeSynthesisPolicy(
+      Object.assign(new (class Policy {})(), {
+        schemaVersion: 1,
+        strategy: "all-success",
+        bindingIds: ["b-1"],
+      }),
+    );
+    expect(classInstance.ok).toBe(false);
+    if (classInstance.ok) throw new Error("expected class instance reject");
+    expect(classInstance.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_policy");
+  });
+
+  it("rejects empty binding id entries and invalid result fact names", () => {
+    const emptyId = validateChildOutcomeSynthesisPolicy({
+      schemaVersion: 1,
+      strategy: "all-success",
+      bindingIds: ["  "],
+    });
+    expect(emptyId.ok).toBe(false);
+    if (emptyId.ok) throw new Error("expected empty id reject");
+    expect(emptyId.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_binding_id");
+
+    const badFact = validateChildOutcomeSynthesisPolicy({
+      schemaVersion: 1,
+      strategy: "all-success",
+      bindingIds: [],
+      resultFactName: "",
+    });
+    expect(badFact.ok).toBe(false);
+    if (badFact.ok) throw new Error("expected fact name reject");
+    expect(badFact.diagnostics[0]?.code).toBe("child_outcome_synthesis_invalid_result_fact_name");
+  });
+});
+
+describe("S6 domain all-success evaluation", () => {
+  const policy = (bindingIds: string[]): ChildOutcomeSynthesisPolicy => {
+    const created = createAllSuccessJoinPolicy({ bindingIds });
+    if (!created.ok) throw new Error(JSON.stringify(created.diagnostics));
+    return created.policy;
+  };
+
+  it("passes when every child completed and fails when any child did not complete", () => {
+    const two = policy(["b-a", "b-b"]);
+    const allCompleted = evaluateChildOutcomeSynthesis(two, [
+      { bindingId: "b-a", terminal: true, outcome: "completed" },
+      { bindingId: "b-b", terminal: true, outcome: "completed" },
+    ]);
+    expect(allCompleted.ok).toBe(true);
+    if (!allCompleted.ok) throw new Error("expected ok");
+    expect(allCompleted.result.status).toBe("passed");
+    expect(allCompleted.result.passed).toBe(true);
+    expect(allCompleted.result.completedCount).toBe(2);
+    expect(allCompleted.result.publishedFact).toEqual({
+      name: DEFAULT_JOIN_RESULT_FACT_NAME,
+      type: "boolean",
+      value: true,
+    });
+
+    const oneFailed = evaluateChildOutcomeSynthesis(two, [
+      { bindingId: "b-a", terminal: true, outcome: "completed" },
+      { bindingId: "b-b", terminal: true, outcome: "failed" },
+    ]);
+    expect(oneFailed.ok).toBe(true);
+    if (!oneFailed.ok) throw new Error("expected ok");
+    expect(oneFailed.result.status).toBe("failed");
+    expect(oneFailed.result.passed).toBe(false);
+    expect(oneFailed.result.failedBindingIds).toEqual(["b-b"]);
+    expect(oneFailed.result.publishedFact?.value).toBe(false);
+
+    const cancelled = evaluateChildOutcomeSynthesis(two, [
+      { bindingId: "b-a", terminal: true, outcome: "cancelled" },
+      { bindingId: "b-b", terminal: true, outcome: "completed" },
+    ]);
+    expect(cancelled.ok).toBe(true);
+    if (!cancelled.ok) throw new Error("expected ok");
+    expect(cancelled.result.status).toBe("failed");
+  });
+
+  it("returns pending when any join member is not terminal", () => {
+    const three = policy(["b-1", "b-2", "b-3"]);
+    const pending = evaluateChildOutcomeSynthesis(three, [
+      { bindingId: "b-1", terminal: true, outcome: "completed" },
+      { bindingId: "b-2", terminal: false },
+      { bindingId: "b-3", terminal: true, outcome: "completed" },
+    ]);
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) throw new Error("expected ok");
+    expect(pending.result.status).toBe("pending");
+    expect(pending.result.passed).toBe(false);
+    expect(pending.result.pendingBindingIds).toEqual(["b-2"]);
+    expect(pending.result.publishedFact).toBeUndefined();
+  });
+
+  it("treats an empty join set as vacuous success under all-success", () => {
+    const empty = policy([]);
+    const result = evaluateChildOutcomeSynthesis(empty, []);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.result.status).toBe("passed");
+    expect(result.result.passed).toBe(true);
+    expect(result.result.reason).toMatch(/Empty join set/);
+  });
+
+  it("orders result arrays by binding id without locale-sensitive compare", () => {
+    const members: ChildOutcomeMember[] = [
+      { bindingId: "z-last", terminal: true, outcome: "failed" },
+      { bindingId: "a-first", terminal: true, outcome: "completed" },
+      { bindingId: "m-mid", terminal: true, outcome: "completed" },
+    ];
+    const result = evaluateChildOutcomeSynthesis(policy(["z-last", "a-first", "m-mid"]), members);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.result.completedBindingIds).toEqual(["a-first", "m-mid"]);
+    expect(result.result.failedBindingIds).toEqual(["z-last"]);
+    expect(compareBindingId("a", "b")).toBeLessThan(0);
+  });
+
+  it("is replay deterministic for the same pure inputs", () => {
+    const p = policy(["bind-x", "bind-y"]);
+    const members: ChildOutcomeMember[] = [
+      { bindingId: "bind-x", terminal: true, outcome: "completed" },
+      { bindingId: "bind-y", terminal: true, outcome: "completed" },
+    ];
+    const first = evaluateChildOutcomeSynthesis(p, members);
+    const second = evaluateChildOutcomeSynthesis(p, members);
+    expect(first).toEqual(second);
+  });
+
+  it("rejects a missing member row for a policy binding", () => {
+    const result = evaluateChildOutcomeSynthesis(policy(["b-1", "b-2"]), [
+      { bindingId: "b-1", terminal: true, outcome: "completed" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected missing member");
+    expect(result.diagnostics[0]?.code).toBe("child_outcome_synthesis_member_missing");
+  });
+});
+
+describe("S6 domain family collection and parent apply", () => {
+  const setupTwoChildren = (options?: {
+    secondOutcome?: "completed" | "failed";
+    failurePolicy?: "fail-parent-node" | "block-parent-node";
+  }) => {
+    let rootState = createStartedWorkflow(parentWithJoinFact("Root join work"), "workflow-root", "goal-root");
+    rootState = startTask(rootState, "work");
+
+    const familyResult = createRootFamily({
+      familyId: "family-s6",
+      rootGoalId: "goal-root",
+      rootWorkflowId: "workflow-root",
+      at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 4,
+        maxGoalsInFamily: 16,
+        maxChildCreationAttemptsPerNode: 4,
+      },
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+
+    const child1 = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("Child one"),
+      childGoalId: "goal-child-1",
+      childWorkflowId: "workflow-child-1",
+      bindingId: "binding-1",
+      at: later,
+      scopePaths: ["src/**"],
+      failurePolicy: options?.failurePolicy ?? "block-parent-node",
+    });
+    if (!child1.ok) throw new Error(JSON.stringify(child1.diagnostics));
+
+    const child1Terminal = options?.secondOutcome === undefined
+      ? terminalCompletedChild(child1.childState)
+      : terminalCompletedChild(child1.childState);
+    const return1 = returnChildGoal({
+      family: child1.family,
+      parentState: child1.parentState,
+      childState: child1Terminal,
+      bindingId: "binding-1",
+      at: returnAt,
+      outcome: "completed",
+    });
+    if (!return1.ok) throw new Error(JSON.stringify(return1.diagnostics));
+
+    // Parent is running after first return. Create second child on the same node.
+    const child2 = createBoundedChildGoal({
+      family: return1.family,
+      parentState: return1.parentState,
+      parentNodeId: "work",
+      childDefinition: childTask("Child two"),
+      childGoalId: "goal-child-2",
+      childWorkflowId: "workflow-child-2",
+      bindingId: "binding-2",
+      at: returnAt,
+      scopePaths: ["src/**"],
+      failurePolicy: options?.failurePolicy ?? "block-parent-node",
+    });
+    if (!child2.ok) throw new Error(JSON.stringify(child2.diagnostics));
+
+    const secondOutcome = options?.secondOutcome ?? "completed";
+    const child2Terminal = secondOutcome === "completed"
+      ? terminalCompletedChild(child2.childState)
+      : terminalFailedChild(child2.childState);
+    const return2 = returnChildGoal({
+      family: child2.family,
+      parentState: child2.parentState,
+      childState: child2Terminal,
+      bindingId: "binding-2",
+      at: joinAt,
+      outcome: secondOutcome,
+    });
+    if (!return2.ok) throw new Error(JSON.stringify(return2.diagnostics));
+
+    return {
+      family: return2.family,
+      parentState: return2.parentState,
+      bindingIds: ["binding-1", "binding-2"] as const,
+    };
+  };
+
+  it("collects terminal members from family bindings in deterministic order", () => {
+    const setup = setupTwoChildren();
+    const ids = listBindingsForParentJoin({
+      family: setup.family,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+    });
+    expect(ids).toEqual(["binding-1", "binding-2"]);
+    expect(isJoinSetTerminal(setup.family, ids)).toBe(true);
+
+    const members = collectChildOutcomeMembersFromFamily(setup.family, ids);
+    expect(members.ok).toBe(true);
+    if (!members.ok) throw new Error("expected members");
+    expect(members.members.every((item) => item.terminal)).toBe(true);
+
+    const evaluated = synthesizeChildOutcomesFromFamily(
+      setup.family,
+      createAllSuccessJoinPolicy({ bindingIds: ids }).ok
+        ? (createAllSuccessJoinPolicy({ bindingIds: ids }) as { ok: true; policy: ChildOutcomeSynthesisPolicy }).policy
+        : { schemaVersion: 1, strategy: "all-success", bindingIds: ids, resultFactName: "join.passed" },
+    );
+    expect(evaluated.ok).toBe(true);
+    if (!evaluated.ok) throw new Error("expected evaluate ok");
+    expect(evaluated.result.status).toBe("passed");
+  });
+
+  it("applies all-success pass to parent by publishing join.passed", () => {
+    const setup = setupTwoChildren();
+    const policyResult = createAllSuccessJoinPolicy({ bindingIds: [...setup.bindingIds] });
+    if (!policyResult.ok) throw new Error(JSON.stringify(policyResult.diagnostics));
+
+    const parentBefore = freeze(setup.parentState);
+    const familyBefore = freeze(setup.family);
+    const attemptId = setup.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+
+    const applied = synthesizeAndApplyChildOutcomes({
+      family: setup.family,
+      parentState: setup.parentState,
+      policy: policyResult.policy,
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+      commandId: "synth-pass-1",
+    });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok || !("parentState" in applied)) throw new Error("expected applied");
+    expect(applied.result.status).toBe("passed");
+    expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+    expect(applied.parentState.runtime.nodes.work?.status).toBe("running");
+    expect(applied.parentEvents.some((event) => event.type === "hypagraph.fact.published")).toBe(true);
+    expect(applied.record.schemaVersion).toBe(CHILD_OUTCOME_SYNTHESIS_SCHEMA_VERSION);
+    expect(applied.record.bindingIds).toEqual(["binding-1", "binding-2"]);
+
+    // Inputs are not mutated.
+    expect(setup.parentState).toEqual(parentBefore);
+    expect(setup.family).toEqual(familyBefore);
+  });
+
+  it("applies all-success failure by publishing join.passed=false and blocking parent", () => {
+    let rootState = createStartedWorkflow(parentWithJoinFact("Root fail join"), "workflow-root-f", "goal-root-f");
+    rootState = startTask(rootState, "work", "attempt-work-f");
+    const familyResult = createRootFamily({
+      familyId: "family-s6-fail",
+      rootGoalId: "goal-root-f",
+      rootWorkflowId: "workflow-root-f",
+      at,
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+    const child = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("Only child"),
+      childGoalId: "goal-child-f",
+      childWorkflowId: "workflow-child-f",
+      bindingId: "binding-f",
+      at: later,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child.ok) throw new Error(JSON.stringify(child.diagnostics));
+    // Return completed so parent is running, then apply a failed join evaluation.
+    const returned = returnChildGoal({
+      family: child.family,
+      parentState: child.parentState,
+      childState: terminalCompletedChild(child.childState),
+      bindingId: "binding-f",
+      at: returnAt,
+      outcome: "completed",
+    });
+    if (!returned.ok) throw new Error(JSON.stringify(returned.diagnostics));
+
+    const policy = createAllSuccessJoinPolicy({ bindingIds: ["binding-f"] });
+    if (!policy.ok) throw new Error(JSON.stringify(policy.diagnostics));
+    const failedEval = evaluateChildOutcomeSynthesis(
+      policy.policy,
+      [{ bindingId: "binding-f", terminal: true, outcome: "failed" }],
+    );
+    expect(failedEval.ok).toBe(true);
+    if (!failedEval.ok) throw new Error("expected failed eval");
+    expect(failedEval.result.status).toBe("failed");
+
+    const attemptId = returned.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    const applied = applyChildOutcomeSynthesisToParent({
+      parentState: returned.parentState,
+      policy: policy.policy,
+      result: failedEval.result,
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+      commandId: "synth-fail-1",
+    });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok) throw new Error(JSON.stringify(applied.diagnostics));
+    expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(false);
+    expect(applied.parentState.runtime.nodes.work?.status).toBe("blocked");
+    expect(returned.family.schemaVersion).toBe(GOAL_FAMILY_SCHEMA_VERSION);
+  });
+
+  it("returns pending from synthesizeAndApply when a binding is still active", () => {
+    let rootState = createStartedWorkflow(parentWithJoinFact("Root pending"), "workflow-root-p", "goal-root-p");
+    rootState = startTask(rootState, "work");
+    const familyResult = createRootFamily({
+      familyId: "family-s6-pending",
+      rootGoalId: "goal-root-p",
+      rootWorkflowId: "workflow-root-p",
+      at,
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+    const child = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("Active child"),
+      childGoalId: "goal-child-p",
+      childWorkflowId: "workflow-child-p",
+      bindingId: "binding-p",
+      at: later,
+      scopePaths: ["src/**"],
+    });
+    if (!child.ok) throw new Error(JSON.stringify(child.diagnostics));
+
+    const policy = createAllSuccessJoinPolicy({ bindingIds: ["binding-p"] });
+    if (!policy.ok) throw new Error("policy");
+    const pending = synthesizeAndApplyChildOutcomes({
+      family: child.family,
+      parentState: child.parentState,
+      policy: policy.policy,
+      parentNodeId: "work",
+      parentAttemptId: child.parentState.runtime.nodes.work?.currentAttemptId ?? "attempt-work",
+      at: joinAt,
+    });
+    expect(pending.ok).toBe(true);
+    if (!pending.ok || !("status" in pending)) throw new Error("expected pending");
+    expect(pending.status).toBe("pending");
+    expect(pending.result.pendingBindingIds).toEqual(["binding-p"]);
+  });
+});
+
+describe("S6 host product synthesis path", () => {
+  const setupHostFamily = (secondOutcome: "completed" | "failed" = "completed") => {
+    let rootState = createStartedWorkflow(parentWithJoinFact("Host join root"), "workflow-root", "goal-root");
+    rootState = startTask(rootState, "work");
+    const familyResult = createRootFamily({
+      familyId: "family-s6-host",
+      rootGoalId: "goal-root",
+      rootWorkflowId: "workflow-root",
+      at,
+      bounds: {
+        maxDepth: 3,
+        maxChildrenPerGoal: 4,
+        maxGoalsInFamily: 16,
+        maxChildCreationAttemptsPerNode: 4,
+      },
+    });
+    if (!familyResult.ok) throw new Error(JSON.stringify(familyResult.diagnostics));
+
+    const child1 = createBoundedChildGoal({
+      family: familyResult.family,
+      parentState: rootState,
+      parentNodeId: "work",
+      childDefinition: childTask("Host child one"),
+      childGoalId: "goal-child-1",
+      childWorkflowId: "workflow-child-1",
+      bindingId: "binding-1",
+      at: later,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child1.ok) throw new Error(JSON.stringify(child1.diagnostics));
+
+    let family = child1.family;
+    let parentState = child1.parentState;
+    let child1State = terminalCompletedChild(child1.childState);
+    const return1 = returnChildGoal({
+      family,
+      parentState,
+      childState: child1State,
+      bindingId: "binding-1",
+      at: returnAt,
+      outcome: "completed",
+    });
+    if (!return1.ok) throw new Error(JSON.stringify(return1.diagnostics));
+    family = return1.family;
+    parentState = return1.parentState;
+
+    const child2 = createBoundedChildGoal({
+      family,
+      parentState,
+      parentNodeId: "work",
+      childDefinition: childTask("Host child two"),
+      childGoalId: "goal-child-2",
+      childWorkflowId: "workflow-child-2",
+      bindingId: "binding-2",
+      at: returnAt,
+      scopePaths: ["src/**"],
+      failurePolicy: "block-parent-node",
+    });
+    if (!child2.ok) throw new Error(JSON.stringify(child2.diagnostics));
+    family = child2.family;
+    parentState = child2.parentState;
+    const child2State = secondOutcome === "completed"
+      ? terminalCompletedChild(child2.childState)
+      : terminalFailedChild(child2.childState);
+    const return2 = returnChildGoal({
+      family,
+      parentState,
+      childState: child2State,
+      bindingId: "binding-2",
+      at: joinAt,
+      outcome: secondOutcome,
+    });
+    if (!return2.ok) throw new Error(JSON.stringify(return2.diagnostics));
+
+    return {
+      family: return2.family,
+      parentState: return2.parentState,
+      child1State,
+      child2State,
+    };
+  };
+
+  it("resolves an all-success policy from parent bindings on the host path", () => {
+    const setup = setupHostFamily();
+    const resolved = resolveProductJoinPolicy({
+      family: setup.family,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+    });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("expected resolve ok");
+    expect(resolved.policy.strategy).toBe("all-success");
+    expect(resolved.policy.bindingIds).toEqual(["binding-1", "binding-2"]);
+  });
+
+  it("applies product join synthesis after multi-child return and changes parent state", () => {
+    const setup = setupHostFamily("completed");
+    const attemptId = setup.parentState.runtime.nodes.work?.currentAttemptId;
+    expect(attemptId).toBeTruthy();
+    expect(setup.parentState.runtime.nodes.work?.status).toBe("running");
+
+    const applied = applyProductJoinSynthesis({
+      family: setup.family,
+      parentState: setup.parentState,
+      parentGoalId: "goal-root",
+      parentNodeId: "work",
+      parentAttemptId: attemptId!,
+      at: joinAt,
+      commandId: "host-synth-pass",
+    });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok || applied.status !== "applied") {
+      throw new Error(JSON.stringify(applied));
+    }
+    expect(applied.result.status).toBe("passed");
+    expect(applied.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+    expect(applied.parentState.runtime.nodes.work?.status).toBe("running");
+    expect(applied.parentEvents.length).toBeGreaterThan(0);
+  });
+
+  it("applies ready join syntheses after returns helper for the parent goal", () => {
+    const setup = setupHostFamily("completed");
+    const ready = applyReadyJoinSynthesesAfterReturns({
+      family: setup.family,
+      parentState: setup.parentState,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(ready.ok).toBe(true);
+    expect(ready.applied).toHaveLength(1);
+    expect(ready.applied[0]?.result.status).toBe("passed");
+    expect(ready.parentState.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+    expect(ready.pending).toHaveLength(0);
+  });
+
+  it("blocks parent when product join synthesis fails under all-success", () => {
+    // Build parent running with one completed binding, then apply a failed synthetic result
+    // through the product helper path with an explicit policy and pure failed members
+    // is covered by domain apply. Here: two children where second fails with block policy
+    // leaves parent blocked; ready helper still evaluates terminal join without re-apply.
+    const setup = setupHostFamily("failed");
+    expect(setup.parentState.runtime.nodes.work?.status).toBe("blocked");
+    const ready = applyReadyJoinSynthesesAfterReturns({
+      family: setup.family,
+      parentState: setup.parentState,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(ready.ok).toBe(true);
+    // Parent not running: no applied mutation; join still terminal-failed.
+    expect(ready.applied).toHaveLength(0);
+    expect(
+      ready.diagnostics.some((item) => item.code === "child_outcome_synthesis_parent_not_running"),
+    ).toBe(true);
+  });
+
+  it("applies join synthesis on the persisted family product path", () => {
+    const setup = setupHostFamily("completed");
+    const persisted: PersistedGoalFamily = {
+      schemaVersion: GOAL_FAMILY_SCHEMA_VERSION,
+      familyEvents: [],
+      familySnapshot: setup.family,
+      workflows: {
+        "workflow-root": {
+          events: [],
+          snapshot: setup.parentState,
+        },
+        "workflow-child-1": {
+          events: [],
+          snapshot: setup.child1State,
+        },
+        "workflow-child-2": {
+          events: [],
+          snapshot: setup.child2State,
+        },
+      },
+    };
+
+    const synthesized = applyReadyJoinSynthesesToPersistedFamily({
+      family: persisted,
+      parentGoalId: "goal-root",
+      at: joinAt,
+    });
+    expect(synthesized.ok).toBe(true);
+    if (!synthesized.ok) throw new Error(JSON.stringify(synthesized.diagnostics));
+    expect(synthesized.applied).toHaveLength(1);
+    expect(synthesized.applied[0]?.result.status).toBe("passed");
+    const parentWorkflow = synthesized.family.workflows["workflow-root"];
+    expect(parentWorkflow?.snapshot.runtime.facts[DEFAULT_JOIN_RESULT_FACT_NAME]?.value).toBe(true);
+    expect(parentWorkflow?.events.some((event) => event.type === "hypagraph.fact.published")).toBe(true);
+  });
+});
+

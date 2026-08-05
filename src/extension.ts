@@ -133,6 +133,10 @@ import {
   detectPendingChildReturn,
   renderChildReturnApplied,
 } from "./pi/family-product-return.js";
+import {
+  applyReadyJoinSynthesesToPersistedFamily,
+  renderJoinSynthesisApplied,
+} from "./pi/family-product-synthesis.js";
 import { restoreLatestSession } from "./persistence/session-rebuild.js";
 import { formatPiCheckResult, requireRunnableCommandCheck, runPiCommandCheck } from "./pi/check-tool.js";
 import {
@@ -3029,6 +3033,124 @@ ${dispatch.reason ?? "The effect dispatch did not complete."}`, "warning");
         );
         applied += 1;
         progress = true;
+      }
+    }
+
+    // S6: when every child in a parent-node join set is terminal, run all-success
+    // synthesis and transition the parent (publish join.passed when declared; block on fail).
+    if (applied > 0 && state?.goal) {
+      const parentGoalId = state.goal.goalId;
+      const synthesisPass = await withIsolatedFreeSlotLock(async () => {
+        const live = state;
+        if (!live?.goal) {
+          return { family, notified: [] as Array<{ text: string; level: "info" | "warning" }> };
+        }
+        let bag = latestFamilyRecord ?? family;
+        const parentWorkflowId = live.workflowId;
+        bag = {
+          ...bag,
+          workflows: {
+            ...bag.workflows,
+            [parentWorkflowId]: {
+              events: structuredClone(events),
+              snapshot: structuredClone(live),
+            },
+          },
+        };
+        const synthesisAt = new Date().toISOString();
+        const synthesized = applyReadyJoinSynthesesToPersistedFamily({
+          family: bag,
+          parentGoalId,
+          at: synthesisAt,
+        });
+        if (!synthesized.ok) {
+          return {
+            family: bag,
+            notified: synthesized.diagnostics.map((item) => ({
+              text: `Child join synthesis was not applied. ${item.code}: ${item.message}`,
+              level: "warning" as const,
+            })),
+          };
+        }
+        if (synthesized.applied.length === 0) {
+          return {
+            family: synthesized.family,
+            notified: synthesized.diagnostics.map((item) => ({
+              text: `Child join synthesis note: ${item.code}: ${item.message}`,
+              level: "warning" as const,
+            })),
+          };
+        }
+
+        const nextParentWorkflow = synthesized.family.workflows[parentWorkflowId];
+        if (!nextParentWorkflow) {
+          return {
+            family: synthesized.family,
+            notified: [{
+              text: `Child join synthesis committed without parent workflow '${parentWorkflowId}'.`,
+              level: "warning" as const,
+            }],
+          };
+        }
+
+        const previousParentSequence = live.sequence;
+        const appendedParentEvents = nextParentWorkflow.events.slice(events.length);
+        if (appendedParentEvents.length > 0) {
+          try {
+            await eventStore.lease().append({
+              workflowId: parentWorkflowId,
+              expectedSequence: previousParentSequence,
+              events: appendedParentEvents,
+              snapshot: nextParentWorkflow.snapshot,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              family: bag,
+              notified: [{
+                text: `Child join synthesis could not append parent events. ${message}`,
+                level: "warning" as const,
+              }],
+            };
+          }
+        }
+
+        appendOneMemberFamilyRecord(pi, synthesized.family);
+        rememberFamilyRecord(synthesized.family);
+        state = nextParentWorkflow.snapshot;
+        events = structuredClone(nextParentWorkflow.events);
+        eventStore.noteWorkflowSequence(parentWorkflowId, state.sequence);
+
+        const notified = synthesized.applied.map((item) => {
+          const parentNodeStatus =
+            nextParentWorkflow.snapshot.runtime.nodes[item.parentNodeId]?.status ?? "unknown";
+          return {
+            text: renderJoinSynthesisApplied({
+              parentNodeId: item.parentNodeId,
+              status: item.result.status === "passed" ? "passed" : "failed",
+              completedCount: item.result.completedCount,
+              totalCount: item.result.totalCount,
+              resultFactName: item.policy.resultFactName,
+              parentNodeStatus,
+            }),
+            level: (item.result.status === "passed" ? "info" : "warning") as "info" | "warning",
+          };
+        });
+        for (const item of synthesized.diagnostics) {
+          notified.push({
+            text: `Child join synthesis note: ${item.code}: ${item.message}`,
+            level: "warning",
+          });
+        }
+        return { family: synthesized.family, notified };
+      });
+
+      family = synthesisPass.family;
+      for (const note of synthesisPass.notified) {
+        ctx.ui.notify(note.text, note.level);
+      }
+      if (synthesisPass.notified.some((note) => note.level === "info")) {
+        paintUi(ctx);
       }
     }
 

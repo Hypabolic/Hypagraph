@@ -1,7 +1,7 @@
 # Hypagraph capability ledger
 
 - Status: active
-- Updated: 2026-08-04
+- Updated: 2026-08-05
 - Package baseline: 0.14.0
 - Writing standard: ASD-STE100 Simplified Technical English
 - Source of direction: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`
@@ -58,7 +58,7 @@ States below reflect the adversarial review of 2026-08-04 and the in-tree produc
 | Derived fan-out from collection facts | Yes | No | No | No | Domain + tests. Not ordinary product surface. |
 | Isolated model workers (`isolated-pi`) | Yes | Yes | Yes | Partial | Default for root model tasks when spawn works. |
 | ACP / CLI external executors | Yes | Yes | No | No | Adapters exist; engineer surface, not first-run product. |
-| Aggregate / quorum / synthesis nodes | No | No | No | No | Design and plans only. |
+| Aggregate / quorum / synthesis nodes | Yes | Yes | No | No | S6 all-success child-outcome join: domain module `child-outcome-synthesis.ts` (schema v1 policy/result records; pure evaluate; parent apply publishes `join.passed` when the parent declares that boolean produce, and blocks parent on failed join). Host product helpers in `family-product-synthesis.ts`; extension `applyPendingChildReturns` runs ready join synthesis after child returns settle (ordinary family product path, not demo-only). Empty join set is vacuous success. Multi-child join set is all bindings for a parent goal+node when none remain active. Full aggregate node kinds (quorum/ranked/collect), model synthesis node, and recipe library are not shipped. Live acceptance not recorded. |
 | Named recipe library (beyond one implement-verify tool) | Partial | Partial | No | No | One minimal recipe tool. Library and launch-with-args incomplete. |
 | Gauntlet / blind multi-critic panel | Partial | No | No | No | Design docs only. |
 | In-Pi showcase demo tour | N/A | Yes | Yes | Partial | Deterministic fixtures only. Not multi-agent proof. |
