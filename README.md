@@ -376,7 +376,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - shared mutating-tool policy blocks `write`, `edit`, and `bash` during authoring and while waiting for Run;
 - project-store write failures notify the user; create still succeeds with runtime event authority.
 - `hypagoal_create_child` creates a bounded child Hypagoal from an active parent task after Run;
-- multi-member create-child parent must use `executorProfile.kind: "current-session"` (Option A); workers never create children;
+- multi-member create-child runs from an active parent task on the family desk (isolated-pi or current-session);
 - child plan-owner tasks default to `isolated-pi`; current-session is refused on non-root members until member delivery ships;
 - family-aware controller selection dispatches work across members (concurrent multi-pending on the host path when policy allows; sequential when concurrent is off or maxBatchSize is 1);
 - child terminal return applies binding policies on the product path; child success does not complete the parent task;
@@ -397,7 +397,7 @@ Post-review direction: [next steps after adversarial review](docs/scratch/advers
 - command, report, metric, file, and Git checks with cancellation and restore protection;
 - bounded iteration regions, evaluation contracts, and protected feedback;
 - generic action-dispatch model (deterministic, model, and executor lanes);
-- goal-family projection and bounded child create/return domain helpers (**ordinary multi-member path needs Option A for create-child**; concurrent multi-pending is on the host path with Partial ordinary reach; see ledger);
+- goal-family projection and bounded child create/return domain helpers (**create-child no longer requires current-session**; concurrent multi-pending is on the host path with Partial ordinary reach; see ledger);
 - isolated Pi executor path for root model tasks; ACP / CLI adapters and worktree leases are host or domain seams, not full ordinary multi-agent desks;
 - concurrent multi-pending family selection on the host product path with default global concurrency two, independent-settle partial failure, and policy surface docs ([concurrency policy surface](docs/concurrency-policy-surface.md)); host still starts at most one model per pass;
 - `/hypagraph` status, pause, resume, cancel, history, explain, loop, check, graph, trigger, and executor controls.

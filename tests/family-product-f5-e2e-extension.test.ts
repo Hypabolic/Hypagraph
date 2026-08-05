@@ -312,13 +312,12 @@ describe("Wave F5 automated family product e2e path", () => {
     expect(skill).toContain("isolated-pi");
     expect(skill).toMatch(/Family desk|family desk/);
     expect(skill).toMatch(/plan owner/i);
-    expect(skill).toMatch(/Workers never create/i);
-    expect(skill).toMatch(/current-session/);
+    expect(skill).toMatch(/current-session|isolated-pi/);
+    expect(skill).not.toMatch(/Workers never create/i);
     expect(skill).not.toMatch(/child create is not available on the active tool surface/i);
     expect(skill).not.toMatch(/when child create is not available/i);
-    // Forbidden: default isolated parent may create-child mid-worker.
-    expect(skill).not.toMatch(/isolated parent can call create-child/i);
-    expect(skill).not.toMatch(/worker creates child/i);
+    // Create-child is allowed for isolated parents from the family desk.
+    expect(skill).toMatch(/isolated-pi \(default\) or current-session|isolated-pi or current-session|may use the default/i);
   });
 
   it("fails the success contract when product return is skipped (negative R2 check)", async () => {

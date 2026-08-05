@@ -41,7 +41,7 @@ Rules you must keep:
 3. Each child Hypagoal owns its own workflow aggregate and its own goal lifecycle.
 4. One family controller (family desk) schedules family work. A child is not a competing scheduler and not a free-form subagent loop.
 5. Child completion does **not** complete the parent task automatically. The parent must integrate and verify returned facts.
-6. **Workers never create child Hypagoals.** Create-child runs on the family desk through a current-session parent task (Option A).
+6. **Create-child runs on the family desk** from an active parent task. The parent may use isolated-pi (default) or current-session.
 
 The ordinary create path starts a **one-member family** (the root). Deeper family membership is additive.
 
@@ -102,8 +102,8 @@ When subgoals stay in one workflow:
 When a subgoal is a child Hypagoal:
 
 1. Create the child only from an **active parent task** attempt on the **family desk**. A check or gate cannot create a child.
-2. Author that parent task with `executorProfile.kind: "current-session"` (Option A). Default isolated parent workers **cannot** call create-child while they own the attempt.
-3. Call **`hypagoal_create_child`** on the model tool surface (not free-form family mutation). **Workers never create children.**
+2. The parent task may use the default `isolated-pi` profile or `current-session`. Create-child does not require current-session.
+3. Call **`hypagoal_create_child`** on the model tool surface (not free-form family mutation). Do not use the same parent node an unsettled isolated worker owns. An unsettled worker on another node does not by itself reject create-child; the parent task must still be active.
 4. The child receives a **bounded binding**: objective, input facts, output fact contracts, scope paths, budget, and failure policy (`fail-parent-node`, `block-parent-node`, or `return-for-revision`).
 5. Atomic child creation validates parent and child, records the binding, sets the parent task to `waiting_for_child`, starts the child workflow-local goal, and leaves unrelated parent components runnable.
 6. The child graph is authored like any other Hypagoal: goal contract first, then smallest workflow, then create (child `draftId` or free-form `definition`). The child is **plan owner** of that graph.
@@ -114,7 +114,7 @@ When a subgoal is a child Hypagoal:
 
 ### `hypagoal_create_child` (live tool)
 
-Use this tool when a child Hypagoal is justified and a parent **task** attempt is active (after the user chose **Run** on the root). The parent create-child task must be **current-session** (Option A).
+Use this tool when a child Hypagoal is justified and a parent **task** attempt is active (after the user chose **Run** on the root). The parent may be isolated-pi or current-session.
 
 Required parameters:
 
@@ -135,10 +135,11 @@ Rules:
 
 1. Blocked until the user chooses **Run** after root create (post-create gate).
 2. Rejected for non-task parents, idle parents, and widened scope.
-3. Rejected when an **isolated worker** owns the parent attempt. Message names **current-session** (finish or cancel the worker, or author the parent with current-session).
-4. On success: family has at least two members; parent is `waiting_for_child`; tool result includes child goal id, workflow id, binding id, and parent wait status.
-5. Prefer same-graph nodes when the subgoal shares ownership, budget, and workspace. Prefer `hypagraph_revise` for mid-run plan change that is not a true child.
-6. Multi-member path requires a current-session create-child parent until Option B (controller-mediated create from isolated parents) ships.
+3. Rejected when `parentNodeId` equals the node an **unsettled isolated worker** owns (same-node guard). The message names that node. Options: choose another parent node, or cancel the worker then create the child.
+4. The same-node guard is the only worker-related create-child block. Isolated parents are allowed when that parent is active and no unsettled worker owns that node. One exclusive active task per workflow means a second parent is not active while a worker runs on another node in that workflow.
+5. On success: family has at least two members; parent is `waiting_for_child`; tool result includes child goal id, workflow id, binding id, and parent wait status.
+6. Prefer same-graph nodes when the subgoal shares ownership, budget, and workspace. Prefer `hypagraph_revise` for mid-run plan change that is not a true child.
+7. Multi-member path uses `hypagoal_create_child` from an active parent task on the family desk.
 
 ### Parent wait and return
 
@@ -152,7 +153,7 @@ Rules:
 
 Root free-form shape:
 
-1. `delegate` — task that will call `hypagoal_create_child`. **Must** set `executorProfile: { "profileId": "current-session-delegate", "kind": "current-session" }`. Declare `produces` for returned facts; optional narrow `scope`.
+1. `delegate` — task that will call `hypagoal_create_child`. Default isolated-pi is fine. Optional `executorProfile` for current-session if you want that work in main chat. Declare `produces` for returned facts; optional narrow `scope`.
 2. `integrate` — task, `requires: ["delegate"]`, consumes returned facts and finishes parent work. May also use current-session when integration runs on the family desk.
 3. Optional `release-check` — check after integrate.
 
@@ -179,7 +180,7 @@ Binding example fields: `parentNodeId: "delegate"`, `outputFacts: [{ name: "auth
 | --- | --- |
 | User asks for repository work | Goal contract → decompose subgoals → inspect → author → create → wait for **Run** |
 | Subgoals share ownership and budget | Same-graph nodes (and independent components when needed) |
-| Subgoal needs separate ownership, budget, scope, or return contract | Child Hypagoal via `hypagoal_create_child` from a **current-session** parent task on the family desk |
+| Subgoal needs separate ownership, budget, scope, or return contract | Child Hypagoal via `hypagoal_create_child` from an active parent task on the family desk |
 | Graph is only task/check/loop | Draft tools + `draftId` on `hypagoal_start` |
 | Graph needs interaction, gate, code, or effect | Free-form `definition` on `hypagoal_start` (see interaction recipe below) |
 | After create in TUI | Wait for post-create dock: **Run** / **Question** / **Cancel** |
@@ -357,15 +358,16 @@ The main Pi session is the **family desk** (and the plan owner for the live root
 3. Interaction questions stay on the family desk session so the user can answer them.
 4. Automatic revision turns may still use a desk follow-up in this release when selected.
 5. A **root** node may set `executorProfile.kind: "current-session"` only as an explicit opt-in. Prefer the default for implement work.
-6. A parent task that calls `hypagoal_create_child` **must** use current-session (Option A). Child member tasks must stay isolated-pi until member continuation delivery ships.
+6. A parent task that calls `hypagoal_create_child` may use isolated-pi or current-session. Child member tasks must stay isolated-pi until member continuation delivery ships.
 
 While an isolated worker owns a mutating task attempt:
 
 1. Do not call task lifecycle tools or edit repository files as if you were the worker.
-2. Do not call `hypagoal_create_child` from that worker path. Create-child requires a current-session parent on the family desk.
-3. Use `hypagraph_read` and `/hypagraph status` or `/hypagraph executor status` for progress. Status reports the worker **member goal id**, node, attempt, profile, and elapsed time when one is active.
-4. Cancel a stuck worker with `/hypagraph executor cancel`. Cancel aborts the worker signal and cancels the tracked **member** attempt.
-5. Reload, branch change, and session shutdown also abort the in-flight worker and cancel the tracked member attempt.
+2. Create-child is family-desk control. You may call `hypagoal_create_child` for an active parent task that uses isolated-pi or current-session when no unsettled worker owns that parent node.
+3. Do not call `hypagoal_create_child` with `parentNodeId` equal to the node that worker owns. Choose another parent node, or cancel the worker and then create the child.
+4. Use `hypagraph_read` and `/hypagraph status` or `/hypagraph executor status` for progress. Status reports the worker **member goal id**, node, attempt, profile, and elapsed time when one is active.
+5. Cancel a stuck worker with `/hypagraph executor cancel`. Cancel aborts the worker signal and cancels the tracked **member** attempt.
+6. Reload, branch change, and session shutdown also abort the in-flight worker and cancel the tracked member attempt.
 
 Default root model attempts use a hard host timeout (15 minutes). A timed-out worker settles as failed rather than running forever.
 

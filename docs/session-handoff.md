@@ -129,6 +129,8 @@ Host modularization: use `docs/host-extraction-plan.md` for `src/extension.ts` s
 
 Post-review next steps: `docs/scratch/adversarial-review-2026-08-04/09-NEXT-STEPS.md`.
 
+Create-child authority (2026-08-05): create-child does **not** require a current-session parent. The family desk may call `hypagoal_create_child` for an active parent task with isolated-pi or current-session. The old Option A rule is removed.
+
 Concurrency policy surface (Gate 1.2): `docs/concurrency-policy-surface.md`.
 
 ## 5. Current target after v0.14

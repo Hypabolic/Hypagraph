@@ -61,20 +61,18 @@ export function activeWorkerGateBlockReason(nodeId: string, attemptId: string): 
 }
 
 /**
- * Diagnostic when hypagoal_create_child is blocked because an isolated worker
- * owns the parent attempt (Option A: create-child parent must be current-session).
+ * Family control tools that the family desk may run while an isolated model
+ * worker owns a parent task. Create-child remains family control during a worker.
+ * The execute path applies a same-node guard; repository mutation tools stay blocked.
  */
-export function createChildBlockedByIsolatedWorkerReason(
-  nodeId: string,
-  attemptId: string,
-): string {
-  return (
-    `An isolated worker owns parent task '${nodeId}' (attempt '${attemptId}'). `
-    + "Child create requires a current-session parent task. "
-    + "Finish or cancel that worker, or author the parent with "
-    + 'executorProfile.kind "current-session". '
-    + "Workers never create child Hypagoals."
-  );
+export const HYPAGRAPH_FAMILY_CONTROL_TOOLS_DURING_WORKER = [
+  "hypagoal_create_child",
+] as const;
+
+const familyControlDuringWorkerSet = new Set<string>(HYPAGRAPH_FAMILY_CONTROL_TOOLS_DURING_WORKER);
+
+export function isHypagraphFamilyControlToolDuringWorker(toolName: string): boolean {
+  return familyControlDuringWorkerSet.has(toolName);
 }
 
 /**

@@ -153,7 +153,7 @@ import { getHostRoutingOptions } from "./pi/host-routing-options.js";
 import {
   activeWorkerGateBlockReason,
   AUTHORING_GATE_BLOCK_REASON,
-  createChildBlockedByIsolatedWorkerReason,
+  isHypagraphFamilyControlToolDuringWorker,
   isHypagraphAuthoringBlockedTool,
   isHypagraphWorkMutatingTool,
   NON_ROOT_CURRENT_SESSION_BAN_REASON,
@@ -994,13 +994,30 @@ export default function hypagraphExtension(pi: ExtensionAPI): void {
   const persisted = (): PersistedHypagraph => ({ events: structuredClone(events), snapshot: structuredClone(state!) });
   const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: { hypagraph: persisted() } });
 
-  const ensureNoActiveExecution = (): void => {
-    if (activeExecutions.hasActive()) throw new Error("A check is active. Cancel it or let it finish before another workflow change.");
-    if (activeCodeExecutions.hasActive()) throw new Error("A code node is active. Cancel it or let it finish before another workflow change.");
-    if (activeEffectExecutions.hasActive()) throw new Error("An effect node is active. Cancel it or let it finish before another workflow change.");
-    if (activePresentations.size > 0) {
-      throw new Error("An interaction presentation is active. Wait for it to finish before another workflow change.");
+  /**
+   * Host executions that block create-child and general workflow mutation.
+   * Checks, code, effects, and interaction presentations only.
+   * Does not include isolated model workers (create-child uses a same-node guard instead).
+   */
+  const activeHostExecutionBlockReason = (purpose: "child create" | "another workflow change"): string | undefined => {
+    if (activeExecutions.hasActive()) {
+      return `A check is active. Cancel it or let it finish before ${purpose}.`;
     }
+    if (activeCodeExecutions.hasActive()) {
+      return `A code node is active. Cancel it or let it finish before ${purpose}.`;
+    }
+    if (activeEffectExecutions.hasActive()) {
+      return `An effect node is active. Cancel it or let it finish before ${purpose}.`;
+    }
+    if (activePresentations.size > 0) {
+      return `An interaction presentation is active. Wait for it to finish before ${purpose}.`;
+    }
+    return undefined;
+  };
+
+  const ensureNoActiveExecution = (): void => {
+    const hostBlock = activeHostExecutionBlockReason("another workflow change");
+    if (hostBlock) throw new Error(hostBlock);
     if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
       throw new Error(
         `An isolated model worker owns node '${activeIsolatedRootAttempt.nodeId}' `
@@ -3720,22 +3737,15 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         reason: POST_CREATE_GATE_BLOCK_REASON,
       };
     }
-    // While an isolated worker owns mutating task work, block the orchestrator
-    // from acting as a second writer. Create-child names Option A (current-session parent).
+    // While an isolated worker owns mutating task work, block the family desk
+    // from acting as a second writer on repository tools. Create-child is family
+    // control: allowed for any active parent task (isolated or current-session).
     if (
       activeIsolatedRootAttempt
       && !activeIsolatedRootAttempt.settled
       && isHypagraphWorkMutatingTool(event.toolName)
+      && !isHypagraphFamilyControlToolDuringWorker(event.toolName)
     ) {
-      if (event.toolName === "hypagoal_create_child") {
-        return {
-          block: true,
-          reason: createChildBlockedByIsolatedWorkerReason(
-            activeIsolatedRootAttempt.nodeId,
-            activeIsolatedRootAttempt.attemptId,
-          ),
-        };
-      }
       return {
         block: true,
         reason: activeWorkerGateBlockReason(
@@ -4046,12 +4056,13 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
   pi.registerTool({
     name: "hypagoal_create_child",
     label: "Create child Hypagoal",
-    description: "Create a bounded child Hypagoal from an active parent task on the family desk. The parent create-child task must use executorProfile.kind current-session (Option A). Child plan-owner tasks default to isolated-pi. Workers never create children. Commits family membership and parent waiting_for_child through createBoundedChildGoalInFamily.",
-    promptSnippet: "Create a child Hypagoal from a current-session parent task on the family desk",
+    description: "Create a bounded child Hypagoal from an active parent task on the family desk. The parent task may use current-session or isolated-pi. Reject create-child when parentNodeId equals the node an unsettled isolated worker owns. Child plan-owner tasks default to isolated-pi. Commits family membership and parent waiting_for_child through createBoundedChildGoalInFamily.",
+    promptSnippet: "Create a child Hypagoal from an active parent task on the family desk",
     promptGuidelines: [
       "Call hypagoal_create_child only from an active parent task attempt after the user chose Run.",
-      "Author the parent create-child task with executorProfile.kind current-session so the family desk can run create-child (Option A).",
-      "Do not call hypagoal_create_child from an isolated worker. Workers never create child Hypagoals.",
+      "The parent task may use the default isolated-pi profile or current-session. Create-child does not require current-session.",
+      "Do not call hypagoal_create_child with parentNodeId equal to the node an unsettled isolated worker owns. Choose another parent node, or cancel the worker and then create the child.",
+      "The same-node guard is the only worker-related create-child block. Create-child still requires an active parent task attempt. One exclusive active task per workflow means a second parent is not active while a worker runs on another node in that workflow.",
       "Child plan-owner implement tasks default to isolated-pi. Do not set current-session on child member tasks until member delivery ships.",
       "Prefer same-graph nodes when the subgoal shares ownership, budget, and workspace.",
       "Use a child Hypagoal when the subgoal needs separate ownership, budget, scope, or return contract.",
@@ -4073,22 +4084,11 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
         },
       });
 
-      // Option A: isolated workers cannot create children. Name current-session clearly.
-      if (activeIsolatedRootAttempt && !activeIsolatedRootAttempt.settled) {
-        return rejectChild(
-          "child_create_blocked_isolated_worker",
-          createChildBlockedByIsolatedWorkerReason(
-            activeIsolatedRootAttempt.nodeId,
-            activeIsolatedRootAttempt.attemptId,
-          ),
-        );
-      }
-
-      try {
-        ensureNoActiveExecution();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return rejectChild("child_create_blocked_active_execution", message);
+      // Create-child is family control. Refuse checks, code, effects, and presentations.
+      // Isolated workers use the same-node guard below, not a blanket block.
+      const hostBlock = activeHostExecutionBlockReason("child create");
+      if (hostBlock) {
+        return rejectChild("child_create_blocked_active_execution", hostBlock);
       }
 
       if (postCreateAwaitingUserChoice) {
@@ -4118,6 +4118,26 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return rejectChild("hypagoal_create_child_invalid", message);
+      }
+
+      // Same-node guard: only the worker's own node is blocked for create-child.
+      // Create-child on that node moves it to waiting_for_child and makes submit-result stale.
+      // An unsettled worker on another node does not by itself reject create-child.
+      // The parent task must still be active (domain exclusive ownership usually prevents
+      // a second active parent in the same workflow while a worker runs).
+      if (
+        activeIsolatedRootAttempt
+        && !activeIsolatedRootAttempt.settled
+        && input.parentNodeId === activeIsolatedRootAttempt.nodeId
+        && activeIsolatedRootAttempt.workflowId === state.workflowId
+      ) {
+        const nodeId = activeIsolatedRootAttempt.nodeId;
+        return rejectChild(
+          "child_create_blocked_active_worker_node",
+          `An unsettled isolated worker owns parent node '${nodeId}'. `
+          + "Create-child on that node would move it to waiting_for_child and discard worker evidence. "
+          + "Choose another parent node, or cancel the worker with /hypagraph executor cancel and then create the child.",
+        );
       }
 
       // Resolve child definition from draftId or free-form definition.
@@ -4281,6 +4301,9 @@ ${formatDiagnostics(recorded.diagnostics)}`, "warning");
       state = parentWorkflow.snapshot;
       events = structuredClone(parentWorkflow.events);
       eventStore.synchronize({ events, snapshot: state });
+      // If an unsettled worker owns a different node in this workflow, refresh the
+      // cancel mirror so cancel/reload does not rewind past create-child.
+      mirrorActiveIsolatedCancelState();
 
       // Project-store artifacts for the child definition. Failure is notify-only.
       let childProjectStoreWritten = false;

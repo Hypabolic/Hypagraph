@@ -365,7 +365,7 @@ describe("Wave F1 hypagoal_create_child extension", () => {
     expect(blocked.some((item) => item && item.block === true)).toBe(true);
   });
 
-  it("allows create-child from a current-session parent (Option A)", async () => {
+  it("allows create-child from a current-session parent", async () => {
     const value = harness();
     const csRoot = {
       ...rootDefinition,
@@ -413,7 +413,7 @@ describe("Wave F1 hypagoal_create_child extension", () => {
     expect(String(result.content?.[0]?.text ?? "")).toContain("Child Hypagoal created.");
   });
 
-  it("rejects create-child while an isolated worker owns the parent attempt", async () => {
+  const hangWorkerHarness = async () => {
     const { configureHostRoutingForTests } = await import("../src/pi/host-routing-options.js");
     const {
       bindActiveIsolatedPiHost,
@@ -428,6 +428,7 @@ describe("Wave F1 hypagoal_create_child extension", () => {
     const hangPromise = new Promise<void>((resolve) => {
       releaseWorker = resolve;
     });
+    let workerSettledOutcome: string | undefined;
 
     const fakeHost = createIsolatedPiHost({
       transport: {
@@ -438,11 +439,12 @@ describe("Wave F1 hypagoal_create_child extension", () => {
           identity: options.identity,
           runAttempt: async (context) => {
             await hangPromise;
+            workerSettledOutcome = "submitted";
             return buildExecutorResultPayload({
               identity: context.identity,
               outcome: "submitted",
               facts: [{
-                name: "auth.ready",
+                name: "worker.done",
                 type: "boolean",
                 value: true,
                 evidence: [{ ref: "evidence://hang", kind: "note" }],
@@ -463,18 +465,14 @@ describe("Wave F1 hypagoal_create_child extension", () => {
     });
     bindActiveIsolatedPiHost(fakeHost);
 
-    try {
-      // Default-profile parent (isolated-pi) — no current-session.
-      await value.tools.get("hypagoal_start")!.execute(
-        "create-isolated-root",
-        { objective: rootObjective, definition: rootDefinition },
-        undefined,
-        undefined,
-        value.ctx,
-      );
-
-      // Start isolated worker without awaiting full settle.
-      const agentEndPromise = invoke(value.handlers, "agent_end", {
+    return {
+      value,
+      fakeHost,
+      configureHostRoutingForTests,
+      bindActiveIsolatedPiHost,
+      releaseWorker: () => releaseWorker?.(),
+      getWorkerSettledOutcome: () => workerSettledOutcome,
+      startAgentEnd: () => invoke(value.handlers, "agent_end", {
         type: "agent_end",
         messages: [{
           role: "assistant",
@@ -490,64 +488,290 @@ describe("Wave F1 hypagoal_create_child extension", () => {
           stopReason: "stop",
           timestamp: Date.now(),
         }],
-      }, value.ctx);
+      }, value.ctx),
+    };
+  };
 
-      // Give the host a tick to register the active isolated attempt.
+  it("rejects create-child when parentNodeId is the unsettled worker node", async () => {
+    const hang = await hangWorkerHarness();
+    try {
+      await hang.value.tools.get("hypagoal_start")!.execute(
+        "create-isolated-root",
+        { objective: rootObjective, definition: rootDefinition },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+
+      const agentEndPromise = hang.startAgentEnd();
       await new Promise((r) => setTimeout(r, 50));
 
-      const result = await value.tools.get("hypagoal_create_child")!.execute(
-        "create-while-worker",
+      const result = await hang.value.tools.get("hypagoal_create_child")!.execute(
+        "create-same-node-while-worker",
         {
           parentNodeId: "delegate",
-          childObjective: "Should fail under isolated parent ownership.",
+          childObjective: "Must fail while worker owns delegate.",
           definition: childDefinition,
           scopePaths: ["src/domain/**"],
         },
         undefined,
         undefined,
-        value.ctx,
+        hang.value.ctx,
       );
 
       const text = String(result.content?.[0]?.text ?? "");
       expect(result.details?.hypagoalChild?.kind).toBe("rejected");
-      expect(text).toMatch(/current-session/i);
-      expect(
-        result.details?.hypagoalChild?.diagnostics?.some(
-          (d: { code: string }) => d.code === "child_create_blocked_isolated_worker",
-        ),
-      ).toBe(true);
+      expect(result.details?.hypagoalChild).toMatchObject({
+        kind: "rejected",
+        diagnostics: [expect.objectContaining({
+          code: "child_create_blocked_active_worker_node",
+        })],
+      });
+      expect(text).toMatch(/delegate/);
+      expect(text).toMatch(/another parent node/i);
+      expect(text).toMatch(/cancel the worker/i);
 
-      // Tool gate also names current-session.
-      const blocked = await invoke(value.handlers, "tool_call", {
+      // Tool gate must not block create-child while a worker is unsettled (family control).
+      const gate = await invoke(hang.value.handlers, "tool_call", {
         type: "tool_call",
         toolName: "hypagoal_create_child",
         toolCallId: "worker-gate",
         input: {},
-      }, value.ctx);
-      const blockReasons = blocked
-        .filter((item) => item && item.block === true)
-        .map((item) => String(item.reason ?? ""));
-      expect(blockReasons.some((reason) => /current-session/i.test(reason))).toBe(true);
+      }, hang.value.ctx);
+      expect(gate.some((item) => item && item.block === true)).toBe(false);
 
-      releaseWorker?.();
+      // Write/edit remain blocked while the worker owns the task.
+      const writeBlocked = await invoke(hang.value.handlers, "tool_call", {
+        type: "tool_call",
+        toolName: "write",
+        toolCallId: "write-gate",
+        input: { path: "x.ts" },
+      }, hang.value.ctx);
+      expect(writeBlocked.some((item) => item && item.block === true)).toBe(true);
+
+      // Worker settlement still succeeds after same-node create-child was rejected.
+      hang.releaseWorker();
       await agentEndPromise;
+      expect(hang.getWorkerSettledOutcome()).toBe("submitted");
     } finally {
-      releaseWorker?.();
-      await fakeHost.teardownOnRestore({ kind: "other", reason: "f1 hang cleanup" });
-      bindActiveIsolatedPiHost(undefined);
-      configureHostRoutingForTests({ legacyCurrentSessionDefault: true });
+      hang.releaseWorker();
+      await hang.fakeHost.teardownOnRestore({ kind: "other", reason: "f1 same-node cleanup" });
+      hang.bindActiveIsolatedPiHost(undefined);
+      hang.configureHostRoutingForTests({ legacyCurrentSessionDefault: true });
     }
   });
 
-  it("tool guidelines require current-session parent for create-child", () => {
+  const multiTaskRootDefinition = (objective: string) => ({
+    title: "Multi-task root",
+    goal: objective,
+    nodes: [
+      {
+        id: "worker-task",
+        title: "Isolated worker task",
+        requires: [],
+        acceptance: [],
+        scope: { paths: ["src/**"] },
+        produces: [{ name: "worker.done", type: "boolean", required: true }],
+      },
+      {
+        id: "desk-parent",
+        title: "Desk parent for create-child",
+        requires: [],
+        acceptance: [],
+        scope: { paths: ["src/**"] },
+        produces: [{ name: "auth.ready", type: "boolean", required: true }],
+        executorProfile: { profileId: "current-session-desk", kind: "current-session" },
+      },
+    ],
+    loops: [],
+    policy: { mode: "guided", requireEvidence: false },
+  });
+
+  /**
+   * Desk-first concurrent path (acceptance #3 product reality).
+   *
+   * Start current-session desk-parent, then try to hang an isolated worker on
+   * worker-task in the same workflow. Domain exclusive active-attempt ownership
+   * rejects the second start. Concurrent create-child success on an active desk
+   * parent while a worker is unsettled on another node is not reachable.
+   *
+   * Asserts: second start fails with exclusive-ownership diagnostic; create-child
+   * on the already-active desk parent succeeds without a concurrent worker.
+   */
+  it("desk-first: exclusive ownership blocks worker hang while desk-parent is active; create-child succeeds on active desk without concurrent worker", async () => {
+    const hang = await hangWorkerHarness();
+    const multiRootObjective = "Ship multi-task root for desk-first concurrent path.";
+    const multiRoot = multiTaskRootDefinition(multiRootObjective);
+
+    try {
+      await hang.value.tools.get("hypagoal_start")!.execute(
+        "create-desk-first-root",
+        { objective: multiRootObjective, definition: multiRoot },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+
+      await hang.value.tools.get("hypagraph_transition")!.execute(
+        "start-desk-first",
+        { nodeId: "desk-parent", action: "start" },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+
+      // Product outcome: cannot hang isolated worker on worker-task while desk is active.
+      await expect(
+        hang.value.tools.get("hypagraph_transition")!.execute(
+          "start-worker-while-desk-active",
+          { nodeId: "worker-task", action: "start" },
+          undefined,
+          undefined,
+          hang.value.ctx,
+        ),
+      ).rejects.toThrow(/active attempt|already|node_already_active/i);
+
+      // agent_end with one active current-session parent continues that parent; it does
+      // not start a second isolated worker on worker-task under exclusive ownership.
+      await hang.startAgentEnd();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(hang.getWorkerSettledOutcome()).toBeUndefined();
+
+      // create-child on the already-active desk parent succeeds (no concurrent worker).
+      const createdOnDesk = await hang.value.tools.get("hypagoal_create_child")!.execute(
+        "create-on-active-desk",
+        {
+          parentNodeId: "desk-parent",
+          childObjective: "Child from active desk parent without concurrent worker.",
+          definition: childDefinition,
+          scopePaths: ["src/domain/**"],
+          outputFacts: [{ name: "auth.ready", type: "boolean", required: true }],
+          childGoalId: "goal-child-desk-first-f1",
+          childWorkflowId: "workflow-child-desk-first-f1",
+          bindingId: "binding-desk-first-f1",
+        },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+      expect(createdOnDesk.details?.hypagoalChild?.kind).toBe("created");
+      expect(createdOnDesk.details?.hypagraph?.snapshot?.runtime?.nodes?.["desk-parent"]?.status)
+        .toBe("waiting_for_child");
+    } finally {
+      hang.releaseWorker();
+      await hang.fakeHost.teardownOnRestore({ kind: "other", reason: "f1 desk-first cleanup" });
+      hang.bindActiveIsolatedPiHost(undefined);
+      hang.configureHostRoutingForTests({ legacyCurrentSessionDefault: true });
+    }
+  });
+
+  /**
+   * Worker-first different parentNodeId + settlement.
+   *
+   * 1. worker-first, then start desk-parent is refused (host gate / exclusive ownership);
+   * 2. while a worker is unsettled on worker-task, create-child with parentNodeId
+   *    desk-parent is not rejected with child_create_blocked_active_worker_node;
+   * 3. worker submit/settle still succeeds after that call;
+   * 4. create-child succeeds on desk-parent when that parent is active after settlement.
+   */
+  it("same-node guard does not fire for a different parentNodeId; create-child succeeds on an active non-worker parent; worker settlement still succeeds", async () => {
+    const hang = await hangWorkerHarness();
+    const multiRootObjective = "Ship multi-task root for same-node guard tests.";
+    const multiRoot = multiTaskRootDefinition(multiRootObjective);
+
+    try {
+      await hang.value.tools.get("hypagoal_start")!.execute(
+        "create-multi-root",
+        { objective: multiRootObjective, definition: multiRoot },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+
+      // Worker first on worker-task (definition order prefers the isolated ready task).
+      const agentEndPromise = hang.startAgentEnd();
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Concurrent second task start is refused while the worker is unsettled.
+      await expect(
+        hang.value.tools.get("hypagraph_transition")!.execute(
+          "start-desk-while-worker",
+          { nodeId: "desk-parent", action: "start" },
+          undefined,
+          undefined,
+          hang.value.ctx,
+        ),
+      ).rejects.toThrow(/isolated model worker/i);
+
+      // Same-node guard must not fire for a different parentNodeId while worker is unsettled.
+      // Domain rejects because desk-parent is not an active attempt.
+      const whileWorker = await hang.value.tools.get("hypagoal_create_child")!.execute(
+        "create-on-desk-while-worker",
+        {
+          parentNodeId: "desk-parent",
+          childObjective: "Child while worker owns worker-task.",
+          definition: childDefinition,
+          scopePaths: ["src/domain/**"],
+        },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+      expect(whileWorker.details?.hypagoalChild?.kind).toBe("rejected");
+      const whileCodes = (whileWorker.details?.hypagoalChild?.diagnostics ?? [])
+        .map((d: { code: string }) => d.code);
+      expect(whileCodes).not.toContain("child_create_blocked_active_worker_node");
+
+      hang.releaseWorker();
+      await agentEndPromise;
+      expect(hang.getWorkerSettledOutcome()).toBe("submitted");
+
+      // After worker settlement, create-child succeeds on an active non-worker parent.
+      await hang.value.tools.get("hypagraph_transition")!.execute(
+        "start-desk-parent-after-settle",
+        { nodeId: "desk-parent", action: "start" },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+
+      const createdOnDesk = await hang.value.tools.get("hypagoal_create_child")!.execute(
+        "create-on-desk-after-settle",
+        {
+          parentNodeId: "desk-parent",
+          childObjective: "Child from desk parent after worker settled.",
+          definition: childDefinition,
+          scopePaths: ["src/domain/**"],
+          outputFacts: [{ name: "auth.ready", type: "boolean", required: true }],
+          childGoalId: "goal-child-desk-f1",
+          childWorkflowId: "workflow-child-desk-f1",
+          bindingId: "binding-desk-f1",
+        },
+        undefined,
+        undefined,
+        hang.value.ctx,
+      );
+      expect(createdOnDesk.details?.hypagoalChild?.kind).toBe("created");
+    } finally {
+      hang.releaseWorker();
+      await hang.fakeHost.teardownOnRestore({ kind: "other", reason: "f1 different-parent cleanup" });
+      hang.bindActiveIsolatedPiHost(undefined);
+      hang.configureHostRoutingForTests({ legacyCurrentSessionDefault: true });
+    }
+  });
+
+  it("tool guidelines allow isolated parents and name the same-node worker guard", () => {
     const value = harness();
     const tool = (value.pi as any).registerTool.mock.calls
       .map((call: any[]) => call[0])
       .find((t: any) => t?.name === "hypagoal_create_child");
     expect(tool).toBeDefined();
     const guidelines = (tool.promptGuidelines ?? []).join("\n");
-    expect(guidelines).toMatch(/current-session/i);
-    expect(guidelines).toMatch(/Workers never create|never create child/i);
-    expect(String(tool.description)).toMatch(/current-session/i);
+    expect(guidelines).toMatch(/isolated-pi/i);
+    expect(guidelines).toMatch(/another parent node|cancel the worker/i);
+    expect(guidelines).toMatch(/same-node|exclusive active task/i);
+    expect(guidelines).not.toMatch(/Workers never create|never create child/i);
+    expect(guidelines).not.toMatch(/must use.*current-session|requires.*current-session/i);
+    expect(String(tool.description)).toMatch(/isolated-pi/i);
   });
 });
