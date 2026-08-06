@@ -4,3 +4,9 @@ dist/
 .hypagraph/
 *.log
 .DS_Store
+
+# Grok
+.grok/*
+
+# Pi
+.pi/*
