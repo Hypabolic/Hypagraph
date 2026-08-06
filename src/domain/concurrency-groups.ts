@@ -10,7 +10,8 @@
  * uses stable lexicographic identity order. Selection does not use a clock or
  * random values.
  *
- * Domain helpers are pure: no clock, random, files, network, or input mutation.
+ * Domain helpers here do not access files, network, or processes. Absolute purity
+ * is not a house requirement (see AGENTS.md).
  * Untrusted property reads use own data-property descriptors only. Accessor
  * properties are rejected with diagnostics. Returned records contain only
  * validated group and fairness fields.

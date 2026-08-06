@@ -7,8 +7,9 @@
  *
  * Raw assistant text and invalid envelopes do not produce commit commands.
  *
- * Domain helpers in this module are pure: no clock, random, files, network, or
- * input mutation. Timestamps and command IDs appear only as pure caller inputs.
+ * Domain helpers in this module do not access files, network, or processes.
+ * Prefer caller-supplied timestamps and command IDs for stable tests and replay.
+ * Absolute purity is not a house requirement (see AGENTS.md).
  */
 
 import {
